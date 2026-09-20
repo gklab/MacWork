@@ -125,3 +125,31 @@ def test_who_answered_is_reportable(monkeypatch):
     assert d.name == "jev"
     d.decide({}, {})
     assert d.name == "local"     # status() reads this: with `auto`, the configured kind is not the answer
+
+
+# --------------------------------------------------------------------------- saying which one answered
+
+def test_doctor_does_not_report_a_fallback_as_if_it_were_fine(tmp_path, capsys, monkeypatch):
+    """`using: local:x` on its own reads as green while that backend may be handing back 401 — the same
+    kind of misreport as showing the configured `kind` once `auto` exists."""
+    import argparse
+
+    from macwork import cli          # noqa: F401  (the command under test)
+
+    class Eng:
+        cfg = Config.load()
+        helper = None
+
+        def status(self):
+            return {"helper": {"ax_trusted": True}, "decider": {"kind": "auto", "using": "local:deepseek"}}
+
+    import macwork.engine as engine
+    import macwork.planner as planner
+
+    monkeypatch.setattr(engine, "Engine", lambda cfg: Eng())   # cmd_doctor imports it inside the function
+    monkeypatch.setattr(planner, "probe_planners",
+                        lambda cfg, helper: [{"planner": "deepseek", "status": "credentials rejected",
+                                              "detail": "deepseek: credentials rejected (401)"}])
+    code = cli.cmd_doctor(Config.load(), argparse.Namespace(planners=True, ask=False))
+    err = capsys.readouterr().err
+    assert code == 1 and "Nothing can decide" in err

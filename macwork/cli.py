@@ -51,11 +51,19 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
 
     eng = Engine(cfg)
     st = eng.status()
+    probed = None
     if getattr(args, "planners", False):
         from .planner import probe_planners
-        st["planners"] = probe_planners(cfg, eng.helper)
+        st["planners"] = probed = probe_planners(cfg, eng.helper)
     _print(st)
     ok = st.get("helper", {}).get("ax_trusted") and "error" not in st.get("decider", {})
+    if probed is not None and str(st.get("decider", {}).get("using") or "").startswith("local:"):
+        backend = str(st["decider"]["using"]).split(":", 1)[1]
+        answer = next((p for p in probed if p.get("planner") == backend), None)
+        if answer and answer.get("status") != "ok":
+            print(f"\n→ the decider is {st['decider']['using']} and {backend} says: {answer.get('detail') or answer['status']}.\n"
+                  f"  Nothing can decide, so nothing will run: set TYPESAFE_API_KEY, or fix that backend.", file=sys.stderr)
+            ok = False
     if getattr(args, "ask", False):
         # The Mac will not show these prompts for someone else: they have to be asked for by the process that
         # wants the permission, which is the helper. `permissions.request` existed for this and had no caller,
@@ -72,6 +80,16 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
     if not st.get("helper", {}).get("ax_trusted"):
         print("\n→ grant Accessibility to the helper: `macwork doctor --ask` opens the prompts, or "
               "System Settings ▸ Privacy & Security ▸ Accessibility", file=sys.stderr)
+    using = str(st.get("decider", {}).get("using") or "")
+    if using.startswith("local:"):
+        # `auto` fell back, and both halves of that are worth saying: this decider's confidence is not
+        # calibrated, and whether the backend answers at all is not something `status()` can know without
+        # a round trip — `--planners` is what asks it. Reporting "using: local:x" on its own reads as green
+        # while that backend may be handing back 401.
+        print(f"\n→ the decider fell back to {using}: no TypeSafe key, so its confidence is a model's word "
+              f"rather than a measured frequency (capped by decider.local.confidence_ceiling).\n"
+              f"  `macwork doctor --planners` asks that backend for a real answer; this line does not.",
+              file=sys.stderr)
     if st.get("helper", {}).get("secure_input"):
         # not a failure: it comes and goes with whatever has focus. But while it is on, nothing can be typed.
         print("\n→ secure input is on right now (something with a password field has focus): keystrokes are refused",
