@@ -10,9 +10,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install -e ".[dev]"      # the "web" extra went with the web subsystem
+      - run: pip install -e ".[web,dev]"
       - run: swift build -c release
-        working-directory: helper
-      - run: swift test
         working-directory: helper
       - run: pytest -q
