@@ -8,6 +8,7 @@ Questions and answers use TypeSafe's wire shape:
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import threading
@@ -16,6 +17,8 @@ from importlib.metadata import entry_points
 from typing import Any, Protocol
 
 from .config import Config
+
+log = logging.getLogger(__name__)
 
 MAX_OPTIONS = 255
 
@@ -67,6 +70,8 @@ def store_keychain_key(service: str, key: str, account: str = "typesafe") -> Non
 
 class JevDecider:
     """TypeSafe System One via the official SDK. Key: TYPESAFE_API_KEY, else the Keychain item."""
+
+    name = "jev"
 
     def __init__(self, cfg: Config) -> None:
         import typesafe_sdk as ts
@@ -125,6 +130,7 @@ class JevDecider:
 class DryRunDecider:
     """Audit mode: nothing leaves the Mac. Every decision fails, so callers see exactly what would be sent."""
 
+    name = "dry_run"
     calls = 0
     cost_usd = 0.0
     last_ms = 0.0
@@ -133,10 +139,7 @@ class DryRunDecider:
         raise DeciderError("dry run: decider not called (see the audit log for the state that would be sent)")
 
 
-def make_decider(cfg: Config, helper: Any = None) -> Decider:
-    if cfg.get("audit.dry_run"):
-        return DryRunDecider()
-    kind = cfg.get("decider.kind", "jev")
+def _build(kind: str, cfg: Config, helper: Any) -> Decider:
     if kind == "jev":
         return JevDecider(cfg)
     if kind == "local":     # any model the planner can reach; see localdecider.py on what it costs in calibration
@@ -147,3 +150,69 @@ def make_decider(cfg: Config, helper: Any = None) -> Decider:
         if ep.name == kind:
             return ep.load()(cfg)
     raise DeciderError(f"unknown decider '{kind}'")
+
+
+class ChainDecider:
+    """Deciders in preference order; the next one answers when the one in front cannot.
+
+    Building them in order covers "no key". It does not cover the case that actually happens — a key that
+    works and a network that does not — because that one only shows up at the moment a decision is needed,
+    which is every step. So a failure here moves to the next decider and *stays* there: half a task decided
+    by a calibrated model and half by an uncalibrated one, alternating per step, would make the thresholds in
+    `config.yaml` mean nothing in particular. Switching is loud, and `status()` reports who is answering.
+
+    A decision the decider *answered* is never retried here. Only a `DeciderError` — no answer at all — moves
+    on; a bad answer is the engine's business, and asking a second model until one agrees is not a fallback.
+    """
+
+    def __init__(self, deciders: list[Decider]) -> None:
+        self.deciders = deciders
+
+    def __getattr__(self, attr: str) -> Any:      # name, calls, cost_usd, last_ms, warm…: whoever is in front
+        return getattr(self.deciders[0], attr)
+
+    def decide(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        while True:
+            head = self.deciders[0]
+            try:
+                return head.decide(state, questions)
+            except DeciderError as exc:
+                if len(self.deciders) == 1:
+                    raise
+                log.warning("decider %s could not answer (%s); switching to %s for the rest of this session",
+                            getattr(head, "name", "?"), exc, getattr(self.deciders[1], "name", "?"))
+                self.deciders.pop(0)
+
+
+def make_decider(cfg: Config, helper: Any = None) -> Decider:
+    """The decider named by ``decider.kind``, or with ``auto`` the first one this Mac can actually reach.
+
+    Every step needs a decision, so the decider is the one part with no fallback: no key, no network, that
+    vendor down, and nothing runs. The entry point for a second one existed, an implementation was written
+    for it — and reaching it still meant editing a config file first, which is not a fallback, it is a
+    manual recovery. ``auto`` tries each in turn and says in the error what it tried.
+
+    The order is a preference, not a tie: they are not equivalent. Jev returns calibrated probabilities and
+    every threshold in `config.yaml` is a cut-off on those; a text model's "0.9" is a word it wrote, which is
+    why `decider.local.confidence_ceiling` keeps one from releasing an action the safety floor flagged.
+    """
+    if cfg.get("audit.dry_run"):
+        return DryRunDecider()
+    kind = cfg.get("decider.kind", "jev")
+    if kind != "auto":
+        return _build(kind, cfg, helper)
+    tried: list[str] = []
+    found: list[Decider] = []
+    for name in cfg.get("decider.auto_order") or ["jev", "local"]:
+        try:
+            found.append(_build(name, cfg, helper))
+        except DeciderError as exc:
+            tried.append(f"{name}: {exc}")
+        except Exception as exc:                        # noqa: BLE001  (a backend that will not import or connect)
+            tried.append(f"{name}: {type(exc).__name__}: {exc}")
+    if not found:
+        raise DeciderError("no decider is reachable — " + " | ".join(tried))
+    if tried:
+        log.warning("decider: %s unavailable (%s)", len(tried), "; ".join(tried))
+    log.info("decider: %s", " > ".join(getattr(d, "name", "?") for d in found))
+    return found[0] if len(found) == 1 else ChainDecider(found)

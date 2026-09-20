@@ -78,7 +78,9 @@ class LocalDecider:
 
     @property
     def name(self) -> str:
-        return str(getattr(self.backend, "name", "local"))
+        """`local:<backend>`: which model answered matters more than that it was a local decider, and with
+        `decider.kind: auto` this is what `status()` shows."""
+        return f"local:{getattr(self.backend, 'name', '?')}"
 
     def decide(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         import time

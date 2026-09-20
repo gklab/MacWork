@@ -9,7 +9,9 @@ decider:
   local:
     confidence_ceiling: 0.8      # the most any answer from a text model may claim. release_threshold is
                                  # 0.9, so with this ceiling nothing it says can release a flagged action
-  kind: jev                 # jev | any name registered under the macwork.deciders entry point
+  kind: auto                # auto | jev | local | any name registered under the macwork.deciders entry point
+  auto_order: [jev, local]  # "auto": the first of these this Mac can actually reach. Not a tie — see above:
+                            # a fallback that needs a config edit first is a manual recovery, not a fallback
   model: jev-latest         # or jev-preview
   timeout_s: 10
   max_retries: 3                 # connection hiccups (a local proxy restarting) are retried with backoff

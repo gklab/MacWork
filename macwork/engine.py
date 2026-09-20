@@ -429,7 +429,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             out["helper"] = {"error": str(exc)}
         try:
             d = self.decider
-            out["decider"] = {"kind": self.cfg.get("decider.kind"), "model": self.cfg.get("decider.model"),
+            # what it resolved to, not what was asked for: with `auto` those differ, and which one is
+            # answering changes how much its confidence is worth
+            out["decider"] = {"kind": self.cfg.get("decider.kind"), "using": getattr(d, "name", None),
+                              "model": self.cfg.get("decider.model"),
                               "calls": d.calls, "cost_usd": round(d.cost_usd, 6)}
         except DeciderError as exc:
             out["decider"] = {"error": str(exc)}
