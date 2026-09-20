@@ -55,6 +55,8 @@ func appsActivate(_ p: Params) throws -> Any {
 
 // MARK: - keyboard & mouse
 
+/// ANSI *positions*, used only for keys that are the same key everywhere (Return, Tab, the arrows, F1…).
+/// A character is never looked up here: see `keyCode(for:)`.
 private let keyCodes: [String: Int] = {
     var m: [String: Int] = [
         "a": kVK_ANSI_A, "b": kVK_ANSI_B, "c": kVK_ANSI_C, "d": kVK_ANSI_D, "e": kVK_ANSI_E, "f": kVK_ANSI_F, "g": kVK_ANSI_G,
@@ -147,7 +149,11 @@ func inputKey(_ p: Params) throws -> Any {
         guard let f = modifierFlags[m] else { throw RPCError("bad_params", "unknown modifier \(m)") }
         flags.insert(f)
     }
-    guard let key = parts.last, let code = keyCodes[key] else { throw RPCError("bad_params", "unknown key \(parts.last ?? "")") }
+    guard let key = parts.last, let resolved = keyCode(for: key) else {
+        throw RPCError("bad_params", "unknown key \(parts.last ?? "")")
+    }
+    let code = Int(resolved.code)
+    if resolved.shift { flags.insert(.maskShift) }
     try requireKeyboard()
     input.before()
     defer { input.after() }
@@ -160,8 +166,24 @@ func inputKey(_ p: Params) throws -> Any {
     return ["ok": true]
 }
 
+/// Which key to press to get this character or named key, on the keyboard the user actually has.
+///
+/// The table above maps names to ANSI positions. On a German, French or JIS keyboard those positions hold
+/// different characters — `cmd+[` pressed the key where an American keyboard has `[`, which on a German one
+/// is `ü`. For anything that is a character, the current layout is asked instead; only keys that exist in
+/// the same place on every keyboard (Return, Tab, the arrows, the function row) come from the table.
+func keyCode(for name: String) -> (code: CGKeyCode, shift: Bool)? {
+    if name.count == 1, let ch = name.first, let hit = asciiKeyMap()[ch] {
+        return hit
+    }
+    if let ansi = keyCodes[name] {
+        return (CGKeyCode(ansi), false)
+    }
+    return nil
+}
+
 /// Character -> (key code, needs shift) on the current ASCII-capable keyboard layout.
-private func asciiKeyMap() -> [Character: (CGKeyCode, Bool)] {
+func asciiKeyMap() -> [Character: (CGKeyCode, Bool)] {
     guard let src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
           let ptr = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return [:] }
     let data = Unmanaged<CFData>.fromOpaque(ptr).takeUnretainedValue() as Data

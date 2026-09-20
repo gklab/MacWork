@@ -61,7 +61,8 @@ def run(cfg: Config, progress: Callable[[str], None], learn: bool = True, replay
     progress("planners")
     out["planners"] = probe_planners(cfg, eng.helper)
 
-    app = str(st.get("app", "计算器"))
+    # a stock app named the way the Mac reports it; "计算器" only resolved on a Chinese-language Mac
+    app = str(st.get("app", "Calculator"))
     if learn:
         progress(f"learn {app}")
         conf.setdefault("learn", {}).update({"max_actions": int(st.get("learn_actions", 6)), "budget_s": int(st.get("learn_budget_s", 90))})
@@ -73,7 +74,7 @@ def run(cfg: Config, progress: Callable[[str], None], learn: bool = True, replay
                         "ok": bool(res.get("tried")) and before == after}
 
     if replay:
-        goal = str(st.get("routine_goal", "用计算器算 7×6"))
+        goal = str(st.get("routine_goal", f"compute 7 x 6 in {app}"))
         progress(f"routine: {goal} (twice)")
         conf["observe"]["providers"] = list(dict.fromkeys(conf["observe"]["providers"] + ["skills"]))
         conf["skills"]["record"] = True

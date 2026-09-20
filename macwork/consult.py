@@ -146,7 +146,11 @@ class ConsultMixin:
         labels are marked on the matching screen actions). The decider chooses; nothing runs unasked. A drag is
         offered only when both of its ends are found on the live screen."""
         out: list[Affordance] = []
-        rx = self.cfg.get("engine.key_pattern", r"(?i)((cmd|shift|alt|option|opt|ctrl|control|fn)\+)*([a-z0-9]|f[0-9]{1,2}|return|enter|escape|esc|tab|space|delete|up|down|left|right|home|end|pageup|pagedown|[,./;'`\[\]\\=-])")
+        # modifiers are fixed; the key itself is anything one character long or a name the helper knows —
+        # a whitelist of US-ANSI punctuation here rejected "cmd+ö" and every non-ASCII layout's keys
+        rx = self.cfg.get("engine.key_pattern",
+                          r"(?i)((cmd|shift|alt|option|opt|ctrl|control|fn)\+)+(.|f[0-9]{1,2}|return|enter|escape|esc"
+                          r"|tab|space|delete|backspace|forwarddelete|up|down|left|right|home|end|pageup|pagedown)")
         for i, t in enumerate(task.tries):
             if t.get("keys") and re.fullmatch(rx, t["keys"]):
                 out.append(Affordance(f"t{i}", "keys", "key", self._suggestion_label(t), {"combo": t["keys"].lower()}))

@@ -35,7 +35,11 @@ observe:
     window_skip_roles: [AXApplication, AXMenuBar]   # never descend into these from a window (menus have their own provider)
   menu:
     cache_s: 4                   # reuse the menu tree for the same app+window this long; any action invalidates it
-    skip_first_menu: true        # the Apple menu (recent items, shutdown) is never a target by default
+    # The Apple menu used to be removed by position — hand-written knowledge of where macOS puts things,
+    # which also took away "About This Mac", "System Settings…" and "Recent Items". Shutting down and logging
+    # out are the safety floor's business, and the floor now classifies every action, so position is not the
+    # place to decide this.
+    skip_first_menu: false
     include_disabled: false
   window:
     # What can be done with an element is asked of the element (is this attribute settable? what does the app
@@ -94,7 +98,9 @@ observe:
     skip_suites: [Standard Suite, Text Suite, Type Definitions, Type Names Suite]
     skip_commands: []            # the standard suites above are the generic ones; risky commands meet the policy floor
     simple_types: [text, integer, real, number, boolean, file, "text|file"]
-  keys: [return, escape, tab, pageup, pagedown]   # the physical keys only; app commands come from its menus or the planner
+  # The physical keys — the one fixed list this engine is allowed, because these are not knowledge about any
+  # app. App commands come from the app's own menus, or from the planner.
+  keys: [return, escape, tab, space, delete, up, down, left, right, home, end, pageup, pagedown]
   typing:                        # type the caller's text wherever the cursor is (editors that expose no text field)
     enabled: true
     requires_input: text         # offered only when the caller supplied inputs.text

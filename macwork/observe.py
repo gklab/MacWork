@@ -892,7 +892,7 @@ def group_of(a: Affordance) -> tuple[str, str]:
     names = {"script_cmd": "the app's scripting commands", "shortcut": "the user's Shortcuts", "file": "files found for the inputs",
              "skill": "learned routines", "keys": "keys to press and typing", "menusearch": "searching the menus",
              "web": "research on the web", "vision": "reading the screen"}
-    return f"ch:{a.channel}", names.get(a.channel, "general")
+    return f"ch:{a.channel}", names.get(a.channel, f"the {a.channel} actions")
 
 
 def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int = 12,

@@ -241,7 +241,13 @@ def test_menu_provider_paths_shortcuts_and_skips(tmp_path):
     menu(Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 42, "name": "文本编辑"}), obs)
     labels = [a.label for a in obs.affordances]
     assert "menu 文件 ▸ 新建文稿 (⌘N)" in labels and "menu 文件 ▸ 导出 ▸ PDF (⇧⌘P)" in labels
-    assert not any("最近使用" in lab for lab in labels)          # Apple menu skipped by default
+    # the Apple menu is offered: removing it by position was hand-written knowledge of where macOS puts
+    # things, and it took "About This Mac", "System Settings…" and "Recent Items" with it
+    assert any("最近使用" in lab for lab in labels)
+    skipped = Observation(app=None, window=None, affordances=[])
+    menu(Ctx(cfg(tmp_path, config={"observe": {"menu": {"skip_first_menu": True}}}), FakeHelper(),
+             app={"pid": 42, "name": "文本编辑"}), skipped)
+    assert not any("最近使用" in a.label for a in skipped.affordances)
     assert not any("灰色项" in lab for lab in labels)            # disabled items skipped
 
 
@@ -559,12 +565,17 @@ def test_the_app_the_caller_named_is_opened_first(tmp_path, monkeypatch):
 def test_a_planner_suggestion_inside_a_folded_group_is_shown(tmp_path):
     from tests.test_flex import FakeBackend
     c = cfg(tmp_path, config={"engine": {"max_options": 8}})
-    d = ScriptedDecider([{"pick": "发送", "move": "rethink"}, {"pick": "m2"}, {"pick": "done"}])
+    d = ScriptedDecider([{"pick": "发送", "move": "rethink"}, {"pick": "新建文稿"}, {"pick": "done"}])
     eng = Engine(c, helper=FakeHelper(), decider=d)
     eng._planner = FakeBackend([{"steps": ["x"], "inputs": {}, "try": [{"action": "menu 文件 ▸ 新建文稿 (⌘N)"}]}])
     assert eng.do("新建一个文稿")["status"] == "done"
-    assert not any(k.startswith("m") for k in d.seen[0][1]["action"]["criteria"])           # the menu was folded
-    assert d.seen[1][1]["action"]["criteria"]["m2"] == "menu 文件 ▸ 新建文稿 (⌘N) — suggested by the planner"
+    first = d.seen[0][1]["action"]["criteria"].values()
+    # only named inside the fold's own summary ("look into the 「文件」 menu (3 options: 新建文稿…)"),
+    # never as an option of its own
+    assert not any(v.startswith("menu 文件 ▸ 新建文稿") for v in first)
+    assert any(v.startswith("look into") and "新建文稿" in v for v in first)
+    offered = d.seen[1][1]["action"]["criteria"].values()
+    assert "menu 文件 ▸ 新建文稿 (⌘N) — suggested by the planner" in offered
 
 
 def test_web_research_is_evidence_not_the_end_of_the_task(tmp_path, monkeypatch):
