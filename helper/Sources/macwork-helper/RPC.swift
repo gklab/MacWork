@@ -1,7 +1,14 @@
 import Foundation
 
 /// Newline-delimited JSON-RPC: {"id", "method", "params"} -> {"id", "result"} | {"id", "error": {"code", "message"}}.
-/// Requests run one at a time on the main thread (AX and the run loop live there); I/O happens on background threads.
+///
+/// Requests run one at a time on the main thread, because Accessibility and the run loop live there. A few do
+/// not: enumerating every installed app shells out to `mdfind`, reading a PDF is PDFKit, recognising text is
+/// Vision. Those held the main thread for as long as they took, and measurably: the first look of a session
+/// spent 1.8 s inside whichever provider happened to be running while a background app enumeration had the
+/// thread — the enumeration was moved off the critical path and then blocked it anyway. Such a method is
+/// registered `offMain` and runs on the connection's own reader thread, so a second connection gets on with
+/// its work. Ordering within one connection is unchanged: that thread still handles its requests in turn.
 
 struct RPCError: Error {
     let code: String
@@ -14,8 +21,14 @@ typealias Handler = (Params) throws -> Any
 
 final class Dispatcher {
     private var handlers: [String: Handler] = [:]
+    private var offMain: Set<String> = []
 
-    func register(_ method: String, _ handler: @escaping Handler) { handlers[method] = handler }
+    /// `offMain`: this handler touches no Accessibility API, no run loop and no shared element store, and it
+    /// is slow enough that holding the main thread for it is felt. Anything else stays on the main thread.
+    func register(_ method: String, offMain: Bool = false, _ handler: @escaping Handler) {
+        handlers[method] = handler
+        if offMain { self.offMain.insert(method) }
+    }
     var methods: [String] { handlers.keys.sorted() }
 
     /// Handle one request line; always returns a response line.
@@ -30,7 +43,9 @@ final class Dispatcher {
             guard let method = obj["method"] as? String, let handler = handlers[method] else {
                 throw RPCError("no_method", "unknown method \(obj["method"] ?? "")")
             }
-            let result = try handler(obj["params"] as? Params ?? [:])
+            let params = obj["params"] as? Params ?? [:]
+            let result = offMain.contains(method) ? try handler(params)
+                                                  : try DispatchQueue.main.sync { try handler(params) }
             response = ["id": id, "result": result]
         } catch let e as RPCError {
             response = ["id": id, "error": ["code": e.code, "message": e.message]]
@@ -75,9 +90,8 @@ final class Connection {
                     let line = buffer[buffer.startIndex..<nl]
                     buffer.removeSubrange(buffer.startIndex...nl)
                     if line.isEmpty { continue }
-                    var reply = Data()
-                    DispatchQueue.main.sync { reply = self.dispatcher.handle(line: Data(line)) }
-                    self.output.write(reply)
+                    // handle() hops to the main thread itself, for every method that needs it
+                    self.output.write(self.dispatcher.handle(line: Data(line)))
                 }
             }
             DispatchQueue.main.async { self.onClose() }
@@ -85,7 +99,7 @@ final class Connection {
     }
 }
 
-/// Unix-domain socket server: one connection per client, requests serialized on the main thread.
+/// Unix-domain socket server: one connection per client, each serving its requests in turn.
 final class SocketServer {
     let path: String
     private let dispatcher: Dispatcher

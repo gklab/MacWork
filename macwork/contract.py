@@ -41,6 +41,32 @@ def _field_text(ctx: Ctx, ref: str) -> str | None:
         return None
 
 
+def _cursor_text(ctx: Ctx, limit: int) -> str | None:
+    """What the element with the keyboard focus holds, or None when it may not or cannot be read.
+
+    Typing at the cursor had no check at all: it goes wherever the system focus is, so there was no ref to read
+    back and every such step came back "nothing to read back" — unverified, including the ones that went into
+    the wrong window. The focus is a system-wide question and `ax.focused` answers it.
+
+    It refuses while secure input is on. That is not a role test: it is the window server's own answer about
+    whether a password field has focus anywhere, and the point is to never read a secret back, not to work out
+    what kind of field this is.
+    """
+    try:
+        r = ctx.helper.call("ax.focused", max_text=limit)
+    except HelperError:
+        return None
+    if r.get("secure_input"):
+        return None
+    node = r.get("focused")
+    if not isinstance(node, dict):
+        return None
+    # No AXValue at all is a canvas or a custom view — "cannot be read", not "reads as empty". An element
+    # that does answer, with "", really is empty, and typing into it that leaves it empty did fail.
+    text = node.get("selected_text") if node.get("selected_text") else node.get("value")
+    return str(text) if isinstance(text, str) else None
+
+
 def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list[str]) -> tuple[bool | None, str]:
     """Did the action keep its promise? (True / False / None = cannot be checked here), with the reason."""
     if not out.ok:
@@ -48,15 +74,24 @@ def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list
     kind = promise(a, params)
     if kind == "typed":
         text = str(params.get("text", ""))
+        if a.target.get("secure"):
+            return None, "a password field: what it holds is never read back"
         ref = a.target.get("ref")
-        if not ref or a.target.get("secure"):
-            return None, "typed at the cursor: nothing to read back"
-        now = _field_text(ctx, ref)
+        # A document is longer than any readback: ask for room for the text several times over, and treat an
+        # answer that fills it as "could not be read" rather than "wrong". Reporting a long file as failed
+        # because the typed line sits past the cut is the worse mistake of the two.
+        limit = max(2000, len(text) * 4)
+        now = _field_text(ctx, ref) if ref else _cursor_text(ctx, limit)
+        where = "the field" if ref else "where the cursor is"
         if now is None:
-            return None, "the field could not be read back"
-        if text.strip() and text.strip() not in now:
-            return False, f"the field holds {now[:40]!r}, not what was typed"
-        return True, "the text is in the field"
+            return None, f"{'the field' if ref else 'the focused element'} could not be read back"
+        if not text.strip():
+            return True, "there was nothing to type"
+        if text.strip() in now:
+            return True, f"the text is in {where}"
+        if len(now) >= limit:
+            return None, f"{where} holds more text than can be read back"
+        return False, f"{where} holds {now[:40]!r}, not what was typed"
     if kind == "switched":
         pid = (out.target or {}).get("pid") or a.target.get("pid")
         try:

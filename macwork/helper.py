@@ -43,6 +43,8 @@ class Helper:
         self._id = 0
         self.mode: str | None = None
         self.on_reset: Callable[[], None] | None = None   # set by the engine: a new helper invalidates its refs
+        self._bg: Helper | None = None
+        self._bg_lock = threading.Lock()
 
     # ------------------------------------------------------------------ connect
     def _binary(self) -> Path | None:
@@ -87,7 +89,28 @@ class Helper:
         self._proc = subprocess.Popen([str(binary), "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.mode = "stdio"
 
+    def background(self) -> "Helper":
+        """A second connection, for work that must not hold up the look.
+
+        `call` holds one lock for the whole round trip, so a "background" refresh sharing this object stops
+        the foreground dead. Measured: enumerating the menu bar's owners took 1516 ms in its own thread and
+        the next provider to ask for anything waited 1717 ms for it — the refresh was moved off the critical
+        path and then blocked it anyway, which is worse than not having moved it.
+
+        In socket mode this is another connection to the same helper; in stdio mode it is a second child.
+        Either way the helper serves each connection on its own thread, so only the methods that need the
+        main thread still queue against each other.
+        """
+        with self._bg_lock:
+            if self._bg is None:
+                self._bg = Helper(self.cfg)
+            return self._bg
+
     def close(self) -> None:
+        with self._bg_lock:
+            if self._bg is not None:
+                self._bg.close()
+                self._bg = None
         with self._lock:
             if self._sock:
                 self._sock.close()

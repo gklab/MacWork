@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 
 /// Accessibility: snapshot trees, perform actions, set values, wait for UI events.
 /// Mechanism only — which nodes matter, what to click and when to stop is the engine's call.
@@ -377,15 +378,42 @@ func axSetRange(_ p: Params) throws -> Any {
 }
 
 /// The element that has keyboard focus, system-wide.
+/// The element the keyboard is actually going to, asked of the system rather than guessed from what is in
+/// front. Typing is the one action whose target is invisible in any one app's tree: it lands wherever this
+/// says, which may be a sheet, another app, or nothing at all.
+///
+/// `secure_input` travels with the answer because the caller needs it to decide whether reading the value
+/// back is allowed at all, and asking for it separately is a second round trip on a state that changes with
+/// focus — which is exactly what this call is reporting.
 func axFocused(_ p: Params) throws -> Any {
     let sys = AXUIElementCreateSystemWide()
-    guard let v = axAttr(sys, kAXFocusedUIElementAttribute) else { return ["focused": NSNull()] }
+    let secure = IsSecureEventInputEnabled()
+    // No per-call timeout here. Setting one on the system-wide element sets the *global default* for every
+    // AXUIElement afterwards, so a cap meant for this one call would quietly shorten every later snapshot
+    // and never be put back. main.swift sets that global once, at 0.5 s.
+    guard let v = axAttr(sys, kAXFocusedUIElementAttribute) else {
+        return ["focused": NSNull(), "secure_input": secure]
+    }
     let el = v as! AXUIElement
     var pid: pid_t = 0
     AXUIElementGetPid(el, &pid)
-    var node = describe(el, textLimit: p["max_text"] as? Int ?? 200, withActions: true).node
+    // `value` is what the element *holds* — a password, a whole document. A caller that only needs to know
+    // where the cursor is says so, rather than asking for one character of everything and getting a role
+    // truncated to "A…".
+    var node = describe(el, textLimit: p["max_text"] as? Int ?? 200,
+                        withActions: p["actions"] as? Bool ?? false).node
+    if !(p["value"] as? Bool ?? true) {
+        node["value"] = nil
+        node["selected_text"] = nil
+    }
     node["ref"] = store.add(el, gen: store.newGeneration(), n: 0)
-    return ["focused": node, "pid": Int(pid)]
+    var out: [String: Any] = ["focused": node, "pid": Int(pid), "secure_input": secure]
+    // which app the cursor is in: the caller has a pid and would otherwise list every running app to name it
+    if let app = NSRunningApplication(processIdentifier: pid) {
+        out["app"] = app.localizedName ?? app.bundleIdentifier ?? ""
+        out["bundle_id"] = app.bundleIdentifier ?? ""
+    }
+    return out
 }
 
 // MARK: - wait for UI events

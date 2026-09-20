@@ -42,7 +42,7 @@ dispatcher.register("apps.quit", appsQuit)
 dispatcher.register("ax.set_range", axSetRange)
 dispatcher.register("input.drag", inputDrag)
 dispatcher.register("screen.windows", screenWindows)
-dispatcher.register("apps.installed", appsInstalled)
+dispatcher.register("apps.installed", offMain: true, appsInstalled)
 dispatcher.register("ax.snapshot", axSnapshot)
 dispatcher.register("ax.perform", axPerform)
 dispatcher.register("ax.set", axSet)
@@ -59,21 +59,21 @@ dispatcher.register("input.type", inputType)
 dispatcher.register("input.click", inputClick)
 dispatcher.register("input.idle", inputIdle)
 dispatcher.register("services.perform", servicesPerform)
-dispatcher.register("file.read_text", fileReadText)
+dispatcher.register("file.read_text", offMain: true, fileReadText)
 dispatcher.register("clipboard.read", clipboardRead)
 dispatcher.register("clipboard.write", clipboardWrite)
 dispatcher.register("script.applescript", scriptRun)
-dispatcher.register("nl.entities", nlEntities)
-dispatcher.register("nl.detect", nlDetect)
-dispatcher.register("screen.ocr", screenOCR)
+dispatcher.register("nl.entities", offMain: true, nlEntities)
+dispatcher.register("nl.detect", offMain: true, nlDetect)
+dispatcher.register("screen.ocr", offMain: true, screenOCR)
 dispatcher.register("system.locale") { _ in
     ["locale": Locale.current.identifier, "languages": Array(Locale.preferredLanguages.prefix(8)),
      "ocr_languages": ocrLanguages(),
      "region": Locale.current.region?.identifier as Any? ?? NSNull()]
 }
-dispatcher.register("screen.capture", screenCapture)
+dispatcher.register("screen.capture", offMain: true, screenCapture)
 dispatcher.register("llm.available", llmAvailable)
-dispatcher.register("llm.generate", llmGenerate)
+dispatcher.register("llm.generate", offMain: true, llmGenerate)
 
 AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)  // one hung app must not hang us
 NSApplication.shared.setActivationPolicy(.prohibited)

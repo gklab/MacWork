@@ -60,20 +60,24 @@ def get_provider(name: str) -> Provider | None:
     return None
 
 
-def _refresh_in_background(ctx: Ctx, key: str, ttl: float, make: Callable[[], Any]) -> Any:
+def _refresh_in_background(ctx: Ctx, key: str, ttl: float, make: Callable[[Any], Any]) -> Any:
     """What was last found, and a refresh behind it when that has gone stale.
 
     For surfaces whose enumeration is slow but changes rarely. Never blocks the look: the first one gets
     nothing, which is the honest cost of not making every step wait for it.
+
+    ``make`` is handed the helper to use, and it is *not* the one the look is using: one connection serves one
+    call at a time, so a refresh on the shared one blocks exactly what this is meant to keep moving.
     """
     hit = ctx.cache.get(key)
     fresh = hit and time.monotonic() - hit[0] < ttl
     if not fresh and not ctx.cache.get(f"{key}.running"):
         ctx.cache[f"{key}.running"] = True
+        helper = ctx.helper.background() if hasattr(ctx.helper, "background") else ctx.helper
 
         def refresh() -> None:
             try:
-                ctx.cache[key] = (time.monotonic(), make())
+                ctx.cache[key] = (time.monotonic(), make(helper))
             except Exception as exc:  # noqa: BLE001  (a background scan must never take the task down)
                 log.info("%s: background refresh failed (%s)", key, exc)
             finally:
@@ -503,7 +507,7 @@ def menubar_extras(ctx: Ctx, obs: Observation) -> None:
     # and go with apps, not with screens. Even so the scan costs a second or two — every process has to be
     # asked — so it never runs inside a look: the first look goes without, and a refresh runs behind it.
     who = _refresh_in_background(ctx, "menubar.owners", float(mc.get("owners_cache_s", 300)),
-                                 lambda: ctx.helper.call("ax.extras_owners")) or []
+                                 lambda helper: helper.call("ax.extras_owners")) or []
     who = who[: int(mc.get("max_apps", 20))]
     # like the menu tree: reused until something is acted on, because reading nine processes' trees on every
     # look is most of what this surface costs
@@ -747,15 +751,67 @@ def keys(ctx: Ctx, obs: Observation) -> None:
         obs.affordances.append(Affordance(f"k{i}", "keys", "key", f"press the {combo} key", {"combo": combo}))
 
 
+@provider("focus")
+def focus(ctx: Ctx, obs: Observation) -> None:
+    """Where the keyboard actually goes.
+
+    Every other provider describes one app's windows. Typing at the cursor is the one action whose target is
+    in none of them: it lands wherever the *system* focus is, which may be a sheet over this window, a panel
+    belonging to another process, or nothing at all. The engine typed into it blind, and the decider was never
+    told. `kAXFocusedUIElementAttribute` on the system-wide element is the Mac's own answer.
+
+    What the element **is** is kept; what it **holds** never is. Focus sits in password fields, and this runs
+    on every look.
+    """
+    fc = ctx.cfg.section("observe.focus")
+    if not fc.get("enabled", True):
+        return
+    try:
+        # value=False: this must never carry out what the element holds. timeout_ms: the app holding the focus
+        # is the one answering, and a slow one costs 1.5 s on every single look.
+        r = ctx.helper.call("ax.focused", value=False, actions=False,
+                            timeout_ms=int(fc.get("timeout_ms", 250)))
+    except HelperError as exc:
+        obs.notes["focus_error"] = str(exc)[:120]
+        return
+    node = r.get("focused")
+    if not isinstance(node, dict):
+        obs.focused = {"secure_input": bool(r.get("secure_input"))}
+        return
+    # deliberately not `_label`, which falls back to the element's *value* — that is the one thing this
+    # provider must never carry out. What names a field is its title, its description or its placeholder.
+    name = next((str(node[k]) for k in ("title", "desc", "placeholder")
+                 if node.get(k) and not str(node[k]).startswith("_NS:")), "")
+    obs.focused = {"pid": r.get("pid"), "app": r.get("app") or "", "bundle_id": r.get("bundle_id") or "",
+                   "role": node.get("role"), "rdesc": node.get("rdesc"), "label": name,
+                   "ref": node.get("ref"), "secure_input": bool(r.get("secure_input"))}
+
+
+def _cursor_note(ctx: Ctx, obs: Observation) -> str:
+    """How to describe the cursor's whereabouts in a typing affordance, or "" when nothing is known."""
+    f = obs.focused or {}
+    if not f or f.get("ref") is None:
+        return ""
+    if f.get("secure_input"):
+        return " — a password field has focus: keystrokes are refused while that is so"
+    here = (ctx.app or {}).get("pid")
+    if here and f.get("pid") and f["pid"] != here:
+        # the decider is choosing among one app's actions; this one would not land there
+        return f" — but the cursor is in {f.get('app') or 'another app'}, not {(ctx.app or {}).get('name')}"
+    what = f.get("label") or f.get("rdesc") or f.get("role") or ""
+    return f" (the cursor is in: {what})" if what else ""
+
+
 @provider("typing")
 def typing(ctx: Ctx, obs: Observation) -> None:
     """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller)."""
     tc = ctx.cfg.section("observe.typing")
     needs = tc.get("requires_input")   # only when the caller gave text: otherwise it lures the decider into typing junk
     if ctx.app and tc.get("enabled", True) and (not needs or ctx.inputs.get(needs)):
-        obs.affordances.append(Affordance("y0", "keys", "type", str(tc.get("label") or "type the given text at the cursor"), {},
+        where = _cursor_note(ctx, obs)
+        obs.affordances.append(Affordance("y0", "keys", "type", str(tc.get("label") or "type the given text at the cursor") + where, {},
                                           slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
-        obs.affordances.append(Affordance("y1", "keys", "type_submit", str(tc.get("submit_label") or "type the given text at the cursor and press Return"),
+        obs.affordances.append(Affordance("y1", "keys", "type_submit", str(tc.get("submit_label") or "type the given text at the cursor and press Return") + where,
                                           {}, slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
 
 
@@ -826,9 +882,9 @@ def services(ctx: Ctx, obs: Observation) -> None:
     if not sc.get("enabled", True):
         return
 
-    def scan() -> list[dict[str, Any]]:
+    def scan(helper: Any) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for app in installed_apps(ctx.cfg, ctx.helper):
+        for app in installed_apps(ctx.cfg, helper):
             for s in parse_services(app.get("path") or ""):
                 out.append({**s, "app": app.get("name") or ""})
         return out

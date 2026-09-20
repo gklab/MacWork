@@ -29,7 +29,9 @@ helper:
 observe:
   # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
   providers: [window, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
-              typing, apps, shortcuts, files, clipboard, skills, readall, drag]   # drag last: it needs the frames
+              focus, typing, apps, shortcuts, files, clipboard, skills, readall, drag]
+              # focus before typing: "type at the cursor" is labelled with where the cursor turned out to be
+              # drag last: it needs the frames
   ax:
     max_nodes: 3000
     max_depth: 40
@@ -114,6 +116,11 @@ observe:
   # The physical keys — the one fixed list this engine is allowed, because these are not knowledge about any
   # app. App commands come from the app's own menus, or from the planner.
   keys: [return, escape, tab, space, delete, up, down, left, right, home, end, pageup, pagedown]
+  focus:                         # where the keyboard goes: a system-wide question, not one app's tree
+    enabled: true                # what the focused element *is*, never what it holds
+    # the app holding the focus is the one that answers. Measured: 1 ms with Terminal in front, 1585 ms with
+    # an Electron chat app — so it is capped, and an app that will not answer in time is simply not reported
+    timeout_ms: 250
   typing:                        # type the caller's text wherever the cursor is (editors that expose no text field)
     enabled: true
     requires_input: text         # offered only when the caller supplied inputs.text

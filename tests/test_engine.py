@@ -58,6 +58,9 @@ class FakeHelper:
         self.sparse_first = sparse_first
         self.values = {}
         self.typed = ""
+        self.focus_pid = 42            # the cursor is in the app being worked in, unless a test moves it
+        self.focus_app = "文本编辑"
+        self.secure_input = False
 
     def call(self, method, timeout=30.0, **p):
         self.calls.append((method, p))
@@ -99,6 +102,10 @@ class FakeHelper:
             return {"idle_s": 99}
         if method == "ax.fingerprint":
             return {"fingerprint": 1}
+        if method == "ax.focused":
+            # the cursor sits in this app's document, holding whatever was last typed at it
+            return {"focused": {"role": "AXTextArea", "rdesc": "文本", "ref": "focus", "value": self.typed},
+                    "pid": self.focus_pid, "app": self.focus_app, "secure_input": self.secure_input}
         raise AssertionError(f"unexpected helper call {method}")
 
     def did(self, method):

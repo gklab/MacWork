@@ -56,8 +56,22 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
         st["planners"] = probe_planners(cfg, eng.helper)
     _print(st)
     ok = st.get("helper", {}).get("ax_trusted") and "error" not in st.get("decider", {})
+    if getattr(args, "ask", False):
+        # The Mac will not show these prompts for someone else: they have to be asked for by the process that
+        # wants the permission, which is the helper. `permissions.request` existed for this and had no caller,
+        # so the only advice on offer was a path to click through by hand.
+        for kind in ("accessibility", "screen_capture"):
+            try:
+                got = eng.helper.call("permissions.request", kind=kind, timeout=20).get("granted")
+            except Exception as exc:                                        # noqa: BLE001
+                print(f"→ could not ask for {kind}: {exc}", file=sys.stderr)
+                continue
+            print(f"→ {kind}: {'granted' if got else 'not granted — the prompt is open, or it was refused before'}")
+        print("→ a permission refused once is not asked again: System Settings ▸ Privacy & Security", file=sys.stderr)
+        return 0
     if not st.get("helper", {}).get("ax_trusted"):
-        print("\n→ grant Accessibility to the helper (System Settings ▸ Privacy & Security ▸ Accessibility)", file=sys.stderr)
+        print("\n→ grant Accessibility to the helper: `macwork doctor --ask` opens the prompts, or "
+              "System Settings ▸ Privacy & Security ▸ Accessibility", file=sys.stderr)
     if st.get("helper", {}).get("secure_input"):
         # not a failure: it comes and goes with whatever has focus. But while it is on, nothing can be typed.
         print("\n→ secure input is on right now (something with a password field has focus): keystrokes are refused",
@@ -372,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("doctor")
+    p.add_argument("--ask", action="store_true", help="ask the Mac for the permissions the helper needs (opens the system prompts)")
     p.add_argument("--planners", action="store_true", help="also ask every configured planner for a tiny real plan")
     p = sub.add_parser("surfaces", help="read-only: what each provider can see right now, and how long it took")
     p.add_argument("--app")
