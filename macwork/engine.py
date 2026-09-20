@@ -73,6 +73,14 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         # blocked for the whole length of a task, then came back describing a screen from minutes ago.
         self._lock = threading.RLock()      # driving the Mac
         self._slot = threading.Lock()       # the observe → act hand-off, held for an instant
+        # Waiting for that turn is the caller's business too. A second `do` used to block on the lock with
+        # no id and no position, in whatever order the lock felt like; this is the same one-at-a-time rule
+        # with a queue the caller can see, cancel and hand work to without waiting (`submit`).
+        self._qlock = threading.Lock()
+        self._queue: list[tuple[Task, Any]] = []
+        self._done_events: dict[str, threading.Event] = {}
+        self._worker: threading.Thread | None = None
+        self._running: Task | None = None   # counted in a queue position: "how many ahead of me" includes it
         self.models = AppModels(self.cfg)
         self.skills = Skills(self.cfg)
         self.store = Store(self.cfg)
@@ -260,16 +268,15 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
 
     # --------------------------------------------------------------- goal level
     def do(self, goal: str, inputs: dict[str, Any] | None = None, app: str | None = None, progress: Progress | None = None) -> dict[str, Any]:
-        task = Task(goal=goal.strip(), inputs=dict(inputs or {}), app=app)
-        task.memory.facts = Facts(inputs=task.inputs, goal=task.goal, limit=int(self.cfg.get("engine.carry_chars", 600)))
+        """Run a task and wait for it. It waits its turn in the queue like any other; `submit` is the same
+        thing without the waiting."""
+        task = self._new_task(goal, inputs, app)
         if hasattr(self.decider, "warm"):
             threading.Thread(target=self.decider.warm, name="decider-warm", daemon=True).start()
         backend = self.planning_backend if self.cfg.get("planner.warm_on_task_start", True) else None
         if backend is not None and getattr(backend, "local", False) and hasattr(backend, "warm"):
             threading.Thread(target=backend.warm, name="planner-warm", daemon=True).start()   # never blocks the task
-        self.tasks[task.id] = task
-        self._gc()
-        return self._run(task, progress)
+        return self._run_queued(task, progress, None)
 
     def resume(self, task_id: str, inputs: dict[str, Any] | None = None, confirm: bool | None = None,
                choice_id: str | None = None, progress: Progress | None = None) -> dict[str, Any]:
@@ -293,7 +300,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                 return {**task.result(), "error": f"choose one of {list(task.options)}"}
         task.status, task.pending, task.options = "running", {}, {}
         task.held = held
-        return self._run(task, progress)
+        return self._run_queued(task, progress, None)
 
     def _recall(self, task_id: str) -> Task | None:
         """A task the engine does not remember may still be on disk: a restart is not an expiry.
@@ -330,9 +337,12 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         if task is None:   # saying "cancelled" for an id nobody knows only hides a typo or an expired task
             return {"task_id": task_id, "cancelled": False, "error": "unknown or expired task"}
         self._cancelled.add(task_id)
-        if task.status in PENDING:
+        dropped = self._drop_from_queue(task_id)
+        if task.status in PENDING or task.status == "queued" or dropped:
             task.status = "cancelled"
-        return {"task_id": task_id, "cancelled": True}
+        if dropped:                       # it never started, so nobody is waiting on the loop to notice
+            self._done_events.pop(task_id, threading.Event()).set()
+        return {"task_id": task_id, "cancelled": True, "was_queued": dropped}
 
     def _gc(self) -> None:
         ttl = float(self.cfg.get("engine.tasks_ttl_s", 1800))
@@ -396,6 +406,93 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                 self.tidy(task.id)
         return task.result()
 
+    # ----------------------------------------------------------------- the queue
+    def submit(self, goal: str, inputs: dict[str, Any] | None = None, app: str | None = None) -> dict[str, Any]:
+        """Hand in work and get its id back now, rather than waiting for the Mac to be free.
+
+        The Mac has one keyboard and one front app, so tasks run one at a time; that part was already true.
+        What was missing is a queue in front of it. A second caller simply blocked on a lock: no id, no
+        position, no way to change its mind, and — since a Python lock is not first-come-first-served — no
+        promise about what ran next. An MCP client that called `mac_do` twice just stopped responding.
+
+        Nothing is run in parallel here and nothing should be. This is about *waiting* being something the
+        caller can see and cancel.
+        """
+        task = self._new_task(goal, inputs, app)
+        with self._qlock:
+            self._queue.append((task, None))
+            position = len(self._queue) + (1 if self._running is not None else 0)
+            self._ensure_worker()
+        task.status = "queued"
+        return {"task_id": task.id, "status": "queued", "position": position, "goal": task.goal}
+
+    def _new_task(self, goal: str, inputs: dict[str, Any] | None, app: str | None) -> Task:
+        task = Task(goal=goal.strip(), inputs=dict(inputs or {}), app=app)
+        task.memory.facts = Facts(inputs=task.inputs, goal=task.goal, limit=int(self.cfg.get("engine.carry_chars", 600)))
+        self.tasks[task.id] = task
+        self._gc()
+        return task
+
+    def _ensure_worker(self) -> None:
+        """Started on the first queued task, not at construction: an engine used for one `observe` should not
+        leave a thread behind."""
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(target=self._serve_queue, name="macwork-queue", daemon=True)
+            self._worker.start()
+
+    def _serve_queue(self) -> None:
+        while True:
+            with self._qlock:
+                if not self._queue:
+                    self._worker = None
+                    return
+                task, progress = self._queue.pop(0)
+            if task.id in self._cancelled or task.status == "cancelled":
+                task.status = "cancelled"
+                self._done_events.pop(task.id, threading.Event()).set()
+                continue
+            self._running = task
+            try:
+                self._run(task, progress)
+            except Exception:                    # noqa: BLE001  (one task must not take the queue down)
+                log.exception("task %s failed outside the loop", task.id)
+                task.status, task.reason = "failed", "the engine itself failed; see the log"
+            finally:
+                self._running = None
+                self._done_events.pop(task.id, threading.Event()).set()
+
+    def queue(self) -> list[dict[str, Any]]:
+        """What is running and what is waiting, in order. Position 1 is whatever has the Mac right now."""
+        with self._qlock:
+            running = self._running
+            out = ([{"task_id": running.id, "goal": running.goal, "position": 1, "running": True}]
+                   if running is not None else [])
+            return out + [{"task_id": t.id, "goal": t.goal, "position": i + 1 + len(out)}
+                          for i, (t, _) in enumerate(self._queue)]
+
+    def _drop_from_queue(self, task_id: str) -> bool:
+        with self._qlock:
+            before = len(self._queue)
+            self._queue = [(t, pr) for t, pr in self._queue if t.id != task_id]
+            return len(self._queue) < before
+
+    def _run_queued(self, task: Task, progress: Progress | None, timeout: float | None) -> dict[str, Any]:
+        """Put a task in the queue and wait for it: what `do` and `resume` do, so one caller cannot jump
+        ahead of another by calling a different method."""
+        done = threading.Event()
+        with self._qlock:
+            self._done_events[task.id] = done
+            self._queue.append((task, progress))
+            waiting = len(self._queue) > 1
+            self._ensure_worker()
+        if waiting:
+            task.status = "queued"
+        if not done.wait(timeout if timeout is not None else float(self.cfg.get("engine.queue_wait_s", 900))):
+            self._drop_from_queue(task.id)
+            return {**task.result(), "status": "failed",
+                    "reason": "gave up waiting for the Mac to be free (engine.queue_wait_s)"}
+        return task.result()
+
     def _run(self, task: Task, progress: Progress | None) -> dict[str, Any]:
         with self._lock:
             d = self._decider
@@ -441,6 +538,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                           "model": getattr(backend, "model", None) if backend else None}
         out["skills"] = len(self.skills.all())
         out["busy"] = self.busy()
+        out["queue"] = self.queue()
         out["tasks"] = {"in_memory": len(self.tasks), "kept": bool(self.store.enabled)}
         out["dry_run"] = bool(self.cfg.get("audit.dry_run"))
         return out

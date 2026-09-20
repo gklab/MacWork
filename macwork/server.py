@@ -53,6 +53,12 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         return await anyio.to_thread.run_sync(lambda: eng.do(goal, inputs, app, reporter(ctx)))
 
     @mcp.tool()
+    async def mac_submit(goal: str, inputs: dict[str, Any] | None = None, app: str | None = None) -> dict[str, Any]:
+        """Hand in a goal and get its id back at once, without waiting for the Mac to be free. Tasks still run
+        one at a time; this returns the queue position instead of blocking. Follow it with mac_status."""
+        return await anyio.to_thread.run_sync(lambda: eng.submit(goal, inputs, app))
+
+    @mcp.tool()
     async def mac_revert(task_id: str, max_steps: int | None = None) -> dict[str, Any]:
         """Put back what a task changed, most recent change first, using each app's own undo command.
         Refuses while someone has been using the Mac, and stops at the first change it cannot put back."""
