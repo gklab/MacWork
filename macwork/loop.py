@@ -504,6 +504,11 @@ class LoopMixin:
         task.pace.redo = 0
         progress(chosen.label)
         t0 = time.monotonic()
+        # Re-read the floor's verdict for *this* action from its cache (ask=False: no round trip). It was
+        # judged when it was chosen, but other actions have been judged since — backing out, the planner's
+        # suggestions — and the last one to be judged is not necessarily this one.
+        self.cache.pop("floor.last_category", None)
+        self._floor(task.id, ctx, chosen, obs.window if obs else None, ask=False)
         out, events = self._execute(ctx, chosen, params)
         held, why = kept(ctx, chosen, params, out, events)   # did the action keep its promise?
         if held is False:
@@ -516,9 +521,16 @@ class LoopMixin:
             decision["timing"].update(getattr(self, "last_timing", {}))
         sig = look.sig if look else None
         before = f"{sig}:{hash(obs.screen_text)}" if (sig and obs is not None) else None
+        # What the floor judged this action to be, taken from the judgement it already made rather than
+        # asked again. Anything but navigating or entering text altered something, and `revert` works back
+        # through those — a word list of "which verbs are destructive" would hold in two languages at most.
+        effect = str(self.cache.get("floor.last_category") or "")
         task.steps.append(Step(len(task.steps), chosen.label, chosen.id, out.ok, events, decision,
                                round((time.monotonic() - t0) * 1000), out.error, chosen.channel, chosen.verb,
-                               chosen.context, sorted(params), before, key=chosen.key))
+                               chosen.context, sorted(params), before, key=chosen.key, effect=effect))
+        if out.ok and effect not in ("", "navigate", "enter") and ctx.app:
+            task.changed.append({"n": len(task.steps) - 1, "action": chosen.label, "effect": effect,
+                                 "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
         task.prev = {"sig": sig, "label": chosen.label, "ok": out.ok, "events": events, "app": ctx.app,

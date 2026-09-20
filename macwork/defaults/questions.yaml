@@ -154,3 +154,10 @@ planner_fill: |-
   answer with an empty string so it can be fetched first.
   Reply with the exact text only, in "text".
 step_done: Has the current step in the state been accomplished?
+
+# Putting a change back. The app's own undo command is in this list under whatever the app calls it, in
+# whatever language it is running in — nothing in the code knows the word.
+revert_which: |
+  The task did this in {app}: 「{action}」. Which of these actions undoes exactly that, leaving everything
+  else as it is? Choose "none" unless one of them clearly puts that one change back — a command that undoes
+  more than it, closes without saving, or starts something new is not the one.

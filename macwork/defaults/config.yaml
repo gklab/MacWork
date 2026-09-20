@@ -242,6 +242,11 @@ appmodel:
   max_hints: 8
 
 engine:
+  revert:                   # putting back what a task changed (`macwork revert <task>`), newest first
+    max_steps: 8            # how far back to go in one call
+    require_user_idle_s: 5  # refuse while someone has been using the Mac: their keystrokes went into these
+                            # same apps, and an undo would take those back instead
+    on_failure: false       # reverting by itself is an action too; it is asked for, not assumed
   max_steps: 12                  # per run: one do(), or one resume() after the caller answered
   budget_s: 90                   # per run too — the caller's thinking time is not the task's
   total_steps: 48                # over all of a task's runs together

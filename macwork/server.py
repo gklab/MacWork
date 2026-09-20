@@ -53,6 +53,12 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         return await anyio.to_thread.run_sync(lambda: eng.do(goal, inputs, app, reporter(ctx)))
 
     @mcp.tool()
+    async def mac_revert(task_id: str, max_steps: int | None = None) -> dict[str, Any]:
+        """Put back what a task changed, most recent change first, using each app's own undo command.
+        Refuses while someone has been using the Mac, and stops at the first change it cannot put back."""
+        return await anyio.to_thread.run_sync(lambda: eng.revert(task_id, max_steps))
+
+    @mcp.tool()
     async def mac_resume(task_id: str, inputs: dict[str, Any] | None = None, confirm: bool | None = None,
                          choice: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
         """Continue a task that returned need_input (pass inputs), need_confirm (pass confirm) or ambiguous (pass choice)."""

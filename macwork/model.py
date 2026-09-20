@@ -84,6 +84,9 @@ class Step:
     slot_keys: list[str] = field(default_factory=list)
     before: str | None = None                    # screen state the step was taken from (signature + text digest)
     key: str = ""                                # the affordance's language-independent identity, if it had one
+    effect: str = ""                             # the floor's category for it: navigate | enter | delete | send | …
+                                                 # "" = nobody judged it. This is what `revert` reads to know
+                                                 # which steps changed something, rather than judging again
 
 
 TERMINAL = {"done", "failed", "cancelled"}
@@ -149,6 +152,9 @@ class Task:
     plan_i: int = 0
     prev: dict[str, Any] | None = None                       # last step, waiting to learn where it led
     apps: dict[str, Any] = field(default_factory=dict)       # apps touched (bundle -> info), for saving their models
+    changed: list[dict[str, Any]] = field(default_factory=list)   # steps that altered something, newest last:
+                                                 # what `revert` works back through. Judged by the safety
+                                                 # floor, which classifies every action anyway
     start_app: str | None = None
     tries: list[dict[str, str]] = field(default_factory=list)   # moves the planner suggested (offered, not forced)
     started_wall: float = field(default_factory=time.time)

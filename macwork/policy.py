@@ -179,6 +179,7 @@ class PolicyMixin:
                 log.debug("unclassified, falling back to words: %r", a.label[:60])
             return hits
         top, nav = verdict
+        self.cache["floor.last_category"] = top     # what it was judged to be, for the step to record
         if hits:
             if nav >= float(conf.get("release_threshold", 0.9)):
                 self.audit.record("floor", task=task_id, action=a.label, released=True, navigate=round(nav, 3), words=hits)

@@ -181,6 +181,15 @@ def cmd_do(cfg: Config, args: argparse.Namespace) -> int:
     return 0 if res["status"] == "done" else 1
 
 
+def cmd_revert(cfg: Config, args: argparse.Namespace) -> int:
+    """Put back what a task changed, most recent change first."""
+    from .engine import Engine
+
+    res = Engine(cfg).revert(args.task_id, args.max_steps)
+    _print(res)
+    return 0 if res.get("ok") else 1
+
+
 def cmd_serve(cfg: Config, args: argparse.Namespace) -> int:
     from .server import serve
 
@@ -401,6 +410,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("goal")
     p.add_argument("--app")
     p.add_argument("-i", "--input", action="append", default=[], help="key=value (text, query, url, file…)")
+    p = sub.add_parser("revert", help="undo what a task changed (its own apps' undo commands, newest first)")
+    p.add_argument("task_id")
+    p.add_argument("--max-steps", type=int, default=None, help="how far back to go (default: engine.revert.max_steps)")
     p = sub.add_parser("serve")
     p.add_argument("--transport", choices=["stdio", "streamable-http"])
     p.add_argument("--port", type=int)
@@ -431,8 +443,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
-    handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "serve": cmd_serve,
+    handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "revert": cmd_revert, "serve": cmd_serve,
                 "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
+    missing = {c for c in sub.choices} - set(handlers)   # a subcommand with no handler is a KeyError at run time
+    assert not missing, f"no handler for {missing}"
     return handlers[args.cmd](cfg, args)
 
 

@@ -206,6 +206,87 @@ class TidyMixin:
         self._back_out(task, app, "cancel_quit")   # it is asking something (save changes?): keep everything as is
         return False
 
+    # --------------------------------------------------------------- putting back what a task changed
+    def revert(self, task_id: str, max_steps: int | None = None) -> dict[str, Any]:
+        """Undo what this task altered, most recent first.
+
+        `tidy` closes what a task *opened*. What it *changed* stayed changed: a task that typed into the
+        wrong document, renamed the wrong thing or half-finished an edit left the Mac that way, and the only
+        recovery was the person doing it by hand.
+
+        Nothing here knows the word "undo". Every app publishes its own undo command, in its own words, in
+        its own menus, and the menu provider already offers it like any other action — so this asks the
+        decider to pick, among what the app itself offers, the one that puts the last change back. On a
+        German Mac it picks "Widerrufen" without this file having heard of it.
+
+        Which steps changed anything is not judged again either: the safety floor classifies every action
+        before it runs, and anything it did not call navigating or entering text is a change (`Step.effect`).
+
+        Two things it will not do. It will not undo while the person has been using the Mac since — their
+        keystrokes went into these same apps and an undo would take those back instead (HID idle time, the
+        same signal `take_hands` uses). And it stops at the first step it cannot put back rather than
+        carrying on down the stack, because an undo that has lost its place does more harm than none.
+        """
+        task = self.tasks.get(task_id) or self._recall(task_id)
+        if task is None:
+            return {"ok": False, "error": f"no task {task_id}"}
+        rc = self.cfg.section("engine.revert")
+        if not task.changed:
+            return {"ok": True, "reverted": [], "note": "this task changed nothing that the floor could see"}
+        idle_needed = float(rc.get("require_user_idle_s", 5))
+        try:
+            idle = float(self.helper.call("input.idle").get("idle_s", 0))
+        except HelperError:
+            idle = 0.0
+        if idle < idle_needed:
+            return {"ok": False, "error": f"someone has been using the Mac ({idle:.0f}s ago): undoing now would "
+                                          f"take back their work, not this task's", "reverted": []}
+        budget = int(max_steps if max_steps is not None else rc.get("max_steps", 8))
+        done: list[str] = []
+        with self._lock:      # reverting drives the Mac; a next task waits, as it does for tidy
+            for change in list(reversed(task.changed))[:budget]:
+                app = change.get("app") or {}
+                if not app.get("pid"):
+                    break
+                picked = self._undo_one(task, app, change)
+                if picked is None:
+                    return {"ok": False, "reverted": done, "stopped_at": change["action"],
+                            "error": "nothing here puts that back — stopping rather than guessing further"}
+                done.append(f"{change['action']} -> {picked}")
+        task.outputs["reverted"] = done
+        return {"ok": True, "reverted": done, "of": len(task.changed)}
+
+    def _undo_one(self, task: Task, app: dict[str, Any], change: dict[str, Any]) -> str | None:
+        """Ask the app — through the decider — which of its own actions puts one change back. None = nothing does."""
+        try:
+            ctx = self._ctx(task.goal, task.inputs, app, task.id)
+            obs = observe(ctx)
+            # its own commands and keys; not another app, not a file, not a URL. A slot would need text that
+            # nobody has, and the floor gates the rest.
+            pool = [a for a in obs.affordances if a.channel in ("menu", "window", "keys") and not a.slots]
+            flat, _ = arrange(pool, int(self.cfg.get("engine.max_options", 200)) - 1, set())
+            options = {"none": "nothing here puts that back"} | {a.id: a.describe() for a in flat}
+            q = (self.cfg.question("revert_which").replace("{action}", change["action"])
+                 .replace("{app}", str(app.get("name") or "")))
+            ans = self.gate.decide(self.redactor(task.id),
+                                   {"app": app.get("name"), "window": obs.window,
+                                    "screen_text": obs.screen_text[:600],
+                                    "what_was_done": change["action"], "the_goal_it_was_for": task.goal},
+                                   {"back": choice(q, options)}, task=task.id)
+            pick = next((a for a in flat if a.id == (ans.get("back") or {}).get("choice")), None)
+            if pick is None:
+                return None
+            # An undo is itself an action, and it meets the floor like any other: putting something back by
+            # deleting it, or by sending something, is not a quieter thing to do than what it undoes.
+            if self._floor(task.id, ctx, pick, obs.window):
+                log.info("revert: %r is gated by the floor; not doing it unasked", pick.label[:60])
+                return None
+            out, _ = self._execute(ctx, pick, {})
+            return pick.label if out.ok else None
+        except (HelperError, DeciderError) as exc:
+            log.info("revert: %s", exc)
+            return None
+
     def _back_out(self, task: Task, app: dict[str, Any], question: str, window: str = "") -> None:
         """The decider picks, among what the app shows, the control that backs out and keeps everything as it
         is (never one the safety floor gates)."""
