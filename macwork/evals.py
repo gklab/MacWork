@@ -243,6 +243,31 @@ def _leftovers(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> 
     return out
 
 
+# What a "throw this away" button is called. The engine itself never has such a list and never discards
+# anything — `tidy._quit` deliberately cancels a quit that asks about unsaved work, because the work is the
+# user's. An eval sandbox is the one place where the opposite is true: its documents are made by the suite,
+# for the suite, and leaving them piles up windows that change what the next run sees. Two runs of Grapher
+# left ten windows, and the eleventh run was scored INVALID because a chart was already on screen.
+DISCARD = ("不存储", "不保存", "删除", "Don't Save", "Don’t Save", "Delete", "Discard", "Verwerfen", "Ne pas enregistrer")
+
+
+def _discard_prompt(engine: Engine, pid: int) -> bool:
+    """A sheet asking about unsaved work: throw the work away. True when a button was pressed."""
+    try:
+        nodes = engine.helper.call("ax.snapshot", pid=pid, scope="windows", max_depth=5, max_nodes=800).get("nodes", [])
+    except Exception:  # noqa: BLE001
+        return False
+    btn = next((n for n in nodes if n.get("role") == "AXButton" and (n.get("title") or "").strip() in DISCARD), None)
+    if not btn:
+        return False
+    try:
+        engine.helper.call("ax.perform", ref=btn["ref"], action="AXPress")
+    except Exception:  # noqa: BLE001
+        return False
+    time.sleep(0.4)
+    return True
+
+
 def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[dict[str, Any]]:
     """The harness puts the desktop back as the task found it, whatever the engine left: new apps are quit
     (politely), new windows closed by their own close button, dialogs without one dismissed with Escape (only
@@ -256,7 +281,10 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
     for item in left:
         try:
             if item["new_app"]:
-                engine._quit(task, {"pid": item["pid"], "name": item["app"]})
+                for _ in range(4):     # each unsaved document asks separately
+                    engine._quit(task, {"pid": item["pid"], "name": item["app"]})
+                    if not _alive(engine, item["pid"]) or not _discard_prompt(engine, item["pid"]):
+                        break
                 continue
             nodes = engine.helper.call("ax.snapshot", pid=item["pid"], scope="windows", max_depth=1, max_nodes=400).get("nodes", [])
             screen = {int(w["id"]): w for w in engine.helper.call("screen.windows") if w.get("pid") == item["pid"]}
@@ -268,6 +296,7 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
                 if close:
                     engine.helper.call("ax.perform", ref=close["ref"], action="AXPress")
                     time.sleep(0.5)
+                    _discard_prompt(engine, item["pid"])   # "save this?" — in a sandbox, no
                     continue
                 try:
                     _bring_forward(Ctx(engine.cfg, engine.helper, running=engine.helper.call("apps.running")), item["pid"])
@@ -278,6 +307,10 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
         except Exception as exc:  # noqa: BLE001  (best effort; what stays is reported)
             log_harness(f"sweep {item['app']}: {exc}")
     return _leftovers(engine, before)
+
+
+def _alive(engine: Engine, pid: int) -> bool:
+    return any(a.get("pid") == pid for a in engine.helper.call("apps.running"))
 
 
 def log_harness(msg: str) -> None:
