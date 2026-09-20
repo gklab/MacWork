@@ -5,6 +5,7 @@ the effect; the engine does the waiting and the judging.
 
 from __future__ import annotations
 
+import pathlib
 import re
 import subprocess
 import tempfile
@@ -243,15 +244,40 @@ def keys_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 
 @channel("shortcut")
 def shortcut_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    """Run one of the person's own Shortcuts.
+
+    This is also as close as anything gets to *invoking* an App Intent. An app declares its intents and the
+    engine reads them (`appmodel.parse_app_intents`), but there is no public way for one process to perform
+    another app's intent: the system performs them, through Shortcuts, Siri and Spotlight. A shortcut the
+    person made is that route, already built and already authorised by them.
+
+    `shortcuts run` writes what the shortcut *returns* to `--output-path`, not to stdout, so without asking
+    for one the result was dropped on the floor — a shortcut that looks something up ran, succeeded, and
+    told the task nothing.
+    """
     cmd = ["shortcuts", "run", a.target["name"]]
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=True) as f:
+    limit = int(ctx.cfg.get("observe.shortcuts.output_chars", 4000))
+    with tempfile.TemporaryDirectory() as box:
+        out_path = pathlib.Path(box) / "out"
+        cmd += ["--output-path", str(out_path)]
         if params.get("input"):
-            f.write(str(params["input"]))
-            f.flush()
-            cmd += ["--input-path", f.name]
+            in_path = pathlib.Path(box) / "in.txt"
+            in_path.write_text(str(params["input"]), encoding="utf-8")
+            cmd += ["--input-path", str(in_path)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
-    return Outcome(r.returncode == 0, output={"stdout": r.stdout[:2000]} if r.stdout else {},
-                   error=r.stderr.strip()[:200] or None, wait=False)
+        result = ""
+        try:
+            if out_path.exists():
+                result = out_path.read_text(encoding="utf-8", errors="replace")[:limit]
+        except OSError:      # it can return a file of any kind; one that is not text is not an error here
+            result = ""
+    output: dict[str, Any] = {}
+    if r.stdout.strip():
+        output["stdout"] = r.stdout[:2000]
+    if result.strip():
+        # what it returned is something the task has now seen, so it may be reported and written back
+        output["shortcut_result"] = {"name": a.target["name"], "text": result}
+    return Outcome(r.returncode == 0, output=output, error=r.stderr.strip()[:200] or None, wait=False)
 
 
 @channel("service")

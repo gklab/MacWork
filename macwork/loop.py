@@ -544,6 +544,9 @@ class LoopMixin:
         page = (out.output or {}).get("read_window")
         if page and page.get("text"):     # and so is everything a window said, not only the part on screen
             task.memory.facts.record(page.get("app") or "a window", "read in full", page["text"], len(task.steps))
+        ran = (out.output or {}).get("shortcut_result")
+        if ran and ran.get("text"):       # and what one of the person's own Shortcuts handed back
+            task.memory.facts.record(ran["name"], "a shortcut's result", ran["text"], len(task.steps))
         if out.target:
             task.target = out.target
         if out.final:

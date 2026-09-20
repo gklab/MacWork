@@ -150,3 +150,43 @@ def test_a_window_the_tree_does_describe_keeps_its_cache_across_actions():
     cache["actions_done"] = 1
     get_provider("vision")(c, obs_with(frame=[0, 0, 400, 400], actionable=400))
     assert len(helper.did("screen.ocr")) == 1
+
+
+# --------------------------------------------------------------------------- what a Shortcut hands back
+
+def test_a_shortcut_s_result_is_not_dropped_on_the_floor(monkeypatch, tmp_path):
+    """`shortcuts run` writes what the shortcut *returns* to --output-path, not to stdout. Without asking
+    for one, a shortcut that looks something up ran, succeeded and told the task nothing.
+
+    This is also as close as anything gets to invoking an App Intent: no process may perform another app's
+    intent, and a shortcut the person made is the route the system does offer.
+    """
+    import subprocess as sp
+
+    from macwork.act import get_channel
+    from macwork.model import Affordance
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        out = cmd[cmd.index("--output-path") + 1]
+        open(out, "w", encoding="utf-8").write("今天 22°C，多云")
+        return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(sp, "run", fake_run)
+
+    a = Affordance("s0", "shortcut", "run", "run shortcut 「今天天气」", {"name": "今天天气"})
+    out = get_channel("shortcut")(ctx(Helper()), a, {"input": "北京"})
+    assert out.ok and out.output["shortcut_result"]["text"] == "今天 22°C，多云"
+    assert "--input-path" in seen["cmd"] and "--output-path" in seen["cmd"]
+
+
+def test_a_shortcut_that_returns_nothing_reports_nothing(monkeypatch):
+    import subprocess as sp
+
+    from macwork.act import get_channel
+    from macwork.model import Affordance
+
+    monkeypatch.setattr(sp, "run", lambda cmd, **kw: sp.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    out = get_channel("shortcut")(ctx(Helper()), Affordance("s0", "shortcut", "run", "run it", {"name": "x"}), {})
+    assert out.ok and out.output == {}

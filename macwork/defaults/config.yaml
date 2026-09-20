@@ -153,8 +153,11 @@ observe:
     submit_label: type the given text at the cursor and press Return / 在光标处输入文字并回车
   labels:
     web_research: research this on the web (search, open pages, read the relevant passages) / 上网查资料、搜索、读网页
-  shortcuts:
+  shortcuts:                     # the person's own Shortcuts — also the only route by which an app's
+                                 # declared App Intent can actually be performed (no process may perform
+                                 # another app's intent; the system does, through Shortcuts and Siri)
     cache_s: 300
+    output_chars: 4000           # what a shortcut returns comes back as a fact of the task
   menubar_extras:                # the status items at the right-hand end of the menu bar
     enabled: true
     owners_cache_s: 300          # how long the list of which processes own one is reused
