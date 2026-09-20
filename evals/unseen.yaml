@@ -58,13 +58,13 @@ tasks:
     check: {window_contains: ["Example Domain"]}
     cleanup: [{key: "cmd+w"}]
   - id: vlc-about
-    app: VLC
+    app: org.videolan.vlc
     goal: 打开 VLC 的“关于”窗口
     setup: [{activate: true, key: "cmd+q", wait: 1.5}]   # no documents: quitting leaves nothing behind
     check: {window_contains: ["VLC", "关于", "About"]}
     cleanup: [{key: "cmd+w"}]
   - id: numbers-blank
-    app: Numbers表格
+    app: com.apple.iWork.Numbers
     goal: 用 Numbers 新建一个空白表格
     check: {window_contains: ["未命名", "Untitled"]}
     setup: [{close_untitled: *untitled, dont_save: *dont_save}]

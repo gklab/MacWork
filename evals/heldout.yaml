@@ -33,7 +33,7 @@ tasks:
     check: {window_contains: ["Safari"]}
     cleanup: [{activate: true, key: "cmd+w"}]
   - id: safari-open-url
-    app: Safari浏览器
+    app: com.apple.Safari
     goal: 在 Safari 里打开 example.org
     inputs: {url: example.org}
     check: {window_contains: ["Example Domain"]}

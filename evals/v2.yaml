@@ -33,7 +33,7 @@ tasks:
     check: {window_contains: ["蓝牙", "Bluetooth"]}
   - id: a-keynote-new
     category: A navigation
-    app: Keynote讲演
+    app: com.apple.iWork.Keynote
     goal: 新建一个 Keynote 演示文稿（任意主题）
     check: {window_contains: ["未命名", "Untitled"]}
     setup: [{close_untitled: *docs, dont_save: *dont_save}]
@@ -81,14 +81,14 @@ tasks:
     cleanup: [{activate: true, key: "cmd+w"}]
   - id: b-numbers-cell
     category: B multi-step
-    app: Numbers表格
+    app: com.apple.iWork.Numbers
     goal: 用 Numbers 新建一个空白表格，在第一个单元格里输入 42
     check: {screen_contains: ["42"]}
     setup: [{close_untitled: *docs, dont_save: *dont_save}]
     cleanup: [{close_untitled: *docs, dont_save: *dont_save}]
   - id: b-safari-form
     category: B multi-step
-    app: Safari浏览器
+    app: com.apple.Safari
     goal: 在 Safari 里打开 {eval_dir}/form.html，在页面的搜索框里输入 jev 并提交
     fixtures: [{path: form.html, text: "<html><head><title>Search Form</title></head><body><form onsubmit=\"document.getElementById('r').textContent='Searched: '+document.getElementById('q').value;return false\"><input id=q placeholder='search' aria-label='search'><button>Go</button></form><p id=r></p></body></html>"}]
     check: {screen_contains: ["Searched: jev"]}
@@ -110,7 +110,7 @@ tasks:
     check_app: com.apple.TextEdit
     check: {window_contains: ["note.txt", "note"]}
     # 2026-09-20 harness fix: note.txt stayed open in TextEdit and polluted later checks there; close it too
-    cleanup: [{activate: true, key: "cmd+w"}, {close_untitled: *docs, dont_save: *dont_save, app: 文本编辑}]
+    cleanup: [{activate: true, key: "cmd+w"}, {close_untitled: *docs, dont_save: *dont_save, app: com.apple.TextEdit}]
   - id: c-safari-code-textedit
     category: C cross-app
     goal: 在 Safari 里打开 {eval_dir}/code.html，把页面上的验证码写进一个新的文本编辑文稿
