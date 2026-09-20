@@ -18,6 +18,8 @@ from .engine import Engine
 INSTRUCTIONS = """Operate this Mac through native interfaces (apps, menus, Accessibility, files, shortcuts, web).
 Use mac_do for a goal; it returns status done | failed | blocked | need_input | need_confirm | ambiguous | cancelled.
 blocked: something only the user can do (sign in, a password, a system permission) stands in the way — tell them.
+need_continue: the task is making progress but used this turn's step or time budget; call mac_resume with no
+arguments to carry on (it keeps everything it has learned, and stops for good at its whole-task ceiling).
 need_input: call mac_resume with inputs for the listed keys (the decider cannot write text, so text to type,
 search queries and file names always come from you; pass them up front in `inputs` when you know them —
 common keys: text, query, url, file). need_confirm: ask the user, then mac_resume(confirm=true/false).
@@ -29,6 +31,7 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
     cfg = cfg or Config.load()
     eng = engine or Engine(cfg)
     mcp = MCPServer(cfg.get("server.name", "macwork"), instructions=INSTRUCTIONS)
+    mcp._macwork_engine = eng      # so serve() can let go of it when the transport ends
 
     def reporter(ctx: Context | None):
         count = {"n": 0}
@@ -46,7 +49,8 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
     @mcp.tool()
     async def mac_do(goal: str, inputs: dict[str, Any] | None = None, app: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
         """Accomplish a goal on this Mac. `inputs` carries any text the task needs (text, query, url, file…);
-        `app` names the app to work in (default: the frontmost one)."""
+        `app` names the app to work in (default: the frontmost one). A long task may come back as
+        `need_continue`: it is getting somewhere but this turn's budget is spent — call mac_resume."""
         return await anyio.to_thread.run_sync(lambda: eng.do(goal, inputs, app, reporter(ctx)))
 
     @mcp.tool()
@@ -98,7 +102,12 @@ def serve(cfg: Config | None = None) -> None:
     cfg = cfg or Config.load()
     mcp = build(cfg)
     transport = cfg.get("server.transport", "stdio")
-    if transport == "stdio":
-        mcp.run("stdio")
-    else:
-        mcp.run(transport, host=cfg.get("server.host", "127.0.0.1"), port=int(cfg.get("server.port", 8977)))
+    try:
+        if transport == "stdio":
+            mcp.run("stdio")
+        else:
+            mcp.run(transport, host=cfg.get("server.host", "127.0.0.1"), port=int(cfg.get("server.port", 8977)))
+    finally:   # the helper child, Chromium and the task database do not go away on their own
+        engine = getattr(mcp, "_macwork_engine", None)
+        if engine is not None:
+            engine.close()

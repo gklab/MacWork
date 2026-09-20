@@ -87,7 +87,9 @@ class Step:
 
 
 TERMINAL = {"done", "failed", "cancelled"}
-PENDING = {"need_input", "need_confirm", "ambiguous"}
+# need_continue: this run's share of steps or seconds is gone, but the task is getting somewhere and has
+# not touched its whole-task ceiling. Everything it learned is kept; mac_resume picks it up.
+PENDING = {"need_input", "need_confirm", "ambiguous", "need_continue"}
 # plus "blocked": terminal for the engine — something only the user can do (sign in, password, permission) stands in the way
 
 
@@ -134,7 +136,8 @@ class Task:
     inputs: dict[str, Any] = field(default_factory=dict)
     app: str | None = None                       # optional app to work in (name or bundle id)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
-    status: str = "running"                      # running | done | failed | cancelled | need_input | need_confirm | ambiguous
+    status: str = "running"                      # running | done | failed | cancelled | need_input | need_confirm
+                                                 #  | ambiguous | need_continue
     steps: list[Step] = field(default_factory=list)
     pending: dict[str, Any] = field(default_factory=dict)   # what the caller must answer to resume
     outputs: dict[str, Any] = field(default_factory=dict)   # results worth returning (web notes, files found…)

@@ -206,6 +206,9 @@ engine:
   budget_s: 90                   # per run too — the caller's thinking time is not the task's
   total_steps: 48                # over all of a task's runs together
   total_budget_s: 600            # working time summed over the runs; waiting for the caller does not count
+  checkpoint: true               # a run that uses up its steps or seconds hands back `need_continue` rather
+                                 # than failing, as long as the task is still getting somewhere. Raising
+                                 # max_steps instead only means a task going wrong runs longer unnoticed
   max_decisions: 120             # decider requests one run may make (a step can need several)
   max_cost_usd: 0.5              # 0 = no ceiling
   max_options: 200               # Jev accepts at most 255 per choice

@@ -147,8 +147,12 @@ def cmd_do(cfg: Config, args: argparse.Namespace) -> int:
 
     eng = Engine(cfg)
     res = eng.do(args.goal, _inputs(args.input), args.app, progress=lambda m: print(f"  → {m}", file=sys.stderr))
-    while res["status"] in ("need_input", "need_confirm", "ambiguous") and sys.stdin.isatty():
+    while res["status"] in ("need_input", "need_confirm", "ambiguous", "need_continue") and sys.stdin.isatty():
         p = res.get("pending", {})
+        if res["status"] == "need_continue":
+            print(f"  → {res.get('reason')}; carrying on", file=sys.stderr)
+            res = eng.resume(res["task_id"], progress=lambda m: print(f"  → {m}", file=sys.stderr))
+            continue
         if res["status"] == "need_confirm":
             ok = input(f"confirm: {p['confirm']['label']} ? [y/N] ").strip().lower() == "y"
             res = eng.resume(res["task_id"], confirm=ok, progress=lambda m: print(f"  → {m}", file=sys.stderr))

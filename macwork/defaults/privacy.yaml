@@ -27,5 +27,7 @@ redact:
   names: []                            # names always hidden (backs up the tagger, which misses some)
   max_clauses: 600                     # clauses tagged per request
   entity_cache: 20000                  # tagged clauses remembered across tasks (menus and buttons repeat)
+  table_limit: 5000                    # pseudonyms kept for the long-lived readers (observe / web / learn)
+                                       # before their table is started afresh; a task's own table is never cut
   never_send: []                       # regexes; a field matching one is withheld entirely
   keep: []                             # exact strings never redacted (e.g. app names NaturalLanguage mistakes for people)

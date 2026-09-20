@@ -79,7 +79,15 @@ class LoopMixin:
                 return self._finish(task, "cancelled", "cancelled by the caller")
             spent = self._overspent(task, e)
             if spent:
-                if last_look is not None:         # out of budget: still say *why*
+                # A run's budget running out is not the task failing. If the task has somewhere left to go —
+                # it is making progress and has not used its whole-task ceiling — it is handed back for the
+                # caller to continue, with everything it has learned kept. Making max_steps bigger instead
+                # would mean a task that goes wrong runs for longer before anyone notices.
+                if self._can_continue(task, e, spent):
+                    return self._finish(task, "need_continue", spent,
+                                        {"continue_with": "mac_resume", "steps_taken": len(task.steps),
+                                         "of_at_most": int(e.get("total_steps", 48))})
+                if last_look is not None:         # out of budget for good: still say *why*
                     return self._diagnose(task, last_look.ctx, last_look.obs, last_look.state, reason=spent)
                 return self._finish(task, "failed", spent)
             self._yield_to_user(task, deadline)
@@ -130,6 +138,20 @@ class LoopMixin:
             if ceiling > 0 and spent >= ceiling:
                 return f"this run has spent its budget of ${ceiling:.2f}"
         return ""
+
+    def _can_continue(self, task: Task, e: dict[str, Any], spent: str) -> bool:
+        """Is there anything left to continue *with*? Only this run's share is gone, the task has done
+        something, and the last thing it did had an effect — a task going nowhere should stop going."""
+        if not bool(e.get("checkpoint", True)) or not task.steps:
+            return False
+        if "over all its turns" in spent or "budget of $" in spent or "as many times" in spent:
+            return False                                   # a whole-task ceiling: that is the end of it
+        last = task.steps[-1]
+        if not (last.ok and last.events):
+            return False
+        # whether the task is getting somewhere is the decider's judgement, not a count of UI events
+        progress = last.decision.get("progress")
+        return progress is None or float(progress) >= float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
 
     def _step_context(self, task: Task) -> Ctx:
         ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id)

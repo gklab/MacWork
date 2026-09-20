@@ -518,9 +518,19 @@ def test_out_of_budget_the_decider_says_why_and_the_planner_words_it(tmp_path):
     eng._planner = FakeBackend([{"steps": [], "inputs": {}, "try": [], "blocked": "Sign in to the app first"}])
     res = eng.do("打开设置")
     assert res["status"] == "blocked" and len(res["steps"]) == 2 and res["reason"].endswith("Sign in to the app first")
-    d = ScriptedDecider([{"pick": "新建文稿"}] * 6)
-    res = Engine(cfg(tmp_path, config={"engine": {"max_steps": 2}}), helper=FakeHelper(), decider=d).do("打开设置")
-    assert res["status"] == "failed" and res["pending"]["tried"]
+    # still getting somewhere when this run's steps ran out: handed back to be continued, not failed
+    d = ScriptedDecider([{"pick": "新建文稿"}] * 12)
+    eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 2}}), helper=FakeHelper(), decider=d)
+    res = eng.do("打开设置")
+    assert res["status"] == "need_continue" and res["pending"]["steps_taken"] == 2
+
+    # …and it stops for good at the whole-task ceiling, however many turns it is given
+    d2 = ScriptedDecider([{"pick": "新建文稿"}] * 12)
+    eng2 = Engine(cfg(tmp_path, config={"engine": {"max_steps": 2, "total_steps": 4}}), helper=FakeHelper(), decider=d2)
+    res2 = eng2.do("打开设置")
+    while res2["status"] == "need_continue":
+        res2 = eng2.resume(res2["task_id"])
+    assert res2["status"] in ("failed", "blocked") and len(res2["steps"]) == 4
 
 
 def test_the_decider_can_open_a_folded_group_before_acting(tmp_path):

@@ -16,6 +16,7 @@ Three levels of control, same engine:
 
 from __future__ import annotations
 
+import atexit
 import logging
 import threading
 import time
@@ -80,6 +81,22 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         self._planner: Any = None
         self.last_timing: dict[str, int] = {}
         self.helper.on_reset = self._helper_restarted
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        """Let go of everything this engine started.
+
+        Nothing called this: `macwork serve` ending left the helper child, Playwright's Chromium and the
+        open database behind, and the pseudonym tables of the three long-lived redactors (observe, web,
+        learn) grew for the life of the process because only per-task ones were ever collected.
+        """
+        browser = self.cache.pop("web.browser", None)
+        for shut in (getattr(browser, "reset", None), self.store.close, getattr(self.helper, "close", None)):
+            try:
+                if shut:
+                    shut()
+            except Exception as exc:  # noqa: BLE001  (shutting down must not raise on the way out)
+                log.info("while closing: %s", exc)
 
     def _helper_restarted(self) -> None:
         """A new helper process means every Accessibility reference handed out by the old one is gone, and pids
@@ -142,6 +159,14 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         return self.cache["system.locale"]
 
     def redactor(self, key: str) -> Redactor:
+        # observe / web / learn are not tasks and never expire, so their pseudonym tables grew for the life
+        # of the process. They are started afresh once they get big; a token only has to be stable within
+        # one piece of work, and for those three a piece of work is one call.
+        keeper = self._redactors.get(key)
+        if keeper is not None and key in ("observe", "web", "learn") \
+                and len(keeper.table) > int(self.cfg.get("redact.table_limit", 5000, doc="privacy")):
+            log.info("pseudonym table for %r restarted at %d entries", key, len(keeper.table))
+            self._redactors.pop(key, None)
         if key not in self._redactors:
             self._redactors[key] = Redactor(self.cfg, entities=self._entities, protect=self._mac_vocabulary,
                                             detect=self._detect)
