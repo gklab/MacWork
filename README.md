@@ -95,11 +95,23 @@ python -m playwright install chromium   # for web_research
 macwork helper install                 # builds the Swift helper into ~/Applications/MacWork Helper.app
 macwork key set                        # stores your TypeSafe API key in the login Keychain
 macwork doctor
+macwork surfaces                       # read-only: what each capability surface can see right now
 ```
 
 Grant **MacWork Helper** Accessibility access (System Settings ▸ Privacy & Security ▸ Accessibility). Apps you
 drive through AppleScript ask for Automation permission the first time. During development the helper can run
 as a child of your terminal instead (`helper.mode: stdio`), inheriting the terminal's permissions.
+
+macOS grants Accessibility to a *code signature*, not to a path. `helper install` uses a Developer ID from
+your Keychain if it finds one (or `--sign <identity>`), so the grant survives rebuilds; without one it signs
+ad hoc and you will be asked again every time you reinstall.
+
+To keep the engine running instead of starting it per call:
+
+```sh
+macwork daemon install     # a LaunchAgent: starts at login, comes back from a crash
+macwork daemon status
+```
 
 ## Use
 

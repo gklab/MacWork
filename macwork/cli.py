@@ -11,6 +11,7 @@
   macwork skills [--delete ID]           learned routines
   macwork eval [--only a,b]              run the unseen-app suite and write a report
   macwork helper build|install|path      build / install the native helper app
+  macwork daemon install|uninstall|status  keep the engine running as a LaunchAgent
   macwork audit [-n N]                   what was sent to the decider
 """
 
@@ -245,6 +246,71 @@ def _swift_env() -> dict[str, str]:
     return env
 
 
+def signing_identity() -> str | None:
+    """A Developer ID on this Mac, if there is one.
+
+    Accessibility is granted to a *code signature*, not to a path. Ad-hoc signing gives a new one on every
+    rebuild, so the permission has to be granted again every time — which is why the helper could never
+    simply stay installed. A Developer ID keeps the same identity across rebuilds. Never written into the
+    repo: it is asked of the Keychain, and `--sign` overrides.
+    """
+    r = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"],
+                       capture_output=True, text=True, check=False)
+    for line in (r.stdout or "").splitlines():
+        if '"Developer ID Application:' in line:
+            return line.split('"')[1]
+    return None
+
+
+DAEMON_PLIST = "dev.macwork.agent"
+
+
+def daemon_path() -> Path:
+    return Path("~/Library/LaunchAgents").expanduser() / f"{DAEMON_PLIST}.plist"
+
+
+def cmd_daemon(cfg: Config, args: argparse.Namespace) -> int:
+    """Keep the engine running, so a caller can reach it without starting it first."""
+    path = daemon_path()
+    if args.action == "status":
+        r = subprocess.run(["launchctl", "list", DAEMON_PLIST], capture_output=True, text=True, check=False)
+        _print({"plist": str(path) if path.exists() else None, "loaded": r.returncode == 0,
+                "detail": (r.stdout or r.stderr).strip()[:400] or None})
+        return 0
+    if args.action == "uninstall":
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{DAEMON_PLIST}"], capture_output=True, check=False)
+        path.unlink(missing_ok=True)
+        print(f"removed {path}")
+        return 0
+
+    exe = shutil.which("macwork") or str(Path(sys.executable).parent / "macwork")
+    if not Path(exe).exists():
+        print("macwork is not on PATH: install the package first (pip install -e .)", file=sys.stderr)
+        return 1
+    logs = Path("~/Library/Logs/macwork").expanduser()
+    logs.mkdir(parents=True, exist_ok=True)
+    plist = {
+        "Label": DAEMON_PLIST,
+        "ProgramArguments": [exe, "serve", "--transport", args.transport],
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},   # come back from a crash, stay down after a clean stop
+        "ProcessType": "Interactive",             # it drives the UI: not to be throttled as a background job
+        "StandardOutPath": str(logs / "daemon.out.log"),
+        "StandardErrorPath": str(logs / "daemon.err.log"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(plistlib.dumps(plist))
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{DAEMON_PLIST}"], capture_output=True, check=False)
+    r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], capture_output=True, text=True, check=False)
+    print(f"wrote {path}")
+    if r.returncode != 0:
+        print(f"→ launchctl said: {(r.stderr or r.stdout).strip()[:300]}", file=sys.stderr)
+        return 1
+    print(f"the engine is running at http://{cfg.get('server.host', '127.0.0.1')}:{cfg.get('server.port', 8977)}/mcp"
+          if args.transport != "stdio" else "loaded")
+    return 0
+
+
 def cmd_helper(cfg: Config, args: argparse.Namespace) -> int:
     src = ROOT / "helper"
     binary = src / ".build" / "release" / "macwork-helper"
@@ -270,12 +336,16 @@ def cmd_helper(cfg: Config, args: argparse.Namespace) -> int:
             "NSAppleEventsUsageDescription": "macwork operates apps on your behalf when you ask it to.",
         }
         (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(plist))
-        sign = args.sign or "-"
-        subprocess.run(["codesign", "--force", "--sign", sign, "--identifier", BUNDLE_ID, str(app)], check=True)
+        sign = args.sign or signing_identity() or "-"
+        cmd = ["codesign", "--force", "--sign", sign, "--identifier", BUNDLE_ID]
+        if sign != "-":
+            cmd += ["--options", "runtime", "--timestamp"]   # what a Developer ID signature is expected to carry
+        subprocess.run(cmd + [str(app)], check=True)
         print(f"installed {app} (signed with {'ad-hoc' if sign == '-' else sign})")
         print("next: open it once and grant Accessibility: System Settings ▸ Privacy & Security ▸ Accessibility ▸ MacWork Helper")
         if sign == "-":
-            print("note: ad-hoc signatures change on every rebuild, so macOS asks for the permission again after reinstalling")
+            print("note: no Developer ID found, so this is ad-hoc — macOS ties Accessibility to the signature, and an\n"
+                  "      ad-hoc one changes on every rebuild, so the permission has to be granted again each time")
     return 0
 
 
@@ -349,6 +419,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("helper")
     p.add_argument("action", choices=["build", "install", "path"])
     p.add_argument("--sign", help="codesign identity (default: ad-hoc)")
+    p = sub.add_parser("daemon", help="keep the engine running (a LaunchAgent), so callers need not start it")
+    p.add_argument("action", choices=["install", "uninstall", "status"])
+    p.add_argument("--transport", default="streamable-http", choices=["stdio", "streamable-http"])
     p = sub.add_parser("audit")
     p.add_argument("-n", type=int, default=20)
     sub.add_parser("privacy-check", help="measure redaction on a synthetic corpus (leaks, over-redaction)")
@@ -359,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
     handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "web": cmd_web, "serve": cmd_serve,
-                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
+                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     return handlers[args.cmd](cfg, args)
 
 

@@ -105,3 +105,45 @@ def test_looking_does_not_wait_for_a_task_to_finish(tmp_path):
     assert _t.monotonic() - started < 1.5, "looking waited for the lock"
     assert seen["affordances"], "and it really did look"
     release.set()
+
+
+# --- staying installed, and staying running ---------------------------------------------------------------
+
+def test_a_developer_id_is_found_rather_than_written_down(monkeypatch):
+    """Accessibility is granted to a signature, not a path. Ad-hoc signing gives a new one on every rebuild,
+    which is why the permission had to be granted again each time and the helper could never just stay put."""
+    import subprocess
+
+    from macwork import cli
+
+    listing = (
+        '  1) AAAA "Apple Development: Someone (X1)"\n'
+        '  2) BBBB "Developer ID Application: Their Company (B3K3T2WPR6)"\n'
+        '     2 valid identities found\n')
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: type("R", (), {"stdout": listing, "returncode": 0})())
+    assert cli.signing_identity() == "Developer ID Application: Their Company (B3K3T2WPR6)"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "  0 valid identities found\n",
+                                                                          "returncode": 1})())
+    assert cli.signing_identity() is None, "no identity is not the same as a made-up one"
+
+
+def test_the_daemon_plist_says_what_it_should(tmp_path, monkeypatch):
+    import plistlib
+    import subprocess
+
+    from macwork import cli
+    from macwork.config import Config
+
+    monkeypatch.setattr(cli, "daemon_path", lambda: tmp_path / "dev.macwork.agent.plist")
+    monkeypatch.setattr(cli.shutil, "which", lambda _: str(tmp_path / "macwork"))
+    (tmp_path / "macwork").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+
+    args = type("A", (), {"action": "install", "transport": "streamable-http"})()
+    assert cli.cmd_daemon(Config.load(user_dir=tmp_path / "none"), args) == 0
+
+    plist = plistlib.loads((tmp_path / "dev.macwork.agent.plist").read_bytes())
+    assert plist["ProgramArguments"][1:] == ["serve", "--transport", "streamable-http"]
+    assert plist["KeepAlive"] == {"SuccessfulExit": False}, "come back from a crash, stay down after a clean stop"
+    assert plist["ProcessType"] == "Interactive", "it drives the UI and must not be throttled"
