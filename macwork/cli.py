@@ -190,6 +190,33 @@ def cmd_revert(cfg: Config, args: argparse.Namespace) -> int:
     return 0 if res.get("ok") else 1
 
 
+def cmd_watch(cfg: Config, args: argparse.Namespace) -> int:
+    """Wait for the Mac to announce something and hand the matching work to the engine."""
+    from .engine import Engine
+    from .watch import Watcher, triggers_path
+
+    eng = Engine(cfg)
+    w = Watcher(eng, cfg)
+    if not w.triggers:
+        print(f"no triggers in {triggers_path(cfg)} — see docs/triggers.md for the shape", file=sys.stderr)
+        return 1
+    started = w.start()
+    _print(started)
+    if args.check:                       # what it would watch, without waiting for anything
+        w.stop()
+        return 0
+    print(f"watching; {len(w.triggers)} trigger(s). ^C to stop.", file=sys.stderr)
+    try:
+        w.run(args.every, args.seconds)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        w.stop()
+        eng.close()
+    _print({"fired": w.fired})
+    return 0
+
+
 def cmd_serve(cfg: Config, args: argparse.Namespace) -> int:
     from .server import serve
 
@@ -413,6 +440,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("revert", help="undo what a task changed (its own apps' undo commands, newest first)")
     p.add_argument("task_id")
     p.add_argument("--max-steps", type=int, default=None, help="how far back to go (default: engine.revert.max_steps)")
+    p = sub.add_parser("watch", help="run tasks when the Mac announces something (~/.config/macwork/triggers.yaml)")
+    p.add_argument("--check", action="store_true", help="say what would be watched and stop")
+    p.add_argument("--every", type=float, default=None, help="seconds between polls (default: watch.poll_s)")
+    p.add_argument("--seconds", type=float, default=None, help="stop after this long (default: never)")
     p = sub.add_parser("serve")
     p.add_argument("--transport", choices=["stdio", "streamable-http"])
     p.add_argument("--port", type=int)
@@ -443,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
-    handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "revert": cmd_revert, "serve": cmd_serve,
+    handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "revert": cmd_revert, "watch": cmd_watch, "serve": cmd_serve,
                 "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     missing = {c for c in sub.choices} - set(handlers)   # a subcommand with no handler is a KeyError at run time
     assert not missing, f"no handler for {missing}"

@@ -160,7 +160,14 @@ class Helper:
                         reply.get("id"), want_id, method)
 
     def _reset(self) -> None:
-        """Forget a helper that died (its pipe broke or it exited); the next call starts a fresh one."""
+        """Forget a helper that died (its pipe broke or it exited); the next call starts a fresh one.
+
+        Loudly. Restarting is right — a crash should not take the task with it — but doing it in silence
+        hides the crash itself: a helper that died on every file event looked like "file events never
+        arrive", and anything it was holding (subscriptions, element references) was gone with no sign.
+        """
+        if self.mode:
+            log.warning("helper died and is being restarted: anything it was holding is gone")
         try:
             if self._sock:
                 self._sock.close()

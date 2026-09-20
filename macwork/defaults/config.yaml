@@ -21,6 +21,12 @@ decider:
   usd_per_mtok: 0.042       # only for the cost log (the API reports tokens, not money)
   keychain_service: macwork   # key comes from TYPESAFE_API_KEY, else this Keychain item
 
+watch:                      # `macwork watch`: run tasks when the Mac announces something
+  file: ~/.config/macwork/triggers.yaml   # the rules — yours, not shipped: which apps and folders matter
+                                          # is exactly the knowledge this project may not have in advance
+  poll_s: 2.0               # the helper buffers events; this is how often they are collected
+  clipboard_every_s: 1.0    # the pasteboard announces nothing, so it is the one source that is looked at
+
 helper:
   mode: auto                # auto | socket | stdio
   socket: ~/Library/Application Support/macwork/helper.sock

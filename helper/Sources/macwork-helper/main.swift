@@ -73,6 +73,8 @@ dispatcher.register("system.locale") { _ in
      "region": Locale.current.region?.identifier as Any? ?? NSNull()]
 }
 dispatcher.register("screen.capture", offMain: true, screenCapture)
+dispatcher.register("events.watch", eventsWatch)
+dispatcher.register("events.poll", eventsPoll)
 dispatcher.register("llm.available", llmAvailable)
 dispatcher.register("llm.generate", offMain: true, llmGenerate)
 
