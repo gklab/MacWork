@@ -202,7 +202,7 @@ planner:
   when: auto                     # auto: consult when the decider calls for a different route, a second opinion, or text | always: plan first | never
   warm_on_task_start: true       # wake a local planner in the background when a task starts (weights get paged out when idle)
   context_chars: 600
-  context_actions: 120           # labels the planner sees (window first, then menus). Each one is prompt it must read
+  context_actions: 40           # labels the planner sees (window first, then menus). Each one is prompt it must read
                                  # before it can answer: 400 labels meant ~5000 tokens and ~40 s of prefill on a dense model
   context_skip_channels: [app, shortcut, file]   # not worth the planner's attention budget (running apps are listed separately)
   max_steps: 8                   # sub-goals per plan
@@ -297,7 +297,8 @@ engine:
   max_waits: 4                   # times per task the decider may choose to wait for a loading/busy app
   wait_s: 1.5
   fold_groups_over: 60           # a group larger than this (every installed app) is always one "look into" away
-  floor_batch: 8                 # floor classifications carried along with a step's own request (Jev answers in parallel)
+  floor_batch: 24                 # floor classifications carried along with a step's own request (Jev answers in parallel)
+  floor_grace_s: 0.15            # …and the step waits no longer than this for them: a late verdict still serves the next step
   max_looks: 6                   # times per task the decider may open a folded group of options to read it
   top_k: 3                       # alternatives returned when the user must choose
   # Every number under `thresholds` is a probability cut-off, and every one of them is a *safety* choice:

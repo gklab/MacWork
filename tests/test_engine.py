@@ -303,10 +303,13 @@ def test_do_happy_path_runs_menu_then_done(tmp_path):
     res = eng.do("新建一个文稿")
     assert res["status"] == "done" and res["steps"] == ["menu 文件 ▸ 新建文稿 (⌘N)"]
     assert eng.helper.did("ax.perform")[0]["ref"] == "g1.6"
-    # two steps, plus two floor requests for the first: the batch of what the words flagged, which rides along
-    # with the step's own request, and one for the action actually chosen (the words say nothing about it, and a
-    # miss must not read as "safe" — that is what makes the floor hold in a language the word list never saw)
-    assert res["decider"]["calls"] == 4
+    # two steps, plus one floor request for the first: every action on offer is classified in that one batch,
+    # which rides along with the step's own request. The chosen action is in it, so no second round trip is
+    # needed before acting — and it is still classified, because a word list that misses must never read as
+    # "safe"; that is what makes the floor hold in a language the words never saw.
+    assert res["decider"]["calls"] == 3
+    floor = [q for _, q in eng.decider.side if any(k.startswith("floor") for k in q)]
+    assert floor and any("新建文稿" in q["instructions"] for q in floor[0].values())
     second_state = eng.decider.seen[1][0]
     assert "AXValueChanged" in second_state["last_action"]           # the decider sees what the UI did
 

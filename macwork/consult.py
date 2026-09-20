@@ -61,6 +61,15 @@ class ConsultMixin:
         backend = self.planning_backend
         if backend is None or self.cfg.get("planner.when", "auto") == "never" or task.pace.replans >= int(self.cfg.get("planner.max_replans", 2)) + 1:
             return False
+        # Asking the same question of the same screen gets the same answer, and this answer is not cheap:
+        # measured on this Mac, one replan is 1.5-2.7s of local model, and one task spent 12 of its 21
+        # seconds being told the same thing three times. What it was asked about is the screen and how far
+        # the plan has got; when neither has moved, the engine acts on what it already has.
+        here = (self._signature(ctx.app, obs) if ctx is not None and obs is not None else "", task.plan_i, len(task.steps) > 0)
+        if here in task.memory.consulted:
+            log.info("planner: already asked about this screen")
+            return False
+        task.memory.consulted.add(here)
         planning = Planning(self.cfg, backend, self.redactor(task.id), self.audit)
         try:
             ctx_brief = self._brief(task, ctx, obs, affs)

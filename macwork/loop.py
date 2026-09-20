@@ -228,6 +228,11 @@ class LoopMixin:
             questions["verified"] = noul(self.cfg.question("done_verify"))   # judged in parallel: no extra round trip
         if task.wants_answer is None:              # once per task: is the goal a question whose answer must come back?
             questions["wants_answer"] = noul(self.cfg.question("wants_answer"))
+        # Not asked here, and the reason is worth keeping: extra questions are free (the decider answers four
+        # in the time it answers one — 417ms against 580ms, measured), so it was asked what it would do *after*
+        # the action it chose, to take that step without a second round trip. Against what was actually chosen
+        # next, the prediction was right 3 times in 28 (11%), and no more often when it said it was sure. A
+        # step taken on that is a step taken at random, so the round trip stays.
         floor_q, floor_state, floor_map = self._floor_questions(ctx, flat, obs.window)
         task.outputs["result_screen"] = {"app": state["app"], "window": obs.window, "text": obs.screen_text[: int(e.get("result_chars", 800))]}
         task.memory.facts.record(state["app"], obs.window, obs.screen_text, len(task.steps))   # only what was seen may be written
@@ -315,6 +320,7 @@ class LoopMixin:
                 log.info("floor classification: %s", exc)
                 return
             floor.update(answers)      # all at once, so the main thread never reads a half-filled verdict set
+            self._floor_answers(floor, look.floor_map)   # recorded by whoever gets the answer, early or late
             classified.set()
         side = threading.Thread(target=classify, name="floor", daemon=True) if look.floor_questions else None
         if side:
@@ -324,12 +330,15 @@ class LoopMixin:
         except DeciderError as exc:
             return self._finish(task, "failed", f"decider: {exc}")
         finally:
+            # The step does not wait this out. Classifying more actions in that one request made it the
+            # slower of the two and the step sat on it: +191 ms a step, measured. A verdict that lands late
+            # is not wasted — verdicts are cached per action, so it is there for the next step — and an
+            # action chosen before its verdict arrives is classified on its own, as it always was. The short
+            # grace is only to catch the common case where it is about to land anyway.
             if side:
-                side.join(timeout=float(self.cfg.get("decider.timeout_s", 10)) + 2)
-                if classified.is_set():
-                    self._floor_answers(floor, look.floor_map)
-                else:   # it never came back: those actions stay gated by their words, which is the safe side
-                    log.info("floor classification did not return in time for step %d", len(task.steps))
+                side.join(timeout=float(self.cfg.get("engine.floor_grace_s", 0.15)))
+                if not classified.is_set():
+                    log.debug("floor classification still out at step %d", len(task.steps))
         look.timing["decide"] = round((time.monotonic() - t_dec) * 1000)
         look.timing["decide_net"] = round(self.decider.last_ms)
         if look.fp_seen is not None and self._fingerprint(look.ctx) not in (look.fp_seen, None) and not self._moves_by_itself(look.ctx, look.obs):

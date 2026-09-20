@@ -23,6 +23,14 @@ from .privacy import Redactor
 log = logging.getLogger(__name__)
 
 
+_VOLATILE = re.compile(r"\s*\((?:now|selected)[^)]*\)")
+
+
+def _steady(label: str) -> str:
+    """A label without the part that changes under the user's hands."""
+    return _VOLATILE.sub("", label or "").strip()
+
+
 class PolicyMixin:
     def _host_bundles(self) -> set[str]:
         """The apps this engine runs under (the terminal or client that started it), found by walking up the
@@ -81,9 +89,15 @@ class PolicyMixin:
         return hits
 
     def _floor_key(self, ctx: Ctx, a: Affordance) -> str:
-        """Per app *version*: an update can move a command or change what a label means."""
+        """Per app *version*: an update can move a command or change what a label means.
+
+        What the field happens to hold is left out of the key. A label carries it for the decider's benefit —
+        「type into 文本栏 (now: /Users/…)」 — and it changes with every keystroke, so the same action came back
+        as a new one to classify each time: 81 single-action classifications for 37 distinct actions in one
+        run. What an action *does* is the same whatever is in the field, which is what is being classified.
+        """
         app = ctx.app or {}
-        return f"{self.models.key(app) or app.get('bundle_id')}|{a.label}|{a.context}"
+        return f"{self.models.key(app) or app.get('bundle_id')}|{_steady(a.label)}|{a.context}"
 
     def _releases(self, a: Affordance | None = None) -> dict[str, str]:
         """The verdicts that let an action through, named by policy rather than written into the code: what a
@@ -114,21 +128,24 @@ class PolicyMixin:
         own request, so it costs no waiting. Its state holds no screen text, so nothing written on the page can
         argue an action out of the floor.
 
-        Only word hits are pre-warmed. Every other action is classified too, but when it is *chosen* (in
-        ``_pick``): speculatively classifying eight arbitrary actions out of the two hundred on a screen would
-        cost a request every step to cover the one that gets picked about four times in a hundred.
+        Word hits go first, then the budget is filled with whatever else is on offer. The reasoning used to be
+        that pre-warming arbitrary actions buys little — the one that gets chosen is rarely among them. But the
+        cost was counted wrong: this request is sent anyway, and the decider answers its questions in parallel
+        against one state, so another question costs a question, not a round trip. What did cost a round trip
+        was the other path — classifying the chosen action afterwards, which the engine must do before acting.
+        Measured over one suite: 59 of those, one at a time, against 101 steps.
         """
         questions: dict[str, Any] = {}
         mapping: dict[str, str] = {}
         cache = self.cache.setdefault("floor.verdicts", {})
-        limit = int(self.cfg.get("engine.floor_batch", 8))
+        limit = int(self.cfg.get("engine.floor_batch", 24))
         actions: list[dict[str, str]] = []
-        for a in affs:
+        fresh = [(a, self._floor_hits(a)) for a in affs if self._floor_key(ctx, a) not in cache]
+        for a, hits in sorted(fresh, key=lambda x: not x[1]):   # the words' candidates first, then the rest
             if len(questions) >= limit:
                 break
-            hits = self._floor_hits(a)
             key = self._floor_key(ctx, a)
-            if not hits or key in cache or key in mapping.values():
+            if key in mapping.values():
                 continue
             qid = f"floor{len(questions)}"
             questions[qid] = choice(self.cfg.question("floor_what").replace("{action}", a.label), self._floor_options(a, hits))
