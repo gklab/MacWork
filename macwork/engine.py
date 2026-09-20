@@ -97,9 +97,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         if todo:
             for t, found in zip(todo, self.helper.call("nl.entities", texts=todo)):
                 cache[t] = found
-            if len(cache) > int(self.cfg.get("privacy.entity_cache", 20000)):
-                for k in list(cache)[: len(cache) // 2]:
-                    cache.pop(k, None)
+            self._trim(cache)
         return [cache[t] for t in texts]
 
     def _detect(self, texts: list[str]) -> list[list[dict[str, Any]]]:
@@ -110,10 +108,13 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             kinds = list(self.cfg.get("redact.detect", doc="privacy") or [])
             for t, found in zip(todo, self.helper.call("nl.detect", texts=todo, kinds=kinds)):
                 cache[t] = found
-            if len(cache) > int(self.cfg.get("privacy.entity_cache", 20000)):
-                for k in list(cache)[: len(cache) // 2]:
-                    cache.pop(k, None)
+            self._trim(cache)
         return [cache[t] for t in texts]
+
+    def _trim(self, cache: dict[str, Any]) -> None:
+        if len(cache) > int(self.cfg.get("redact.entity_cache", 20000, doc="privacy")):
+            for k in list(cache)[: len(cache) // 2]:
+                cache.pop(k, None)
 
     def _mac_vocabulary(self) -> list[str]:
         """App names on this Mac: the tagger likes to call them people or companies; they are not personal data."""

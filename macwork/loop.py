@@ -171,6 +171,9 @@ class LoopMixin:
         suggested = {t.get("action") for t in task.tries if t.get("action")}
         pinned = task.memory.expanded | {group_of(a)[0] for a in affs if a.label in suggested or a.id.startswith("t")}
         flat, folded = arrange(affs, int(e.get("max_options", 200)) - 1, pinned, fold_over=int(e.get("fold_groups_over", 60)))
+        left_out = len(affs) - len(flat) - sum(len(v[1]) for v in folded.values())
+        if left_out > 0:
+            look_note = f"{left_out} more actions did not fit and are not listed"
         options = {"done": "done: the goal is accomplished, stop"} | \
             {a.id: a.describe() + (" — suggested by the planner" if a.label in suggested else "") for a in flat}
         groups = {f"g{i}": k for i, k in enumerate(folded)}
@@ -179,6 +182,8 @@ class LoopMixin:
             options["none"] = "none: nothing available here helps"
 
         state = self._state(task, ctx, obs, sig, flat, dead_here, suggested, locked)
+        if left_out > 0:
+            state["not_all_actions_listed"] = look_note
         questions = {"action": choice(self.cfg.question("action"), options),
                      "move": choice(self.cfg.question("move"), self._moves()),
                      "risky_screen": noul(self.cfg.question("risky_screen"))}

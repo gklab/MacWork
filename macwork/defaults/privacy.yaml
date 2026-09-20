@@ -26,5 +26,6 @@ redact:
     '/Users/[^/\s]+': '~'
   names: []                            # names always hidden (backs up the tagger, which misses some)
   max_clauses: 600                     # clauses tagged per request
+  entity_cache: 20000                  # tagged clauses remembered across tasks (menus and buttons repeat)
   never_send: []                       # regexes; a field matching one is withheld entirely
   keep: []                             # exact strings never redacted (e.g. app names NaturalLanguage mistakes for people)

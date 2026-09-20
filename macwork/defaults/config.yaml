@@ -69,6 +69,7 @@ observe:
     submit_roles: [AXTextField, AXComboBox, AXSearchField]   # single-line fields also get "type and press Return"
     range_roles: [AXTextArea]      # documents: select a part of the text, or put the cursor at the end
     read_roles: [AXStaticText, AXHeading, AXCell, AXLink]
+    field_chars: 300             # how much of a text field's contents is shown as evidence
     screen_text_chars: 1500
   apps:
     # launchservices: Spotlight finds the bundles, LaunchServices says which copy it would open for each
@@ -191,6 +192,9 @@ learn:                           # `macwork learn <app>`: safe exploration ahead
   max_unrestored: 2
 
 appmodel:
+  signature_window: true         # include the window title in a screen's identity. Titles are the app's own
+                                 # words, so false makes a screen's identity fully language-independent at
+                                 # the cost of telling two windows of one app apart
   dir: ~/Library/Application Support/macwork/apps
   persist: true
   sample: 12
@@ -225,6 +229,10 @@ engine:
   floor_batch: 8                 # floor classifications carried along with a step's own request (Jev answers in parallel)
   max_looks: 6                   # times per task the decider may open a folded group of options to read it
   top_k: 3                       # alternatives returned when the user must choose
+  # Every number under `thresholds` is a probability cut-off, and every one of them is a *safety* choice:
+  # they decide when the engine acts without asking. They are not to be tuned automatically against a
+  # success rate — a suite gets greener by asking less. Everything else in this file is a performance choice
+  # (how long to wait, how much to read, how much to cache) and may be tuned freely.
   thresholds:                    # probability cut-offs only; which move to make is the decider's own choice
     done: 0.8                    # "already done" before acting, and "sub-goal done"
     done_veto: 0.35              # after acting, the stricter done check overrules only below this
@@ -247,6 +255,8 @@ engine:
     speculate_quiet_ms: 80
     speculate_timeout_ms: 800    # no change by then: decide anyway; a late change is caught by the same check
     max_redo: 1                  # per step: after one redo the moving screen is taken as it is
+    done_settle_ms: 1200         # before a final "done": how long the window may still be changing
+    ambient_probe_s: 0.15        # how long to watch a window to see whether it changes on its own
   mode: yield                    # yield: the Mac is the user's — wait while they type or move (default)
                                  # exclusive: the engine owns the Mac (eval runs, unattended use). "background"
                                  # and "foreground" are the old names for these two.
@@ -254,6 +264,8 @@ engine:
   yield_max_s: 60                # how long one step waits for them before the task gives up its turn
   tasks_ttl_s: 1800
   activate_wait_s: 1.5           # how long to wait for an app to come to the front before refusing to type
+  activate_settle_s: 0.3         # after it comes forward, before its key window has focus
+  close_wait_s: 0.6              # tidy: after asking a window to close
 
 input:
   non_ascii: paste               # paste (clipboard, restored after) | unicode (synthetic unicode key events)

@@ -669,7 +669,11 @@ def vision(ctx: Ctx, obs: Observation) -> None:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
                                               {"x": x, "y": y, "frame": b["frame"]}))
-        lines = [b["text"] for b in sorted(boxes, key=lambda b: (b["frame"][1] // 12, b["frame"][0]))]
+        # right-to-left text read left-to-right comes back as a different sentence, so which way a line runs
+        # is asked of the system (Locale.characterDirection for the languages actually recognised)
+        rtl = res.get("direction") == "rtl"
+        lines = [b["text"] for b in sorted(boxes, key=lambda b: (b["frame"][1] // 12,
+                                                                 -b["frame"][0] if rtl else b["frame"][0]))]
         obs.screen_text = "\n".join(filter(None, [obs.screen_text] + lines))[: int(ctx.cfg.get("observe.window.screen_text_chars", 1500))]
     obs.notes.pop("_vision_spots", None)   # internal: notes go back to MCP clients as JSON
     obs.notes["vision_ms"] = res.get("ms")
@@ -708,6 +712,11 @@ def sdef(ctx: Ctx, obs: Observation) -> None:
                 break
             slots[re.sub(r"\W+", "_", prm["name"])] = Slot("text", prm.get("desc") or f"{prm['name']} ({prm['type']})")
         if not ok:
+            # Not hidden knowledge, a safety boundary: a "specifier" parameter is an object reference
+            # (`document 1 of application "…"`), which is code, and writing code is what
+            # allow.raw_applescript forbids. Measured across 60 apps: 18 commands offerable, 32 needing one.
+            # Dropping them silently left the planner to rediscover the same wall; it is told instead.
+            obs.notes.setdefault("commands_needing_a_reference", []).append(c["name"])
             continue
         obs.affordances.append(Affordance(f"d{i}", "script_cmd", "run", f"scripting command 「{c['name']}」" + (f": {c['desc'][:100]}" if c.get("desc") else ""),
                                           {"bundle_id": ctx.app.get("bundle_id"), "command": c["name"], "direct": d,
@@ -924,6 +933,9 @@ def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int
             folded[k] = (f"look into {names[k]} ({len(members)} options: {names_}{', …' if len(members) > sample else ''})", members)
     opened = [a for a in affs if group_of(a)[0] in expanded]   # what the decider asked to see comes first if space runs out
     flat = opened + [a for a in affs if group_of(a)[0] in shown and group_of(a)[0] not in expanded]
+    # Smallest groups first is not a guess at what matters — it is what shows the most *distinct* places at
+    # once; the largest become one "look into …" each, so nothing is dropped for being judged uninteresting.
+    # What can still be dropped is the tail of this list when even that does not fit, and the caller is told.
     return flat[: max(0, budget - len(folded))], folded
 
 

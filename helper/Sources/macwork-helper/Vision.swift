@@ -108,7 +108,11 @@ func screenOCR(_ p: Params) throws -> Any {
         boxes.append(["text": top.string, "conf": Double(top.confidence),
                       "frame": [safeInt(x), safeInt(y), safeInt(b.width * frame.width), safeInt(b.height * frame.height)]])
     }
+    // Which way a line of this language runs. Reading right-to-left text left-to-right gives the words back
+    // in the wrong order, which is not "slightly off" — it is a different sentence.
+    let rtl = req.recognitionLanguages.contains { NSLocale.characterDirection(forLanguage: $0) == .rightToLeft }
     return ["frame": [safeInt(frame.minX), safeInt(frame.minY), safeInt(frame.width), safeInt(frame.height)], "boxes": boxes,
+            "direction": rtl ? "rtl" : "ltr", "languages": req.recognitionLanguages,
             "ms": Int(Date().timeIntervalSince(t0) * 1000)]
 }
 
