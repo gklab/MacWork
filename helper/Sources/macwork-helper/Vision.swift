@@ -32,7 +32,16 @@ private func captureWindow(pid: pid_t, near: CGRect?) throws -> (CGImage, CGRect
         let pick = near.flatMap { f in wins.min(by: { d($0.frame, f) < d($1.frame, f) }) }
             ?? wins.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
         guard let win = pick else { throw RPCError("no_window", "no on-screen window for pid \(pid)") }
-        let scale = NSScreen.screens.first(where: { $0.frame.intersects(win.frame) })?.backingScaleFactor ?? 2
+        // the screen the window's centre is on: "the first screen it touches" gets a window straddling a
+        // Retina and a non-Retina display captured at the wrong scale, and every OCR box lands off by a factor
+        let centre = CGPoint(x: win.frame.midX, y: win.frame.midY)
+        func overlap(_ s: NSScreen) -> CGFloat {
+            let r = s.frame.intersection(win.frame)
+            return r.isNull ? 0 : r.width * r.height
+        }
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(centre) })
+            ?? NSScreen.screens.max(by: { overlap($0) < overlap($1) })
+        let scale = screen?.backingScaleFactor ?? 2
         let cfg = SCStreamConfiguration()
         cfg.width = max(1, safeInt(win.frame.width * scale))
         cfg.height = max(1, safeInt(win.frame.height * scale))

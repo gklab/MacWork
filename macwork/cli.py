@@ -2,6 +2,7 @@
 
   macwork doctor                         permissions, helper, decider
   macwork observe [--app A] [--goal G]   what can be done right now
+  macwork surfaces [--app A]             read-only: what each capability surface can see, and how long it takes
   macwork do "goal" [-i key=value] [--app A]   let the decider drive (asks you when it must)
   macwork web "goal" [--query Q] [--url U]     web research
   macwork serve [--transport T]          MCP server
@@ -57,7 +58,70 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
     ok = st.get("helper", {}).get("ax_trusted") and "error" not in st.get("decider", {})
     if not st.get("helper", {}).get("ax_trusted"):
         print("\n→ grant Accessibility to the helper (System Settings ▸ Privacy & Security ▸ Accessibility)", file=sys.stderr)
+    if st.get("helper", {}).get("secure_input"):
+        # not a failure: it comes and goes with whatever has focus. But while it is on, nothing can be typed.
+        print("\n→ secure input is on right now (something with a password field has focus): keystrokes are refused",
+              file=sys.stderr)
     return 0 if ok else 1
+
+
+def cmd_surfaces(cfg: Config, args: argparse.Namespace) -> int:
+    """What the Mac can tell us right now, surface by surface. Read-only: nothing is acted on, nothing is sent
+    to the decider. This is how the capability surfaces are checked without running a task."""
+    from .engine import Engine
+
+    eng = Engine(cfg)
+    res = eng.observe(args.app, limit=int(args.limit))
+    notes, affs = res["notes"], res["affordances"]
+    by_channel: dict[str, list[str]] = {}
+    for a in affs:
+        by_channel.setdefault(a["channel"], []).append(a["label"])
+
+    print(f"app: {(res.get('app') or {}).get('name')}   window: {res.get('window')}   "
+          f"offered: {res['total']}   total observed: {sum(v for k, v in notes.items() if k.endswith('_n'))}\n")
+    print(f"{'provider':18} {'found':>6} {'ms':>6}  note")
+    for name in cfg.get("observe.providers") or []:
+        n, ms = notes.get(f"{name}_n"), notes.get(f"{name}_ms")
+        print(f"{name:18} {n if n is not None else '-':>6} {ms if ms is not None else '-':>6}  "
+              f"{notes.get(f'{name}_error') or ''}")
+
+    print(f"\n{'channel':18} {'offered':>7}  example")
+    for channel, labels in sorted(by_channel.items(), key=lambda kv: -len(kv[1])):
+        print(f"{channel:18} {len(labels):>7}  {labels[0][:64]}")
+
+    print()
+    for label, value in _extra_surfaces(eng).items():
+        print(f"{label:18} {value}")
+    return 0
+
+
+def _extra_surfaces(eng: Any) -> dict[str, Any]:
+    """Facts that are not affordances: how much of the Mac each enumeration actually reaches."""
+    from .appmodel import parse_app_intents
+    out: dict[str, Any] = {}
+    try:
+        dirs = eng.cfg.get("observe.apps.dirs") or []
+        out["apps (dirs)"] = len(eng.helper.call("apps.installed", dirs=dirs))
+    except Exception as exc:  # noqa: BLE001
+        out["apps (dirs)"] = f"error: {exc}"
+    try:
+        on = eng.helper.call("screen.windows")
+        every = eng.helper.call("screen.windows", all=True)
+        out["windows"] = f"{len(on)} on this Space, {len(every)} in all"
+    except Exception as exc:  # noqa: BLE001
+        out["windows"] = f"error: {exc}"
+    try:
+        out["clipboard"] = eng.helper.call("clipboard.read")
+    except Exception as exc:  # noqa: BLE001
+        out["clipboard"] = f"error: {exc}"
+    try:
+        running = eng.helper.call("apps.running")
+        counts = {a.get("name"): len(parse_app_intents(a["path"])) for a in running if a.get("path")}
+        have = {k: v for k, v in counts.items() if v}
+        out["app intents"] = f"{sum(have.values())} actions declared by {len(have)} of {len(counts)} running apps"
+    except Exception as exc:  # noqa: BLE001
+        out["app intents"] = f"error: {exc}"
+    return out
 
 
 def cmd_observe(cfg: Config, args: argparse.Namespace) -> int:
@@ -243,6 +307,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("doctor")
     p.add_argument("--planners", action="store_true", help="also ask every configured planner for a tiny real plan")
+    p = sub.add_parser("surfaces", help="read-only: what each provider can see right now, and how long it took")
+    p.add_argument("--app")
+    p.add_argument("--limit", type=int, default=400)
     p = sub.add_parser("observe")
     p.add_argument("--app")
     p.add_argument("--goal")
@@ -285,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
     handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "web": cmd_web, "serve": cmd_serve,
-                "key": cmd_key, "helper": cmd_helper, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
+                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     return handlers[args.cmd](cfg, args)
 
 

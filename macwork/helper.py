@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import Config, expand
 
@@ -42,6 +42,7 @@ class Helper:
         self._buf = b""
         self._id = 0
         self.mode: str | None = None
+        self.on_reset: Callable[[], None] | None = None   # set by the engine: a new helper invalidates its refs
 
     # ------------------------------------------------------------------ connect
     def _binary(self) -> Path | None:
@@ -117,6 +118,24 @@ class Helper:
         line, _, self._buf = self._buf.partition(b"\n")
         return line
 
+    def _reply_to(self, want_id: int, method: str, timeout: float) -> dict[str, Any]:
+        """The reply to *this* request, matched by id.
+
+        A call that timed out leaves its reply in the stream. Without matching ids the next call reads that
+        stale line and returns it as its own answer — and every call after it is one question behind, silently:
+        the engine would act on the window it saw a step ago. Late replies are dropped here, not returned.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise HelperError("timeout", f"helper did not answer {method}")
+            reply = json.loads(self._readline(left))
+            if reply.get("id") == want_id:
+                return reply
+            log.warning("helper: dropped a late reply to #%s while waiting for #%s (%s)",
+                        reply.get("id"), want_id, method)
+
     def _reset(self) -> None:
         """Forget a helper that died (its pipe broke or it exited); the next call starts a fresh one."""
         try:
@@ -129,6 +148,11 @@ class Helper:
         self._sock = self._proc = None
         self._buf = b""
         self.mode = None
+        if self.on_reset is not None:   # every element reference the old process handed out is dead with it
+            try:
+                self.on_reset()
+            except Exception:  # noqa: BLE001  (a failed cache drop must not mask the helper's own failure)
+                log.warning("on_reset failed", exc_info=True)
 
     def call(self, method: str, timeout: float = 30.0, **params: Any) -> Any:
         with self._lock:
@@ -138,7 +162,7 @@ class Helper:
                 self._id += 1
                 try:
                     self._send(json.dumps({"id": self._id, "method": method, "params": params}, ensure_ascii=False).encode() + b"\n")
-                    reply = json.loads(self._readline(timeout))
+                    reply = self._reply_to(self._id, method, timeout)
                     break
                 except (BrokenPipeError, ConnectionError, OSError) as exc:
                     self._reset()

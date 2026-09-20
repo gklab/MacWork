@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 
 /// macwork-helper: the hands and eyes of macwork. It owns the macOS permissions (Accessibility, Screen
 /// Recording, Automation) so they are granted once to one signed app, and exposes plain primitives over
@@ -19,7 +20,8 @@ func screenLocked() -> Bool {
 
 dispatcher.register("ping") { _ in
     ["version": version, "pid": Int(getpid()), "ax_trusted": AXIsProcessTrusted(),
-     "screen_capture": CGPreflightScreenCaptureAccess(), "screen_locked": screenLocked(), "methods": dispatcher.methods]
+     "screen_capture": CGPreflightScreenCaptureAccess(), "screen_locked": screenLocked(),
+     "secure_input": IsSecureEventInputEnabled(), "methods": dispatcher.methods]
 }
 dispatcher.register("session.state") { _ in
     ["screen_locked": screenLocked(), "frontmost": (NSWorkspace.shared.frontmostApplication?.bundleIdentifier as Any?) ?? NSNull()]
@@ -46,6 +48,7 @@ dispatcher.register("ax.perform", axPerform)
 dispatcher.register("ax.set", axSet)
 dispatcher.register("ax.get", axGet)
 dispatcher.register("ax.focused", axFocused)
+dispatcher.register("ax.extras_owners", axExtrasOwners)
 dispatcher.register("ax.wait", axWait)
 dispatcher.register("ax.fingerprint", { p in
     guard let pid = p["pid"] as? Int else { throw RPCError("bad_params", "pid required") }
@@ -55,6 +58,10 @@ dispatcher.register("input.key", inputKey)
 dispatcher.register("input.type", inputType)
 dispatcher.register("input.click", inputClick)
 dispatcher.register("input.idle", inputIdle)
+dispatcher.register("services.perform", servicesPerform)
+dispatcher.register("file.read_text", fileReadText)
+dispatcher.register("clipboard.read", clipboardRead)
+dispatcher.register("clipboard.write", clipboardWrite)
 dispatcher.register("script.applescript", scriptRun)
 dispatcher.register("nl.entities", nlEntities)
 dispatcher.register("screen.ocr", screenOCR)

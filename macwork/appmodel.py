@@ -21,6 +21,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +30,23 @@ from .config import Config, expand
 log = logging.getLogger(__name__)
 
 
-def _info_plist(app_path: str) -> dict[str, Any]:
+@lru_cache(maxsize=256)
+def _parse_plist(path: str, _mtime: float) -> dict[str, Any]:
+    """Keyed by modification time as well as path, so an app that updates is read again."""
     try:
-        with open(Path(app_path) / "Contents" / "Info.plist", "rb") as f:
+        with open(path, "rb") as f:
             return plistlib.load(f)
     except (OSError, plistlib.InvalidFileException, ValueError):
+        return {}
+
+
+def _info_plist(app_path: str) -> dict[str, Any]:
+    """An app's Info.plist. Read once per version: the safety floor keys its verdicts on the app version, so
+    this is asked for once per action on screen, not once per app."""
+    path = Path(app_path) / "Contents" / "Info.plist"
+    try:
+        return _parse_plist(str(path), path.stat().st_mtime)
+    except OSError:
         return {}
 
 
@@ -71,6 +84,72 @@ def _types(el: ET.Element) -> str:
     return "|".join(t.get("type", "") for t in el.findall("type")) or "any"
 
 
+def _intent_type(vt: dict[str, Any]) -> str:
+    """A readable name for what a parameter takes, from the shape the metadata uses."""
+    kind = next(iter(vt), "")
+    w = (vt.get(kind) or {}).get("wrapper") or {}
+    if kind == "entity":
+        return str(w.get("typeName") or "entity")
+    if kind == "array":
+        return f"[{_intent_type(w.get('memberValueType') or {})}]"
+    if kind == "alternative":
+        return " | ".join(_intent_type(m) for m in w.get("memberValueTypes") or []) or "one of several"
+    if kind == "linkEnumeration":
+        return str(w.get("identifier") or "one of a fixed set")
+    return {"primitive": "value", "measurement": "measurement", "searchCriteria": "search criteria",
+            "intents": "another action"}.get(kind, kind or "value")
+
+
+def parse_services(path: str) -> list[dict[str, Any]]:
+    """The Services an app publishes: "hand me this kind of content and I will do something with it".
+
+    A system-wide bus between apps that share nothing else — look a word up, start an email from a selection,
+    open a folder in a terminal — and one the engine could only reach by walking into the right app's menu.
+    Declared by each bundle in its own Info.plist, so nothing here knows any app.
+    """
+    info = _info_plist(path)
+    out: list[dict[str, Any]] = []
+    for s in info.get("NSServices") or []:
+        if not isinstance(s, dict):
+            continue
+        name = ((s.get("NSMenuItem") or {}).get("default") or "").strip()
+        if not name:
+            continue
+        out.append({"name": name, "sends": list(s.get("NSSendTypes") or []),
+                    "returns": list(s.get("NSReturnTypes") or [])})
+    return out
+
+
+def parse_app_intents(path: str, limit: int = 60) -> list[dict[str, Any]]:
+    """The actions an app declares through App Intents.
+
+    This is the modern counterpart to a scripting dictionary, and for most SwiftUI and Catalyst apps it is the
+    only self-description there is — they ship no sdef. The compiled metadata in the bundle is plain JSON, so
+    nothing here needs to know anything about any app. Only what the app itself marks discoverable is kept:
+    that is its own statement about what may be offered, not a guess of ours.
+    """
+    file = Path(path) / "Contents" / "Resources" / "Metadata.appintents" / "extract.actionsdata"
+    try:
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    out: list[dict[str, Any]] = []
+    for name, a in sorted((data.get("actions") or {}).items()):
+        if not isinstance(a, dict) or a.get("isDiscoverable") is False:
+            continue
+        summary = (((a.get("actionConfiguration") or {}).get("actionSummary") or {})
+                   .get("wrapper") or {}).get("summaryString") or {}
+        params = [{"name": str(prm.get("name") or ""), "type": _intent_type(prm.get("valueType") or {}),
+                   "optional": bool(prm.get("isOptional"))}
+                  for prm in a.get("parameters") or [] if isinstance(prm, dict)]
+        out.append({"id": str(a.get("identifier") or name),
+                    "summary": str(summary.get("formatString") or a.get("identifier") or name),
+                    "params": params, "opens_app": bool(a.get("openAppWhenRun"))})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def static_model(app: dict[str, Any]) -> dict[str, Any]:
     path = app.get("path") or ""
     info = _info_plist(path)
@@ -83,6 +162,8 @@ def static_model(app: dict[str, Any]) -> dict[str, Any]:
         "document_types": sorted({e for t in info.get("CFBundleDocumentTypes") or []
                                   for e in (t.get("CFBundleTypeExtensions") or []) + (t.get("LSItemContentTypes") or [])})[:40],
         "scriptable": bool(info.get("NSAppleScriptEnabled") or info.get("OSAScriptingDefinition")),
+        "intents": parse_app_intents(path) if path else [],
+        "services": parse_services(path) if path else [],
         "sdef": {"commands": [], "classes": []},
     }
     sdef_name = info.get("OSAScriptingDefinition")
@@ -115,7 +196,8 @@ class AppModels:
         self._paths: dict[str, str] = {}      # bundle id -> app path, from any app info that carried one
         self._lock = threading.Lock()
 
-    def _key(self, app: dict[str, Any]) -> str | None:
+    def key(self, app: dict[str, Any]) -> str | None:
+        """``bundle_id@version`` — what an app model, and a safety-floor verdict, are remembered under."""
         bid = app.get("bundle_id")
         if not bid:
             return None
@@ -130,7 +212,7 @@ class AppModels:
     def get(self, app: dict[str, Any] | None) -> dict[str, Any] | None:
         if not app:
             return None
-        key = self._key(app)
+        key = self.key(app)
         if not key:
             return None
         with self._lock:
@@ -152,7 +234,7 @@ class AppModels:
     def save(self, app: dict[str, Any] | None) -> None:
         if not app or not self.cfg.get("appmodel.persist", True):
             return
-        key = self._key(app)
+        key = self.key(app)
         if not key or key not in self._mem:
             return
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -210,5 +292,11 @@ class AppModels:
         if m is None:
             return {}
         cmds = [c["name"] for c in m["sdef"]["commands"] if c["suite"] not in (self.cfg.get("observe.sdef.skip_suites") or [])]
-        return {"app": m.get("name"), "scriptable_commands": cmds[:limit], "url_schemes": m.get("url_schemes", [])[:10],
-                "opens": m.get("document_types", [])[:15], "screens_known": len(m["screens"])}
+        out = {"app": m.get("name"), "scriptable_commands": cmds[:limit], "url_schemes": m.get("url_schemes", [])[:10],
+               "opens": m.get("document_types", [])[:15], "screens_known": len(m["screens"])}
+        intents = m.get("intents") or []
+        if intents:   # what the app says it can do, in its own words: routes the planner would not otherwise see
+            out["declared_actions"] = [i["summary"] + (f" (needs {', '.join(p['name'] for p in i['params'] if not p['optional'])})"
+                                                       if any(not p["optional"] for p in i["params"]) else "")
+                                       for i in intents[:limit]]
+        return out

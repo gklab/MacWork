@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -39,10 +41,22 @@ def _short_name_like(c: str) -> bool:
     return bool(re.fullmatch(r"[\u3400-\u9fff]{2,4}", c) or re.fullmatch(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}", c))
 
 
+class RedactionError(RuntimeError):
+    """Nothing could be checked for personal data, so nothing may be sent.
+
+    Deliberately not a ``DeciderError``: every caller of the gate handles that one and carries on with a
+    default, which is right when the decider cannot answer but wrong here — a task that keeps running with
+    every string replaced by "[withheld]" is deciding blind. This one is meant to reach the engine and end
+    the task.
+    """
+
+
 class Redactor:
     def __init__(self, cfg: Config, entities: Entities | None = None, protect: Callable[[], Any] | None = None) -> None:
         r = cfg.privacy.get("redact", {}) or {}
         self.max_clauses = int(r.get("max_clauses", 600))
+        self.failed = False               # tagging broke: nothing may leave until the task is over
+        self._lock = threading.RLock()    # the floor classification runs beside the step's own request, on one table
         self.protect = protect            # names from this Mac itself (installed apps…) that are never personal data
         self._protected: list[str] | None = None
         self._tagged: set[str] = set()   # clauses already tagged in this task (labels repeat every step)
@@ -113,7 +127,7 @@ class Redactor:
             found = self.entities(clauses[: self.max_clauses])
         except Exception as exc:  # noqa: BLE001  (redaction must never block, but it must not leak either)
             log.warning("entity tagging failed (%s); withholding all text", exc)
-            self._failed = True
+            self.failed = True
             return
         self._tagged.update(clauses[: self.max_clauses])
         carriers = {c: c for c in clauses}
@@ -129,7 +143,7 @@ class Redactor:
                     self._token(str(e["type"]), t)
 
     def _redact(self, s: str) -> str:
-        if getattr(self, "_failed", False):
+        if self.failed:
             return "[withheld]"
         if any(rx.search(s) for rx in self.never):
             return "[withheld]"
@@ -145,26 +159,32 @@ class Redactor:
     def text(self, s: str) -> str:
         if not self.enabled or not s:
             return s
-        self._learn([s])
-        return self._redact(s)
+        with self._lock:
+            self._learn([s])
+            return self._redact(s)
 
     def value(self, v: Any) -> Any:
         """Redact every string inside a JSON-like value (one entity pass for all of it); dict keys are our own ids."""
         if not self.enabled:
             return v
-        self._learn(list(_strings(v)))
-        return self._apply(v)
+        with self._lock:
+            self._learn(list(_strings(v)))
+            return self._apply(v)
 
     def restore(self, v: Any) -> Any:
         """Put the real values back into text that came back from outside (a planner's typed text)."""
+        with self._lock:
+            return self._restore(v)
+
+    def _restore(self, v: Any) -> Any:
         if isinstance(v, str):
             for original, token in self.table.items():
                 v = v.replace(token, original)
             return v
         if isinstance(v, dict):
-            return {k: self.restore(x) for k, x in v.items()}
+            return {k: self._restore(x) for k, x in v.items()}
         if isinstance(v, list):
-            return [self.restore(x) for x in v]
+            return [self._restore(x) for x in v]
         return v
 
     def _apply(self, v: Any) -> Any:
@@ -189,17 +209,47 @@ def _strings(v: Any):
 
 
 class Audit:
+    """The local record of everything that was sent, as it was sent.
+
+    It holds redacted screen text, and redaction is best effort, so it is written 0600 and rotated: a
+    behaviour log of the user's own Mac should not be world-readable, nor grow until the disk is full.
+    """
+
     def __init__(self, cfg: Config) -> None:
         self.enabled = bool(cfg.get("audit.enabled", True))
         self.path: Path | None = expand(cfg.get("audit.path"))
         self.dry_run = bool(cfg.get("audit.dry_run", False))
+        self.max_bytes = int(cfg.get("audit.max_bytes", 64 * 1024 * 1024))
+        self.keep = int(cfg.get("audit.keep", 3))
+        self._lock = threading.Lock()   # the floor thread and the tidy thread write here too
+
+    def _rotate(self, path: Path) -> None:
+        """audit.jsonl -> audit.1.jsonl -> … -> audit.<keep>.jsonl; the oldest falls off the end."""
+        if self.max_bytes <= 0 or path.stat().st_size < self.max_bytes:
+            return
+        for n in range(self.keep, 0, -1):
+            newer = path if n == 1 else path.with_suffix(f".{n - 1}.jsonl")
+            if newer.exists():
+                newer.replace(path.with_suffix(f".{n}.jsonl"))   # replace overwrites: nothing to unlink first
+        if self.keep <= 0:
+            path.unlink(missing_ok=True)
 
     def record(self, kind: str, **data: Any) -> None:
         if not (self.enabled and self.path):
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": round(time.time(), 3), "kind": kind, **data}, ensure_ascii=False) + "\n")
+        line = json.dumps({"ts": round(time.time(), 3), "kind": kind, **data}, ensure_ascii=False) + "\n"
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if self.path.exists():
+                    self._rotate(self.path)
+            except OSError as exc:       # a log that cannot rotate must not stop the task
+                log.warning("audit: could not rotate %s (%s)", self.path, exc)
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8"))
+            finally:
+                os.close(fd)
 
 
 class Gate:
@@ -214,6 +264,9 @@ class Gate:
         safe = redactor.value({"state": state, "criteria": crit})   # one entity pass for the whole request
         safe_state = safe["state"]
         safe_questions = {k: {**q, "criteria": safe["criteria"][k]} if k in crit else q for k, q in questions.items()}
+        if redactor.failed:   # tagging broke: every string is "[withheld]" — sending that is deciding blind
+            self.audit.record("refused", task=task, why="entity tagging failed; nothing was sent")
+            raise RedactionError("personal data could not be checked for, so nothing was sent")
         self.audit.record("decide", task=task, state=safe_state, questions=safe_questions, dry_run=self.audit.dry_run)
         answers = self.decider.decide(safe_state, safe_questions)
         self.audit.record("answers", task=task, answers={k: {kk: vv for kk, vv in a.items() if kk != "probabilities"} for k, a in answers.items()})

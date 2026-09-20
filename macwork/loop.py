@@ -20,6 +20,7 @@ from typing import Any, Callable
 from .appmodel import signature
 from .contract import kept
 from .decider import DeciderError, choice, noul
+from .privacy import RedactionError
 from .act import Outcome
 from .model import Affordance, Observation, Step, Task
 from .observe import Ctx, arrange, group_of, observe
@@ -69,18 +70,18 @@ class LoopMixin:
     # ------------------------------------------------------------------ the loop
     def _loop(self, task: Task, progress: Progress) -> dict[str, Any]:
         e = self.cfg.section("engine")
-        deadline = task.started + float(e.get("budget_s", 90))
-        max_steps = int(e.get("max_steps", 12))
+        deadline = task.run_started + float(e.get("budget_s", 90))   # this run's share, for the yield wait
         last_look: Look | None = None             # the last screen, for the final diagnosis
         if task.plan is None and self.cfg.get("planner.when", "auto") == "always":
             self._consult(task, None, None, "")
         while True:
             if task.id in self._cancelled:
                 return self._finish(task, "cancelled", "cancelled by the caller")
-            if len(task.steps) >= max_steps or time.monotonic() > deadline:
+            spent = self._overspent(task, e)
+            if spent:
                 if last_look is not None:         # out of budget: still say *why*
-                    return self._diagnose(task, last_look.ctx, last_look.obs, last_look.state, reason="step or time budget used up")
-                return self._finish(task, "failed", "step or time budget used up")
+                    return self._diagnose(task, last_look.ctx, last_look.obs, last_look.state, reason=spent)
+                return self._finish(task, "failed", spent)
             self._yield_to_user(task, deadline)
             ctx = self._step_context(task)
             if task.held is not None:             # confirmed / chosen / given input by the caller: no new decision
@@ -104,6 +105,31 @@ class LoopMixin:
             done = self._perform(task, ctx, look, chosen, progress)
             if done is not None:
                 return done
+
+    def _overspent(self, task: Task, e: dict[str, Any]) -> str:
+        """What ran out, if anything: the budget for this run, the ceilings for the whole task, or the money.
+
+        Steps and seconds are counted per run so that the caller's thinking time between a ``need_confirm`` and
+        its answer is not charged to the task. The ``total_`` ceilings and the decider ceilings are what keep a
+        task that is resumed again and again from running (and costing) without end.
+        """
+        if len(task.steps) - task.run_step0 >= int(e.get("max_steps", 12)):
+            return "step budget used up"
+        if time.monotonic() - task.run_started > float(e.get("budget_s", 90)):
+            return "time budget used up"
+        if len(task.steps) >= int(e.get("total_steps", 48)):
+            return "this task has taken all the steps it is allowed over all its turns"
+        if task.working_s > float(e.get("total_budget_s", 600)):
+            return "this task has taken all the time it is allowed over all its turns"
+        decider = self._decider
+        if decider is not None:
+            if decider.calls - task.run_calls0 >= int(e.get("max_decisions", 120)):
+                return "this run asked the decider as many times as it is allowed"
+            spent = decider.cost_usd - task.run_cost0
+            ceiling = float(e.get("max_cost_usd", 0.5))
+            if ceiling > 0 and spent >= ceiling:
+                return f"this run has spent its budget of ${ceiling:.2f}"
+        return ""
 
     def _step_context(self, task: Task) -> Ctx:
         ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id)
@@ -213,12 +239,16 @@ class LoopMixin:
     def _ask(self, task: Task, look: Look) -> dict[str, Any] | _Again:
         t_dec = time.monotonic()
         floor: dict[str, Any] = {}
+        classified = threading.Event()
 
         def classify() -> None:   # its own request, sent at the same time: no screen text in it, no waiting for it
             try:
-                floor.update(look.ctx.gate.decide(self.redactor(task.id), look.floor_state, look.floor_questions, task=task.id))
-            except DeciderError as exc:
+                answers = look.ctx.gate.decide(self.redactor(task.id), look.floor_state, look.floor_questions, task=task.id)
+            except (DeciderError, RedactionError) as exc:
                 log.info("floor classification: %s", exc)
+                return
+            floor.update(answers)      # all at once, so the main thread never reads a half-filled verdict set
+            classified.set()
         side = threading.Thread(target=classify, name="floor", daemon=True) if look.floor_questions else None
         if side:
             side.start()
@@ -229,7 +259,10 @@ class LoopMixin:
         finally:
             if side:
                 side.join(timeout=float(self.cfg.get("decider.timeout_s", 10)) + 2)
-                self._floor_answers(floor, look.floor_map)
+                if classified.is_set():
+                    self._floor_answers(floor, look.floor_map)
+                else:   # it never came back: those actions stay gated by their words, which is the safe side
+                    log.info("floor classification did not return in time for step %d", len(task.steps))
         look.timing["decide"] = round((time.monotonic() - t_dec) * 1000)
         look.timing["decide_net"] = round(self.decider.last_ms)
         if look.fp_seen is not None and self._fingerprint(look.ctx) not in (look.fp_seen, None) and not self._moves_by_itself(look.ctx, look.obs):
@@ -394,7 +427,7 @@ class LoopMixin:
             task.memory.declined.add(chosen.label)       # leaving for something the goal gives no reason for (e.g. text on a page asked)
             progress(f"not what the goal is about, skipped: {chosen.label}")
             return AGAIN
-        floor = self._floor(task, look.ctx, chosen, risky_screen, look.obs.window)
+        floor = self._floor(task.id, look.ctx, chosen, look.obs.window)
         if floor and not self._goal_calls_for(task, look.ctx, redactor, look.state, chosen):
             task.memory.declined.add(chosen.label)       # quit, delete, send… the goal never asked for: not worth the user's attention
             progress(f"not asked for, skipped: {chosen.label}")
@@ -413,8 +446,9 @@ class LoopMixin:
             return None
         obs = look.obs if look else None
         params = {k: task.inputs[k] for k in chosen.slots if k in task.inputs}
-        if "text" in chosen.target and chosen.id.startswith("t"):   # a planner suggestion carries its own text
-            params["text"] = chosen.target["text"]
+        for carried in ("text", "url"):   # a planner suggestion carries its own text or link
+            if carried in chosen.target and chosen.id.startswith("t"):
+                params[carried] = chosen.target[carried]
         missing = {k: s.desc for k, s in chosen.slots.items() if s.required and k not in params}
         for k in list(missing):                   # Jev writes no text: the planner may, before we bother the caller
             text = self._fill(task, ctx, obs, chosen, k)
@@ -426,11 +460,14 @@ class LoopMixin:
             task.held = chosen
             return self._finish(task, "need_input", "this step needs text only the caller can provide",
                                 {"affordance": chosen.public(), "inputs": missing})
-        text = str(params.get("text", ""))
-        if text and chosen.verb in ("type", "type_submit"):   # what is typed can be a command: judge it with its text
-            typed = Affordance(chosen.id, chosen.channel, chosen.verb, f"{chosen.label} — typing 「{text[:120]}」", chosen.target,
+        # a value the caller or planner supplied can change what the action does: typed text can be a command,
+        # and a link can be a mailto: or an app's own "do this" URL. Judge the action with that value in it.
+        text = str(params.get("text") or params.get("url") or "")
+        if text and (chosen.verb in ("type", "type_submit") or "url" in params):
+            doing = "typing" if params.get("text") else "opening"
+            typed = Affordance(chosen.id, chosen.channel, chosen.verb, f"{chosen.label} — {doing} 「{text[:120]}」", chosen.target,
                                context=chosen.context)
-            floor = self._floor(task, ctx, typed, 1.0, obs.window if obs else None, force=True)
+            floor = self._floor(task.id, ctx, typed, obs.window if obs else None)
             if floor and chosen.label not in task.approved:
                 if not self._goal_calls_for(task, ctx, self.redactor(task.id), {}, typed):
                     task.memory.declined.add(chosen.label)
@@ -465,6 +502,9 @@ class LoopMixin:
         task.updated = time.time()
         if out.output:
             task.outputs.update(out.output)
+        read = (out.output or {}).get("file_read")
+        if read and read.get("text"):     # what a file said is as much a fact as what a screen showed
+            task.memory.facts.record(read["path"].rsplit("/", 1)[-1], read.get("kind") or "", read["text"], len(task.steps))
         if out.target:
             task.target = out.target
         if out.final:
@@ -492,6 +532,8 @@ class LoopMixin:
             out["open_windows"] = obs.notes["open_windows"][:10] or "none: the app has no window open"
         if obs.notes.get("covered_by"):           # a prompt from another process sits over the app (e.g. a permission request)
             out["covered_by"] = obs.notes["covered_by"]
+        if obs.notes.get("clipboard"):            # what a "paste" would put there, by shape (contents stay here)
+            out["on_the_clipboard"] = obs.notes["clipboard"]
         return out
 
     def _signature(self, app: dict[str, Any] | None, obs: Observation) -> str:
@@ -515,12 +557,18 @@ class LoopMixin:
         """Replay a learned routine, looking every step up again on the live screen; stop at the first miss."""
         done = 0
         ok = True
+        budget = self.cfg.section("engine")
         for st in skill["steps"]:
+            # a routine is not a free pass: its steps count against the same budgets, and it stops when cancelled
+            if task.id in self._cancelled or self._overspent(task, budget):
+                ok = False
+                break
             ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id)
             ctx.gate = self.gate
             a = Skills.find(st, observe(ctx))
             params = {k: task.inputs[k] for k in (a.slots if a else {}) if k in task.inputs}
-            if (a is None or self._denied(a, ctx.app) or self._needs_confirm(a, 0.0, task.approved)
+            gated = self._floor(task.id, ctx, a, ctx.app and ctx.app.get("window")) if a is not None else []
+            if (a is None or self._denied(a, ctx.app) or self._needs_confirm(a, 0.0, task.approved, floor=gated)
                     or any(s.required and k not in params for k, s in a.slots.items())):
                 ok = False
                 break

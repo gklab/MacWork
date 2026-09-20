@@ -10,7 +10,13 @@ let package = Package(
             path: "Sources/macwork-helper",
             linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit"),
                              .linkedFramework("NaturalLanguage"), .linkedFramework("Carbon"),
-                             .linkedFramework("ScreenCaptureKit"), .linkedFramework("Vision")]
+                             .linkedFramework("ScreenCaptureKit"), .linkedFramework("Vision"),
+                             .linkedFramework("PDFKit")]
+        ),
+        .testTarget(
+            name: "macwork-helperTests",
+            dependencies: ["macwork-helper"],
+            path: "Tests/macwork-helperTests"
         )
     ]
 )

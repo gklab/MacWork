@@ -237,9 +237,35 @@ def shortcut_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome
                    error=r.stderr.strip()[:200] or None, wait=False)
 
 
+@channel("service")
+def service_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    files = [str(params["file"])] if params.get("file") else []
+    out = ctx.helper.call("services.perform", name=a.target["name"], text=str(params.get("text", "")), files=files)
+    if not out.get("ok"):
+        return Outcome(False, error=f"the system did not run the service 「{a.target['name']}」", wait=False)
+    time.sleep(0.4)                       # a service usually brings its app forward
+    front = _frontmost(ctx) or {}
+    return Outcome(True, watch_pid=front.get("pid"),
+                   target={"pid": front["pid"], "name": front.get("name"), "bundle_id": front.get("bundle_id")} if front.get("pid") else None)
+
+
+@channel("clipboard")
+def clipboard_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    out = ctx.helper.call("clipboard.write", text=str(params.get("text", "")))
+    return Outcome(True, output={"clipboard_change_count": out.get("change_count")}, wait=False)
+
+
 @channel("file")
 def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
-    args = ["open", "-R", a.target["path"]] if a.verb == "reveal" else ["open", a.target["path"]]
+    if a.verb == "read":        # its text becomes a fact, so the task may write what the file said
+        path = str(a.target["path"])
+        try:
+            got = ctx.helper.call("file.read_text", path=path, max_chars=int(ctx.cfg.get("observe.files.read_chars", 20000)))
+        except HelperError as exc:
+            return Outcome(False, error=str(exc), wait=False)
+        return Outcome(True, output={"file_read": {"path": path, "kind": got.get("kind"), "text": got.get("text", "")}}, wait=False)
+    what = str(params.get("url") or a.target["path"])
+    args = ["open", "-R", what] if a.verb == "reveal" else ["open", what]
     r = subprocess.run(args, capture_output=True, text=True, timeout=15, check=False)
     time.sleep(0.4)
     front = _frontmost(ctx) or {}
@@ -324,6 +350,18 @@ def pointer_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         _bring_forward(ctx, ctx.app["pid"])
     if a.verb == "drag":            # from one element to another (a planner suggestion, resolved on the live screen)
         ctx.helper.call("input.drag", x1=float(t["x1"]), y1=float(t["y1"]), x2=float(t["x2"]), y2=float(t["y2"]))
+        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+    if a.verb == "drag_named":      # both ends named by the caller, looked up among what was on screen
+        spots = t.get("spots") or {}
+
+        def centre(name: str) -> tuple[float, float] | None:
+            frame = spots.get(name) or next((f for label, f in spots.items() if name and name in label), None)
+            return (frame[0] + frame[2] / 2, frame[1] + frame[3] / 2) if frame else None
+        start, end = centre(str(params.get("from", ""))), centre(str(params.get("onto", "")))
+        if start is None or end is None:
+            missing = "from" if start is None else "onto"
+            return Outcome(False, error=f"「{params.get(missing)}」 is not on screen", wait=False)
+        ctx.helper.call("input.drag", x1=start[0], y1=start[1], x2=end[0], y2=end[1])
         return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
     ctx.helper.call("input.click", x=float(t["x"]), y=float(t["y"]), count=int(t.get("count", 1)))
     return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))

@@ -1,8 +1,9 @@
 """What the engine may do at all — the part that does not depend on the goal being reachable:
 
 * apps and actions that are denied outright (including the app the engine itself runs under),
-* the safety floor: words find candidates, the decider classifies them (without seeing the screen), and only
-  "it just navigates" releases one,
+* the safety floor: every action about to run is classified by the decider (without seeing the screen), and
+  only "it just navigates" releases one. The word list in policy.yaml does not judge — it is two languages
+  wide, so a miss would switch the floor off everywhere else; it only says what to classify first,
 * what needs the caller's confirmation,
 * the two questions answered from the user's words alone (does the goal call for this action, does leaving the
   app serve the goal) — deliberately blind to screen text, so instructions hidden in a page cannot answer them.
@@ -64,7 +65,13 @@ class PolicyMixin:
 
     # ------------------------------------------------------------------ the safety floor
     def _floor_hits(self, a: Affordance) -> list[str]:
-        """Floor categories whose words appear in the action: candidates, not verdicts."""
+        """Floor categories whose *words* appear in the action — a hint, never a verdict.
+
+        The patterns in policy.yaml are written in English and Chinese, so "Löschen", "削除", "Supprimer" and
+        "Удалить" match nothing at all. Letting a miss mean "safe" would switch the floor off for every other
+        language, which is why nothing here decides on its own: hits only say what to classify first, and which
+        categories to offer the classifier.
+        """
         conf = self.cfg.policy.get("confirm", {}) or {}
         text = f"{a.verb} {a.label} {a.context}"
         hits = [name for name, c in (conf.get("categories") or {}).items()
@@ -73,32 +80,31 @@ class PolicyMixin:
             hits.append("other")
         return hits
 
-    def _risky(self, a: Affordance) -> bool:
-        """Words alone (conservative): used where no decider is involved — step-level acts, replays, exploring."""
-        return bool(self._floor_hits(a))
-
-    @staticmethod
-    def _nondescript(a: Affordance) -> bool:
-        """An action whose label does not say what it does: a click on read text, an unlabeled control, a button
-        of a prompt from another process."""
-        return a.channel == "pointer" or "(no label)" in a.label or "in front of the app" in a.context
-
     def _floor_key(self, ctx: Ctx, a: Affordance) -> str:
-        return f"{(ctx.app or {}).get('bundle_id')}|{a.label}|{a.context}"
+        """Per app *version*: an update can move a command or change what a label means."""
+        app = ctx.app or {}
+        return f"{self.models.key(app) or app.get('bundle_id')}|{a.label}|{a.context}"
 
     def _floor_options(self, a: Affordance, hits: list[str]) -> dict[str, str]:
         conf = self.cfg.policy.get("confirm", {}) or {}
         cats = {k: str((v or {}).get("what") or k) for k, v in (conf.get("categories") or {}).items()}
-        cats["other"] = "it does something irreversible or outward-facing"
+        cats["other"] = str(conf.get("other") or "it does something else irreversible or outward-facing").strip()
         options = {"navigate": str(conf.get("navigate") or "it only opens, shows or navigates to something").strip()}
         if a.verb in ("type", "type_submit"):
             options["enter"] = str(conf.get("enter") or "it only enters text into a field or a document").strip()
-        return options | ({k: cats[k] for k in hits if k in cats} if hits else {k: v for k, v in cats.items() if k != "other"})
+        # a word hit narrows the question to what the words suggested; with no hit the whole floor is on the
+        # table, because the words being silent says nothing about the action
+        return options | ({k: cats[k] for k in hits if k in cats} if hits else cats)
 
     def _floor_questions(self, ctx: Ctx, affs: list[Affordance], window: str | None) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
-        """Every floor candidate on screen, classified in one request of its own — sent at the same time as the
-        step's own request, so it costs no waiting, and with a state that holds no screen text, so nothing written
-        on the page can argue an action out of the floor. Verdicts are remembered per app and label."""
+        """Classify the actions the words flagged, in one request of its own sent at the same time as the step's
+        own request, so it costs no waiting. Its state holds no screen text, so nothing written on the page can
+        argue an action out of the floor.
+
+        Only word hits are pre-warmed. Every other action is classified too, but when it is *chosen* (in
+        ``_pick``): speculatively classifying eight arbitrary actions out of the two hundred on a screen would
+        cost a request every step to cover the one that gets picked about four times in a hundred.
+        """
         questions: dict[str, Any] = {}
         mapping: dict[str, str] = {}
         cache = self.cache.setdefault("floor.verdicts", {})
@@ -126,43 +132,76 @@ class PolicyMixin:
             if a:
                 cache[key] = (a.get("choice", ""), float(probs.get("navigate", 0.0)) + float(probs.get("enter", 0.0)))
 
-    def _floor(self, task: Task, ctx: Ctx, a: Affordance, risky_screen: float, window: str | None = None,
-               force: bool = False) -> list[str]:
-        """The floor categories that gate this action ([] = none). Word hits are classified by the decider from the
-        action and where it sits — no screen text, so page content cannot argue it out of the floor; only "it
-        just navigates" at >= release_threshold releases it. Nondescript actions on a screen with some risk are
-        classified the same way (they are gated when judged to do anything more than navigate). The classification
-        usually rode along with the step's own request; only an action seen for the first time here asks again."""
-        conf = self.cfg.policy.get("confirm", {}) or {}
-        hits = self._floor_hits(a)
-        always = force or a.channel == "script_cmd"      # scripting commands act below the UI: always classified
-        if not hits and not always and not (self._nondescript(a) and risky_screen >= float(conf.get("classify_nondescript_over", 0.3))):
-            return []
+    def _verdict(self, task_id: str, ctx: Ctx, a: Affordance, hits: list[str], window: str | None,
+                 ask: bool) -> tuple[str, float] | None:
+        """What this action does, as the decider judges it: (category, how sure it is that it only navigates).
+
+        ``None`` means nobody has judged it — either because we may not ask here, or because the decider could
+        not be reached. A failed attempt is never cached: it would make the words stand for the rest of the run.
+        """
         key = self._floor_key(ctx, a)
         cache: dict[str, tuple[str, float]] = self.cache.setdefault("floor.verdicts", {})
-        if key not in cache:
-            state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
-                     "where": a.context, "kind": f"{a.channel} {a.verb}"}
-            q = self.cfg.question("floor_what").replace("{action}", a.label)
-            try:
-                ans = ctx.gate.decide(self.redactor(task.id), state, {"what": choice(q, self._floor_options(a, hits))}, task=task.id)
-                probs = (ans.get("what") or {}).get("probabilities") or {}
-                cache[key] = ((ans.get("what") or {}).get("choice", ""), float(probs.get("navigate", 0.0)) + float(probs.get("enter", 0.0)))
-            except DeciderError:
-                cache[key] = ("", 0.0)             # cannot tell: the words stand
-        top, nav = cache[key]
+        if key in cache:
+            return cache[key]
+        if not ask or getattr(ctx, "gate", None) is None:
+            return None
+        state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
+                 "where": a.context, "kind": f"{a.channel} {a.verb}"}
+        q = self.cfg.question("floor_what").replace("{action}", a.label)
+        try:
+            ans = ctx.gate.decide(self.redactor(task_id), state, {"what": choice(q, self._floor_options(a, hits))}, task=task_id)
+        except DeciderError as exc:
+            log.info("floor classification unavailable for %r: %s", a.label[:40], exc)
+            return None
+        probs = (ans.get("what") or {}).get("probabilities") or {}
+        cache[key] = ((ans.get("what") or {}).get("choice", ""),
+                      float(probs.get("navigate", 0.0)) + float(probs.get("enter", 0.0)))
+        return cache[key]
+
+    def _floor(self, task_id: str, ctx: Ctx, a: Affordance, window: str | None = None, ask: bool = True) -> list[str]:
+        """The floor categories that gate this action ([] = none).
+
+        *Every* action is judged, not only the ones whose words happen to be in policy.yaml — that word list is
+        two languages wide and the floor has to hold in all of them. The judgement is made from the action and
+        where it sits, never from screen text, so content on a page cannot argue an action out of the floor.
+        Only "it just navigates" (or, for typing, "it only enters text") at >= release_threshold releases an
+        action the words flagged.
+        """
+        conf = self.cfg.policy.get("confirm", {}) or {}
+        if conf.get("mode", "caller") == "never":
+            return []
+        hits = self._floor_hits(a)
+        verdict = self._verdict(task_id, ctx, a, hits, window, ask)
+        if verdict is None:
+            # nobody judged it: the words are all there is. This is the honest degradation when there is no
+            # decider at hand (step-level acts, a transient failure) — not a licence, which is why it is logged.
+            if not hits:
+                log.debug("unclassified, falling back to words: %r", a.label[:60])
+            return hits
+        top, nav = verdict
         if hits:
             if nav >= float(conf.get("release_threshold", 0.9)):
-                self.audit.record("floor", task=task.id, action=a.label, released=True, navigate=round(nav, 3), words=hits)
+                self.audit.record("floor", task=task_id, action=a.label, released=True, navigate=round(nav, 3), words=hits)
                 return []
             return hits
         return [] if top in ("navigate", "enter", "") else [top]
 
+    def _risky(self, a: Affordance, ctx: Ctx | None = None) -> bool:
+        """A cheap read for the places that filter a whole pool of actions before a decider question picks one
+        (exploring an app, backing out of a window): what has already been classified, else the words. It does
+        not ask — one round trip per candidate would cost more than the question that follows it."""
+        if ctx is not None:
+            cached = (self.cache.get("floor.verdicts") or {}).get(self._floor_key(ctx, a))
+            if cached is not None:
+                return cached[0] not in ("navigate", "enter", "")
+        return bool(self._floor_hits(a))
+
     def _needs_confirm(self, a: Affordance, risky_screen: float, approved: set[str],
                        harmless: Callable[[Affordance], bool] | None = None, floor: list[str] | None = None) -> bool:
-        """The safety floor always asks (``floor``: its categories for this action, as classified; by default the
-        words alone). On a screen the decider judged risky, anything else asks too — unless the decider, asked
-        about this very action, judges that it only backs out (closes, cancels, postpones) and commits nothing."""
+        """The safety floor always asks (``floor``: its categories for this action, as classified; by default
+        the words alone, for callers that have no context to classify in). On a screen the decider judged risky,
+        anything else asks too — unless the decider, asked about this very action, judges that it only backs out
+        (closes, cancels, postpones) and commits nothing."""
         conf = self.cfg.policy.get("confirm", {}) or {}
         if conf.get("mode", "caller") == "never" or a.label in approved:
             return False

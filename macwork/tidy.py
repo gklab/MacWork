@@ -32,9 +32,13 @@ class TidyMixin:
                 log.info("tidy: %s", exc)
 
     def _window_ids(self) -> dict[int, set[int]]:
-        """Every visible window on screen by owner (the system's window numbers: stable for a window's life)."""
+        """Every window by owner (the system's window numbers: stable for a window's life).
+
+        Every window, not only the ones on this Space: a task that opened a window and then switched away
+        would otherwise look as if the window had gone, and it would never be cleaned up.
+        """
         try:
-            wins = self.helper.call("screen.windows")
+            wins = self.helper.call("screen.windows", all=True)
         except HelperError:
             return {}
         out: dict[int, set[int]] = {}
@@ -208,7 +212,7 @@ class TidyMixin:
         try:
             ctx = self._ctx(task.goal, task.inputs, {"pid": app["pid"], "name": app.get("name"), "bundle_id": app.get("bundle_id")}, task.id)
             obs = observe(ctx)
-            pool = [a for a in obs.affordances if a.channel in ("window", "keys", "pointer") and not a.slots and not self._risky(a)]
+            pool = [a for a in obs.affordances if a.channel in ("window", "keys", "pointer") and not a.slots and not self._risky(a, ctx)]
             flat, _ = arrange(pool, int(self.cfg.get("engine.max_options", 200)) - 1, set())
             options = {"none": "none of these backs out"} | {a.id: a.describe() for a in flat}
             q = self.cfg.question(question).replace("{app}", str(app.get("name"))).replace("{window}", window)

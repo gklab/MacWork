@@ -60,7 +60,7 @@ class LearnMixin:
             self.models.see(ctx.app, base, obs.window, [a.label for a in obs.affordances if a.channel == "window"][:12])
             while explored < int(lc.get("max_actions", 30)) and time.monotonic() - t0 < float(lc.get("budget_s", 180)):
                 cands = self._safe_to_explore(ctx, obs, [a for a in obs.affordances if a.channel in channels and a.label not in tried
-                                                         and not self._denied(a, ctx.app) and not self._risky(a) and not a.slots])
+                                                         and not self._denied(a, ctx.app) and not self._risky(a, ctx) and not a.slots])
                 if not cands:
                     break
                 a = cands[0]
@@ -98,7 +98,7 @@ class LearnMixin:
         keys_provider = get_provider("keys")
         if keys_provider:
             keys_provider(ctx, extra)
-        pool = [a for a in obs.affordances + extra.affordances if not a.slots and not self._risky(a) and not self._denied(a, ctx.app)]
+        pool = [a for a in obs.affordances + extra.affordances if not a.slots and not self._risky(a, ctx) and not self._denied(a, ctx.app)]
         flat, _folded = arrange(pool, int(self.cfg.get("engine.max_options", 200)) - 1, set())
         if not flat:
             return None

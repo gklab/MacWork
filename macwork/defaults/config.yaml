@@ -21,7 +21,8 @@ helper:
 
 observe:
   # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
-  providers: [window, overlays, popups, windows, vision, menu, sdef, keys, typing, apps, shortcuts, files, skills, web]
+  providers: [window, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
+              typing, apps, shortcuts, files, clipboard, skills, drag, web]   # drag last: it needs the frames
   ax:
     max_nodes: 3000
     max_depth: 40
@@ -84,6 +85,29 @@ observe:
     web_research: research this on the web (search, open pages, read the relevant passages) / 上网查资料、搜索、读网页
   shortcuts:
     cache_s: 300
+  menubar_extras:                # the status items at the right-hand end of the menu bar
+    enabled: true
+    owners_cache_s: 300          # how long the list of which processes own one is reused
+    cache_s: 4                   # how long their trees are reused (any action invalidates them)
+    max_apps: 20
+    max_nodes: 60
+    max_depth: 4
+  clipboard:
+    enabled: true
+    preview_chars: 0             # 0 = report only the types and the size, never the contents
+    requires_input: text         # "put it on the clipboard" is offered only when the caller supplied text
+    label: put the given text on the clipboard
+  services:                      # what other apps publish as Services (from their own Info.plist)
+    enabled: true
+    cache_s: 900                 # reading every bundle takes a moment; it runs behind the look
+    limit: 80
+    file_types: [NSFilenamesPboardType, public.file-url, NSURLPboardType]   # system type names, not app knowledge
+  drag:
+    enabled: true
+    max_spots: 300
+    label: drag one thing on screen onto another
+  schemes:
+    limit: 8                     # URL schemes offered per app (from its own Info.plist)
   files:
     limit: 15
     roots: ["~"]
@@ -149,8 +173,12 @@ appmodel:
   max_hints: 8
 
 engine:
-  max_steps: 12
-  budget_s: 90
+  max_steps: 12                  # per run: one do(), or one resume() after the caller answered
+  budget_s: 90                   # per run too — the caller's thinking time is not the task's
+  total_steps: 48                # over all of a task's runs together
+  total_budget_s: 600            # working time summed over the runs; waiting for the caller does not count
+  max_decisions: 120             # decider requests one run may make (a step can need several)
+  max_cost_usd: 0.5              # 0 = no ceiling
   max_options: 200               # Jev accepts at most 255 per choice
   history: 6
   locked_channels: [web, shortcut]   # what still works while the screen is locked (no UI needed)
@@ -221,6 +249,8 @@ audit:
   enabled: true
   path: ~/Library/Logs/macwork/audit.jsonl
   dry_run: false                 # true: never call the decider, only log what would be sent
+  max_bytes: 67108864            # rotate past this (it holds redacted screen text; it is written 0600)
+  keep: 3                        # audit.1.jsonl … audit.3.jsonl; the oldest falls off the end
 
 server:
   name: macwork

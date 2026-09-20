@@ -11,11 +11,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-_WORD = re.compile(r"[0-9]+(?:[.,][0-9]+)*|[A-Za-z]+|[㐀-鿿]")
+# Any script, not a list of the ones we happened to think of: a value the tokenizer cannot see at all comes
+# out as "made of nothing", which `source_of` would wave through as "no value" — the guard would be off for
+# every language it does not know. Ideographs stay one piece each (they carry no word boundaries); every other
+# script is taken in runs.
+_WORD = re.compile(r"\d+(?:[.,]\d+)*|[㐀-鿿]|[^\W\d_]+")
 
 
 def pieces(text: str) -> list[str]:
-    """Numbers, words and CJK characters — what a value is made of, for checking where it could have come from."""
+    """Numbers, words and ideographs — what a value is made of, for checking where it could have come from."""
     return _WORD.findall(text or "")
 
 

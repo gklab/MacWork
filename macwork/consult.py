@@ -41,10 +41,10 @@ class ConsultMixin:
             brief["app_model"] = self.models.brief(ctx.app)
         if obs:
             brief["window"] = obs.window
-            brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 800))]
+            brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 600))]
             skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
             pool = [a for a in (affs or obs.affordances) if a.channel not in skip]
-            brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 150))]
+            brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
             if "open_windows" in obs.notes:
                 brief["open_windows"] = obs.notes["open_windows"] or "none: the app has no window open"
         routines = [sk["goal"] for sk in self.skills.for_app((ctx.app or {}).get("bundle_id") if ctx else None)]
@@ -135,6 +135,8 @@ class ConsultMixin:
             return f"press {t['keys'].lower()} (suggested by the planner)"
         if t.get("type"):
             return f"type 「{t['type'][:40]}」 at the cursor (suggested by the planner)"
+        if t.get("open_url"):
+            return f"open the link 「{t['open_url'][:60]}」 (suggested by the planner)"
         if t.get("drag"):
             return f"drag 「{t['drag'][0][:40]}」 onto 「{t['drag'][1][:40]}」 (suggested by the planner)"
         return str(t.get("action") or "")
@@ -150,6 +152,8 @@ class ConsultMixin:
                 out.append(Affordance(f"t{i}", "keys", "key", self._suggestion_label(t), {"combo": t["keys"].lower()}))
             elif t.get("type"):
                 out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t), {"text": t["type"]}))
+            elif t.get("open_url"):
+                out.append(Affordance(f"t{i}", "file", "open", self._suggestion_label(t), {"path": "", "url": t["open_url"]}))
             elif t.get("drag") and obs is not None:
                 a, b = (_where(obs, name) for name in t["drag"])
                 if a and b:

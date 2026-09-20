@@ -30,6 +30,7 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 TRY_ITEM = {"type": "object", "properties": {"action": {"type": "string"}, "keys": {"type": "string"}, "type": {"type": "string"},
+                                             "open_url": {"type": "string"},
                                              "drag": {"type": "array", "items": {"type": "string"}}},
             "additionalProperties": False}
 PLAN_SCHEMA = {
@@ -54,7 +55,7 @@ def _tries(raw: Any) -> list[dict[str, Any]]:
         if isinstance(drag, list) and len(drag) == 2 and all(str(x).strip() for x in drag):
             out.append({"drag": [str(drag[0]).strip(), str(drag[1]).strip()]})
             continue
-        item = {k: str(v).strip() for k, v in t.items() if k in ("action", "keys", "type") and str(v).strip()}
+        item = {k: str(v).strip() for k, v in t.items() if k in ("action", "keys", "type", "open_url") and str(v).strip()}
         if len(item) == 1:
             out.append(item)
     return out

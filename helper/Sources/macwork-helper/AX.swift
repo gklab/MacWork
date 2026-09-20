@@ -9,6 +9,7 @@ private let batchAttrs: [String] = [
     kAXEnabledAttribute, kAXFocusedAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute,
     "AXPlaceholderValue", kAXHelpAttribute, kAXSelectedAttribute, kAXIdentifierAttribute,
     "AXMenuItemCmdChar", "AXMenuItemCmdModifiers", kAXRoleDescriptionAttribute, "AXMenuItemMarkChar",
+    kAXURLAttribute, kAXSelectedTextAttribute,
 ].map { $0 as String }
 
 final class AXStore {
@@ -82,6 +83,26 @@ func axAttr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
     return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
 }
 
+/// Which running processes own a menu bar extra, in one call.
+///
+/// Asking each process over its own round trip costs seconds: status items belong mostly to background
+/// agents, and there are hundreds of those. Here it is one round trip and one cheap attribute read each —
+/// the full tree is only fetched for the processes that turn out to have one.
+func axExtrasOwners(_ p: Params) throws -> Any {
+    var out: [[String: Any]] = []
+    for app in NSWorkspace.shared.runningApplications {
+        // a process with no connection to the window server cannot own a status item, and asking it anyway is
+        // what makes this slow: most of what is running is exactly that
+        if app.activationPolicy == .prohibited { continue }
+        let el = AXUIElementCreateApplication(app.processIdentifier)
+        guard let bar = axAttr(el, kAXExtrasMenuBarAttribute) else { continue }
+        let items = (axAttr(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        if items.isEmpty { continue }
+        out.append(["pid": Int(app.processIdentifier), "name": app.localizedName ?? "", "items": items.count])
+    }
+    return out
+}
+
 func axActions(_ el: AXUIElement) -> [String] {
     var names: CFArray?
     guard AXUIElementCopyActionNames(el, &names) == .success, let arr = names as? [String] else { return [] }
@@ -121,6 +142,8 @@ private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, sett
     }
     if let s = axString(at(16), limit: 60) { node["rdesc"] = s }
     if let s = axString(at(17), limit: 4) { node["mark"] = s }   // ✓ on the current mode / a toggled setting
+    if let u = at(18) as? NSURL, let s = u.absoluteString { node["url"] = String(s.prefix(300)) }
+    if let s = axString(at(19), limit: textLimit) { node["selected_text"] = s }
     if let role = node["role"] as? String, settableRoles.contains(role) {   // can its value really be changed?
         var ok: DarwinBoolean = false
         if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &ok) == .success { node["editable"] = ok.boolValue }
@@ -163,6 +186,9 @@ func axSnapshot(_ p: Params) throws -> Any {
         switch scope {
         case "app": roots = [app]
         case "menubar": if let m = axAttr(app, kAXMenuBarAttribute) { roots = [m as! AXUIElement] }
+        // the right-hand end of the menu bar: Wi-Fi, Bluetooth, volume, the input method, and every third-party
+        // status item. An ordinary Accessibility attribute, and a whole surface the engine could not see at all.
+        case "extras_menubar": if let m = axAttr(app, kAXExtrasMenuBarAttribute) { roots = [m as! AXUIElement] }
         case "windows":
             roots = ((axAttr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []).filter {
                 (axAttr($0, kAXRoleAttribute) as? String) == (kAXWindowRole as String)

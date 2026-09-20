@@ -2,6 +2,8 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import NaturalLanguage
+import PDFKit
+import UniformTypeIdentifiers
 
 // MARK: - apps
 
@@ -80,6 +82,63 @@ private let modifierFlags: [String: CGEventFlags] = [
 ]
 
 /// "cmd+shift+n", "return", "escape".
+// MARK: - who last touched the Mac
+
+/// Telling the user's input apart from our own.
+///
+/// Events we post with `CGEvent.post(tap: .cghidEventTap)` are injected into the same HID stream the system
+/// measures idle time from, so `secondsSinceLastEventType` is reset by our own typing. Read naively it says
+/// "the user is busy" every time the engine presses a key — which both costs a wait on every step and, worse,
+/// makes it impossible to notice that the user really did come back. So each injection is bracketed, and the
+/// last genuine user event is tracked separately.
+final class InputTracker {
+    private let lock = NSLock()
+    private var lastSynthetic: TimeInterval = -Double.greatestFiniteMagnitude
+    private var lastUser: TimeInterval = 0
+    private let slack: TimeInterval = 0.02   // an event this close to our own injection is taken to be ours
+    private let now: () -> TimeInterval
+    private let hidIdle: () -> Double
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         hidIdle: @escaping () -> Double = {
+             CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
+         }) {
+        self.now = now
+        self.hidIdle = hidIdle
+    }
+
+    /// Fold whatever the HID system knows into `lastUser`, unless the most recent event was one of ours.
+    private func refreshLocked() {
+        let at = now() - hidIdle()
+        if at > lastSynthetic + slack {
+            lastUser = max(lastUser, at)
+        }
+    }
+
+    /// Call around anything that posts events: `before` banks the user activity up to this moment, `after`
+    /// marks everything up to now as ours (set after posting, so our own events fall inside the mark).
+    func before() { lock.lock(); refreshLocked(); lock.unlock() }
+    func after() { lock.lock(); lastSynthetic = now(); lock.unlock() }
+
+    func snapshot() -> (user: Double, hid: Double, ours: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        refreshLocked()
+        let hid = hidIdle()
+        return (now() - lastUser, hid, now() - hid <= lastSynthetic + slack)
+    }
+}
+
+let input = InputTracker()
+
+/// While any app has secure input on (a password field, some terminals), the window server drops synthetic key
+/// events without a word. Typing into that silence and calling the step unverified is worse than failing.
+func requireKeyboard() throws {
+    if IsSecureEventInputEnabled() {
+        throw RPCError("secure_input", "secure input is on (a password field has focus somewhere): keystrokes would be dropped")
+    }
+}
+
 func inputKey(_ p: Params) throws -> Any {
     guard let combo = (p["combo"] as? String)?.lowercased(), !combo.isEmpty else { throw RPCError("bad_params", "combo required") }
     let parts = combo.split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -89,6 +148,9 @@ func inputKey(_ p: Params) throws -> Any {
         flags.insert(f)
     }
     guard let key = parts.last, let code = keyCodes[key] else { throw RPCError("bad_params", "unknown key \(parts.last ?? "")") }
+    try requireKeyboard()
+    input.before()
+    defer { input.after() }
     let src = CGEventSource(stateID: .hidSystemState)
     for down in [true, false] {
         let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(code), keyDown: down)
@@ -181,6 +243,9 @@ private func pasteRestoring(_ text: String, vKey: CGKeyCode) {
 /// "paste" (clipboard, restored afterwards; works everywhere) or "unicode" (synthetic unicode key events).
 func inputType(_ p: Params) throws -> Any {
     guard let text = p["text"] as? String else { throw RPCError("bad_params", "text required") }
+    try requireKeyboard()
+    input.before()
+    defer { input.after() }
     let nonAscii = p["non_ascii"] as? String ?? "paste"
     let map = asciiKeyMap()
     let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
@@ -227,6 +292,8 @@ func inputClick(_ p: Params) throws -> Any {
           let y = p["y"] as? Double ?? (p["y"] as? Int).map(Double.init) else { throw RPCError("bad_params", "x, y required") }
     let right = (p["button"] as? String) == "right"
     let count = p["count"] as? Int ?? 1
+    input.before()
+    defer { input.after() }
     let pt = CGPoint(x: x, y: y)
     let (down, up, btn): (CGEventType, CGEventType, CGMouseButton) = right ? (.rightMouseDown, .rightMouseUp, .right) : (.leftMouseDown, .leftMouseUp, .left)
     CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: btn)?.post(tap: .cghidEventTap)
@@ -245,6 +312,8 @@ func inputDrag(_ p: Params) throws -> Any {
     func num(_ k: String) -> Double? { p[k] as? Double ?? (p[k] as? Int).map(Double.init) }
     guard let x1 = num("x1"), let y1 = num("y1"), let x2 = num("x2"), let y2 = num("y2") else { throw RPCError("bad_params", "x1, y1, x2, y2 required") }
     let steps = max(2, p["steps"] as? Int ?? 12)
+    input.before()
+    defer { input.after() }
     let a = CGPoint(x: x1, y: y1), b = CGPoint(x: x2, y: y2)
     CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: a, mouseButton: .left)?.post(tap: .cghidEventTap)
     CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: a, mouseButton: .left)?.post(tap: .cghidEventTap)
@@ -260,10 +329,91 @@ func inputDrag(_ p: Params) throws -> Any {
     return ["ok": true]
 }
 
-/// Seconds since the last keyboard/mouse input from the user (to yield instead of fighting over the Mac).
+/// What is on the clipboard — by default only its shape, never its contents: a password manager puts real
+/// secrets there, and this is read on every look. `preview_chars` opts into a prefix of the text.
+func clipboardRead(_ p: Params) throws -> Any {
+    let pb = NSPasteboard.general
+    let text = pb.string(forType: .string)
+    var out: [String: Any] = ["change_count": pb.changeCount,
+                              "types": (pb.types ?? []).map { $0.rawValue },
+                              "chars": text?.count ?? 0]
+    if let n = p["preview_chars"] as? Int, n > 0, let t = text {
+        out["text"] = String(t.prefix(n))
+    }
+    return out
+}
+
+/// Put text on the clipboard. The clipboard is how apps that share nothing else exchange data; pasting it
+/// somewhere is a separate action, and one the safety floor gates.
+func clipboardWrite(_ p: Params) throws -> Any {
+    guard let text = p["text"] as? String else { throw RPCError("bad_params", "text required") }
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(text, forType: .string)
+    return ["ok": true, "change_count": pb.changeCount]
+}
+
+/// The text of a file.
+///
+/// A task may only write what it saw, and until now "saw" meant a screen: a file the goal is about had to be
+/// opened in an app and read off its window. The frameworks already know how to read these formats, so
+/// nothing here parses one by hand, and what kind of file it is comes from the system, not from its name.
+func fileReadText(_ p: Params) throws -> Any {
+    guard let path = p["path"] as? String else { throw RPCError("bad_params", "path required") }
+    let url = URL(fileURLWithPath: path)
+    let limit = p["max_chars"] as? Int ?? 20_000
+    // whether a file has text in it is the system's judgement, from its type, not ours from its name. Without
+    // this the readers below happily return an icon or a binary as mojibake, and the task would record that as
+    // something it had read.
+    let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+    let readable: [UTType] = [.text, .pdf, .rtf, .html, .xml, .compositeContent, .sourceCode, .json]
+    let declared = type.map { t in readable.contains(where: { t.conforms(to: $0) }) } ?? false
+    // an extension nobody registered gets a made-up type that conforms to nothing (a .toml, say), so an
+    // unknown type is not a "no" — it is a "find out", and finding out means the bytes really decoding
+    let unknown = type?.isDynamic ?? true
+    guard declared || unknown else {
+        throw RPCError("not_text", "\(url.lastPathComponent) is a \(type?.localizedDescription ?? "file"), not something with text in it")
+    }
+    let kind = type?.identifier ?? "public.data"
+    if declared, type?.conforms(to: .pdf) == true, let doc = PDFDocument(url: url) {
+        return ["text": String((doc.string ?? "").prefix(limit)), "kind": kind, "pages": doc.pageCount]
+    }
+    // only for a type that says it holds text: this reader is lenient enough to turn an icon into mojibake
+    if declared, let s = try? NSAttributedString(url: url, options: [:], documentAttributes: nil) {
+        return ["text": String(s.string.prefix(limit)), "kind": kind]
+    }
+    if let data = try? Data(contentsOf: url), let s = String(data: data.prefix(limit * 4), encoding: .utf8) {
+        return ["text": String(s.prefix(limit)), "kind": kind]
+    }
+    throw RPCError("not_text", "\(url.lastPathComponent) could not be read as text")
+}
+
+/// Run a Service — the system-wide "hand this content to that app" mechanism every app can publish into.
+///
+/// The content goes on a pasteboard of our own, never the general one: the user's clipboard is theirs. The
+/// name is the item as it appears in the Services menu, "Submenu/Item" for the ones that sit in a submenu,
+/// which is exactly the form the providing bundle declares in its own Info.plist.
+func servicesPerform(_ p: Params) throws -> Any {
+    guard let name = p["name"] as? String, !name.isEmpty else { throw RPCError("bad_params", "name required") }
+    let pb = NSPasteboard(name: NSPasteboard.Name("dev.macwork.service"))
+    pb.clearContents()
+    var wrote = false
+    if let files = p["files"] as? [String], !files.isEmpty {
+        wrote = pb.writeObjects(files.map { URL(fileURLWithPath: $0) as NSURL })
+    }
+    if let text = p["text"] as? String, !text.isEmpty {
+        wrote = pb.setString(text, forType: .string) || wrote
+    }
+    guard wrote else { throw RPCError("bad_params", "a service needs text or files to act on") }
+    return ["ok": NSPerformService(name, pb)]
+}
+
+/// Seconds since the last keyboard/mouse input *from the user* — our own injections excluded, which is what
+/// the engine means when it asks whether it may take the keyboard. `hid_idle_s` is the raw system figure.
 func inputIdle(_ p: Params) throws -> Any {
-    let s = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: ~0)!)
-    return ["idle_s": s]
+    let s = input.snapshot()
+    return ["idle_s": s.user, "hid_idle_s": s.hid, "last_input_was_ours": s.ours,
+            "secure_input": IsSecureEventInputEnabled()]
 }
 
 // MARK: - AppleScript (Automation permission is asked per target app, attributed to this helper)
@@ -350,17 +500,27 @@ func appsInstalled(_ p: Params) throws -> Any {
 
 /// Every window on screen, front to back, with its owner and layer (no titles: those need Screen Recording).
 /// Lets the engine notice what covers an app — a permission prompt or an alert from another process.
+/// Every window, or only the ones on screen. "On screen" means this Space: a window the task opened and then
+/// switched away from is not gone, and tracking it as gone loses it for good.
 func screenWindows(_ p: Params) throws -> Any {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+    let all = p["all"] as? Bool ?? false
+    let options: CGWindowListOption = all ? [.optionAll, .excludeDesktopElements] : [.optionOnScreenOnly, .excludeDesktopElements]
+    guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return [Any]()
     }
+    let onScreen: Set<Int> = all
+        ? Set(((CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [])
+            .compactMap { $0[kCGWindowNumber as String] as? Int })
+        : []
     return list.compactMap { w -> [String: Any]? in
         guard let pid = w[kCGWindowOwnerPID as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Any] else { return nil }
         let frame = ["X", "Y", "Width", "Height"].map { safeInt((b[$0] as? Double) ?? Double((b[$0] as? Int) ?? 0)) }
         let app = NSRunningApplication(processIdentifier: pid_t(pid))
-        return ["pid": pid, "id": w[kCGWindowNumber as String] as? Int ?? 0,
+        let number = w[kCGWindowNumber as String] as? Int ?? 0
+        return ["pid": pid, "id": number,
                 "owner": w[kCGWindowOwnerName as String] as? String ?? "", "layer": w[kCGWindowLayer as String] as? Int ?? 0,
                 "frame": frame, "regular": app?.activationPolicy == .regular,
-                "alpha": w[kCGWindowAlpha as String] as? Double ?? 1]
+                "alpha": w[kCGWindowAlpha as String] as? Double ?? 1,
+                "on_screen": all ? onScreen.contains(number) : true]
     }
 }

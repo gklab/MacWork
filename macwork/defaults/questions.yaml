@@ -120,7 +120,9 @@ planner_plan: |-
   "blocked" empty unless the screen shows the goal cannot be reached until the user signs in, enters a password
   or grants a permission. In "try" list the concrete moves to attempt right now, in order, using what you know about how this kind of
   app works: {{"action": "<an exact label from actions_available>"}}, {{"keys": "<key combo, e.g. cmd+shift+x>"}} for a
-  keyboard shortcut, {{"type": "text to type"}}, or {{"drag": ["<label to drag>", "<label to drop onto>"]}}.
+  keyboard shortcut, {{"type": "text to type"}}, {{"drag": ["<label to drag>", "<label to drop onto>"]}}, or
+  {{"open_url": "<a whole link>"}} — use that last one only with a scheme the context lists under url_schemes,
+  which is the app saying it can be driven that way without its windows.
   Leave it empty if nothing concrete comes to mind.
 planner_replan: |-
   Goal: {goal}

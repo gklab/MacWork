@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -17,6 +18,7 @@ from typing import Any, Callable
 
 from .config import Config
 from .helper import Helper, HelperError
+from .appmodel import parse_services
 from .model import Affordance, Observation, Slot
 
 log = logging.getLogger(__name__)
@@ -55,6 +57,28 @@ def get_provider(name: str) -> Provider | None:
             PROVIDERS[name] = ep.load()
             return PROVIDERS[name]
     return None
+
+
+def _refresh_in_background(ctx: Ctx, key: str, ttl: float, make: Callable[[], Any]) -> Any:
+    """What was last found, and a refresh behind it when that has gone stale.
+
+    For surfaces whose enumeration is slow but changes rarely. Never blocks the look: the first one gets
+    nothing, which is the honest cost of not making every step wait for it.
+    """
+    hit = ctx.cache.get(key)
+    fresh = hit and time.monotonic() - hit[0] < ttl
+    if not fresh and not ctx.cache.get(f"{key}.running"):
+        ctx.cache[f"{key}.running"] = True
+
+        def refresh() -> None:
+            try:
+                ctx.cache[key] = (time.monotonic(), make())
+            except Exception as exc:  # noqa: BLE001  (a background scan must never take the task down)
+                log.info("%s: background refresh failed (%s)", key, exc)
+            finally:
+                ctx.cache[f"{key}.running"] = False
+        threading.Thread(target=refresh, name=f"refresh-{key}", daemon=True).start()
+    return hit[1] if hit else None
 
 
 def _cached(ctx: Ctx, key: str, ttl: float, make: Callable[[], Any]) -> Any:
@@ -274,11 +298,14 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             state = " (selected)" if n.get("selected") else ""
             for act in offered:
                 verb = labels.get(act) or ""
-                text = f"{verb + ' ' if verb else ''}{rd} 「{label}」{state}"
+                goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
+                text = f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}{state}"
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
                                                   {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame")}, context=ctx_text))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
             t = str(n.get("value") or n.get("title") or n.get("desc") or "").strip()
+            if t and n.get("url"):   # where a link goes is the thing worth knowing about it
+                t = f"{t} → {n['url']}"
             if t and t not in seen_text:
                 seen_text.add(t)
                 texts.append(t)
@@ -383,6 +410,75 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"]} for o in found]
         lines = [f"[in front of the app, from {o['from']}: {o['text']}]" for o in found]
         obs.screen_text = "\n".join(lines + ([obs.screen_text] if obs.screen_text else []))
+
+
+@provider("menubar_extras")
+def menubar_extras(ctx: Ctx, obs: Observation) -> None:
+    """The right-hand end of the menu bar: Wi-Fi, Bluetooth, volume, the input method, and every third-party
+    status item.
+
+    A whole surface the engine could not see at all — and one nothing here has to know about, since each item
+    belongs to whichever process owns it and macOS hands them over through an ordinary Accessibility attribute.
+    Status items are owned mostly by background agents, so the scan covers every running process, not just the
+    ones with a Dock icon; which processes have any is remembered, because that changes rarely and asking them
+    all is the expensive part.
+    """
+    mc = ctx.cfg.section("observe.menubar_extras")
+    if not mc.get("enabled", True):
+        return
+    depth, nodes_max = int(mc.get("max_depth", 4)), int(mc.get("max_nodes", 60))
+
+    def snapshot(pid: int) -> list[dict[str, Any]]:
+        try:
+            return ctx.helper.call("ax.snapshot", pid=pid, scope="extras_menubar",
+                                   max_nodes=nodes_max, max_depth=depth).get("nodes", [])
+        except HelperError:
+            return []
+
+    # Who owns one is asked of the helper in a single call and remembered for a long time: status items come
+    # and go with apps, not with screens. Even so the scan costs a second or two — every process has to be
+    # asked — so it never runs inside a look: the first look goes without, and a refresh runs behind it.
+    who = _refresh_in_background(ctx, "menubar.owners", float(mc.get("owners_cache_s", 300)),
+                                 lambda: ctx.helper.call("ax.extras_owners")) or []
+    who = who[: int(mc.get("max_apps", 20))]
+    # like the menu tree: reused until something is acted on, because reading nine processes' trees on every
+    # look is most of what this surface costs
+    key = (tuple(sorted(a["pid"] for a in who)), ctx.cache.get("actions_done", 0))   # sorted: the scan's order varies
+    hit = ctx.cache.get("menubar.snap")
+    if hit and hit[0] == key and time.monotonic() - hit[1] < float(mc.get("cache_s", 4)):
+        trees = hit[2]
+    else:
+        trees = {a["pid"]: snapshot(a["pid"]) for a in who}
+        ctx.cache["menubar.snap"] = (key, time.monotonic(), trees)
+    for app in who:
+        nodes = trees.get(app["pid"]) or []
+        if not nodes:
+            continue
+        sub = Ctx(ctx.cfg, ctx.helper, ctx.goal, ctx.inputs, {"pid": app["pid"], "name": app["name"]}, ctx.running, ctx.cache)
+        element_affordances(sub, obs, nodes, "e", where=f"the menu bar ▸ {app['name']}")
+
+
+@provider("clipboard")
+def clipboard(ctx: Ctx, obs: Observation) -> None:
+    """What is on the clipboard — its shape, not its contents.
+
+    The clipboard is how apps that share nothing else pass data, so whether something is on it changes what a
+    "paste" means. Its contents are another matter: a password manager puts real secrets there and this runs on
+    every look, so only the types and the size are reported unless ``preview_chars`` says otherwise.
+    """
+    cc = ctx.cfg.section("observe.clipboard")
+    if not cc.get("enabled", True):
+        return
+    try:
+        seen = ctx.helper.call("clipboard.read", preview_chars=int(cc.get("preview_chars", 0)))
+    except HelperError:
+        return
+    if seen.get("types"):
+        obs.notes["clipboard"] = {k: seen[k] for k in ("types", "chars", "text") if seen.get(k)}
+    if ctx.inputs.get(str(cc.get("requires_input", "text"))):
+        obs.affordances.append(Affordance(f"b{len(obs.affordances)}", "clipboard", "put",
+                                          str(cc.get("label", "put the given text on the clipboard")), {},
+                                          slots={"text": Slot("text", "what to put on the clipboard")}))
 
 
 @provider("popups")
@@ -591,6 +687,77 @@ def shortcuts(ctx: Ctx, obs: Observation) -> None:
 
 
 # ----------------------------------------------------------------------------- files / urls named by the caller
+@provider("schemes")
+def schemes(ctx: Ctx, obs: Observation) -> None:
+    """URL schemes the app being worked in declares for itself.
+
+    A scheme is an app saying "you can ask me to do this without touching my windows" — it is in the bundle's
+    own Info.plist, so nothing here knows any app. The link itself is text, so it comes from the caller or the
+    planner like any other text, and it is judged by the safety floor with the link in it.
+    """
+    models = ctx.cache.get("appmodels")
+    if not ctx.app or models is None:
+        return
+    model = models.get(ctx.app) or {}
+    name = ctx.app.get("name") or model.get("name") or ""
+    for scheme in (model.get("url_schemes") or [])[: int(ctx.cfg.get("observe.schemes.limit", 8))]:
+        obs.affordances.append(Affordance(
+            f"h{len(obs.affordances)}", "file", "open", f"open a 「{scheme}:」 link with {name}",
+            {"path": "", "scheme": scheme},
+            slots={"url": Slot("text", f"the whole link, starting with {scheme}:")}, context=name))
+
+
+@provider("services")
+def services(ctx: Ctx, obs: Observation) -> None:
+    """Services other apps publish: "hand me this kind of content and I will do something with it".
+
+    Look a word up, start an email from a selection, open a folder in a terminal — a system-wide bus between
+    apps that share nothing else, which the engine could otherwise only reach by walking into the right app's
+    menu. Each one is declared by its own bundle, so nothing here knows any app. Reading every bundle takes a
+    moment, so it happens behind the look and is remembered.
+    """
+    sc = ctx.cfg.section("observe.services")
+    if not sc.get("enabled", True):
+        return
+
+    def scan() -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for app in ctx.helper.call("apps.installed", dirs=ctx.cfg.get("observe.apps.dirs") or []):
+            for s in parse_services(app.get("path") or ""):
+                out.append({**s, "app": app.get("name") or ""})
+        return out
+
+    found = _refresh_in_background(ctx, "services.all", float(sc.get("cache_s", 900)), scan) or []
+    file_types = set(sc.get("file_types") or [])
+    for s in found[: int(sc.get("limit", 80))]:
+        wants_file = bool(set(s.get("sends") or []) & file_types)
+        slot = ("file", "the path of the file to hand over") if wants_file else ("text", "the text to hand over")
+        obs.affordances.append(Affordance(
+            f"v{len(obs.affordances)}", "service", "perform", f"hand content to {s['app']}: 「{s['name']}」",
+            {"name": s["name"]}, slots={slot[0]: Slot("text", slot[1])}, context=f"{s['app']} (a system service)"))
+
+
+@provider("drag")
+def drag(ctx: Ctx, obs: Observation) -> None:
+    """Dragging one thing onto another.
+
+    macOS does not say which elements can be dragged — there is no such attribute — so offering a drag per
+    element would mean guessing, and guessing is what this engine does not do. Instead there is one action
+    that takes both ends by name; they are looked up among what is on screen when it runs.
+    """
+    if not ctx.app or not ctx.cfg.get("observe.drag.enabled", True):
+        return
+    spots = {a.label: a.target["frame"] for a in obs.affordances if a.target.get("frame")}
+    if len(spots) < 2:
+        return
+    obs.affordances.append(Affordance(
+        f"n{len(obs.affordances)}", "pointer", "drag_named",
+        str(ctx.cfg.get("observe.drag.label", "drag one thing on screen onto another")),
+        {"spots": dict(list(spots.items())[: int(ctx.cfg.get("observe.drag.max_spots", 300))])},
+        slots={"from": Slot("text", "the label of what to drag, as it appears on screen"),
+               "onto": Slot("text", "the label of what to drop it onto")}))
+
+
 @provider("files")
 def files(ctx: Ctx, obs: Observation) -> None:
     fc = ctx.cfg.section("observe.files")
@@ -621,6 +788,8 @@ def files(ctx: Ctx, obs: Observation) -> None:
         pp = Path(p)
         obs.affordances.append(Affordance(f"f{i}", "file", "open", f"open file 「{pp.name}」 in {pp.parent} (modified {when})", {"path": p}))
         obs.affordances.append(Affordance(f"F{i}", "file", "reveal", f"show 「{pp.name}」 in Finder", {"path": p}))
+        # what a file says can be read without opening it in anything, and becomes a fact of the task
+        obs.affordances.append(Affordance(f"R{i}", "file", "read", f"read the text of 「{pp.name}」", {"path": p}))
 
 
 # ----------------------------------------------------------------------------- learned routines

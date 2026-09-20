@@ -118,14 +118,23 @@ class ScriptedDecider:
     calls_for = 1.0
     serves = 1.0
     what: dict = {}
+    what_when: str = ""      # apply `what` only where this appears in the question (i.e. to one action)
     why = "failed"
 
-    def _classify(self, crit):
-        """How the fake answers a floor classification: what the test set, else typing is typing and a word hit
-        is what the word says."""
-        if self.what:
+    def _classify(self, q):
+        """How the fake answers a floor classification.
+
+        Every action is classified now, not only the ones whose words hit the floor, so the fake has to answer
+        the two shapes of question the way a real classifier would: a narrow question (only the categories the
+        words suggested) means the words flagged this action; the whole floor means they said nothing about it,
+        and an ordinary action is navigation — or, where text is being entered, entering text."""
+        crit = q["criteria"]
+        if self.what and (not self.what_when or self.what_when in q.get("instructions", "")):
             return {"type": "choice", "choice": max(self.what, key=self.what.get), "probabilities": dict(self.what)}
-        pick = "enter" if "enter" in crit and len(crit) > 6 else next(c for c in crit if c != "navigate")
+        if len([c for c in crit if c not in ("navigate", "enter")]) > 4:      # the whole floor was offered
+            pick = "enter" if "enter" in crit else "navigate"
+        else:
+            pick = next(c for c in crit if c != "navigate")
         return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
 
     def decide(self, state, questions):
@@ -134,11 +143,11 @@ class ScriptedDecider:
         if "action" not in questions:
             self.side.append((state, questions))
             if any(k.startswith("floor") for k in questions):
-                return {k: self._classify(q["criteria"]) for k, q in questions.items()}
+                return {k: self._classify(q) for k, q in questions.items()}
             out = {}
             for k, q in questions.items():
                 if k == "what" or k.startswith("floor"):   # the floor's classification of one action
-                    out[k] = self._classify(q["criteria"])
+                    out[k] = self._classify(q)
                 elif q["type"] == "choice":
                     out[k] = {"type": "choice", "choice": self.why}
                 else:
@@ -274,7 +283,10 @@ def test_do_happy_path_runs_menu_then_done(tmp_path):
     res = eng.do("新建一个文稿")
     assert res["status"] == "done" and res["steps"] == ["menu 文件 ▸ 新建文稿 (⌘N)"]
     assert eng.helper.did("ax.perform")[0]["ref"] == "g1.6"
-    assert res["decider"]["calls"] == 3          # two steps; the floor classification goes out beside the first
+    # two steps, plus two floor requests for the first: the batch of what the words flagged, which rides along
+    # with the step's own request, and one for the action actually chosen (the words say nothing about it, and a
+    # miss must not read as "safe" — that is what makes the floor hold in a language the word list never saw)
+    assert res["decider"]["calls"] == 4
     second_state = eng.decider.seen[1][0]
     assert "AXValueChanged" in second_state["last_action"]           # the decider sees what the UI did
 
@@ -799,7 +811,7 @@ def test_the_app_the_engine_runs_under_is_never_touched(tmp_path):
 
 def test_a_scripting_command_that_runs_code_is_not_run_unasked(tmp_path):
     d = ScriptedDecider([{"pick": "do script"}, {"pick": "新建文稿"}, {"pick": "done"}])
-    d.what = {"execute": 0.97, "navigate": 0.03}
+    d.what, d.what_when = {"execute": 0.97, "navigate": 0.03}, "do script"
     d.calls_for = 0.1
     eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
 
@@ -825,7 +837,7 @@ def test_a_scripting_command_that_runs_code_is_not_run_unasked(tmp_path):
 def test_typing_a_command_is_judged_with_its_text(tmp_path):
     from tests.test_flex import FakeBackend
     d = ScriptedDecider([{"pick": "收件人"}])
-    d.what = {"execute": 0.9, "enter": 0.1}
+    d.what, d.what_when = {"execute": 0.9, "enter": 0.1}, "rm -rf"
     eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
     eng._planner = FakeBackend([{"text": "rm -rf ~/Documents"}])
     res = eng.do("在收件人里填 rm -rf ~/Documents")      # asked for by the user, so it is not refused as invented

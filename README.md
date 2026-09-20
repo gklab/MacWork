@@ -43,8 +43,9 @@ macwork-helper   (small signed Swift app that holds the macOS permissions)
 * **No hand-written operating knowledge.** No app names, no table of "useful" shortcuts, no word lists that
   decide what to click or what is safe to explore, no relevance ranking. App commands come from the app itself
   (its menus with their own shortcuts, its Accessibility tree, its scripting dictionary); what to do with them is
-  judged by the decider, and routes it cannot see are proposed by the planner. The only fixed lists are the
-  physical keys (Return, Escape, Tab, paging) and the safety floor. Question wording, thresholds, redaction rules,
+  judged by the decider, and routes it cannot see are proposed by the planner. The only fixed list left that
+  decides anything is the physical keys (Return, Escape, Tab, paging); the safety floor's word list only orders
+  the work, it does not judge. Question wording, thresholds, redaction rules,
   providers and channels live in YAML; new providers/channels/deciders plug in through entry points.
 * **Too many options? Fold, don't guess.** Jev takes at most 255 options. When a screen offers more, the largest
   groups (a big menu, the list of installed apps) become one "look into …" entry each, which the decider can open
@@ -81,7 +82,7 @@ Nothing in the engine names an app. Everything comes from what the Mac can tell 
 | level | tools | who drives |
 |---|---|---|
 | goal | `mac_do(goal, inputs, app)` → `done` · `failed` · `need_input` · `need_confirm` · `ambiguous`; continue with `mac_resume` | Jev, asking the caller when it must |
-| step | `mac_observe(app, goal)` → affordances; `mac_act(id, params, confirm)` | the caller (no decider involved) |
+| step | `mac_observe(app, goal)` → affordances; `mac_act(id, params, confirm)` | the caller — the decider is asked nothing but the safety floor's "what does this action do" |
 | web | `web_research(goal, query, url)` → relevant passages with sources | Jev in a headless browser |
 
 ## Install
@@ -141,10 +142,14 @@ The tagger is good but not perfect; review `macwork audit` for your own workload
 
 ## Safety
 
-* `policy.yaml`'s `confirm.patterns` is a deliberate safety floor, not a way of deciding what to do: deleting,
-  sending, paying, saving/overwriting, pasting the clipboard, signing in, agreeing to terms, installing or
-  updating always need the caller's confirmation. `deny.bundle_ids` / `deny.patterns` are never touched; raw
-  AppleScript is off by default.
+* `policy.yaml`'s `confirm.categories` is a deliberate safety floor, not a way of deciding what to do:
+  deleting, sending, paying, saving/overwriting, pasting the clipboard, signing in, agreeing to terms,
+  installing or updating always need the caller's confirmation. **Every action about to run is classified**
+  (from what it is and where it sits, never from screen text, so content on a page cannot argue it out of the
+  floor) — the words in `policy.yaml` are only a hint about what to classify first and which categories to
+  offer, because they are written in two languages and a German `Löschen` or a Japanese `削除` matches none of
+  them. A miss must never read as "safe". `deny.bundle_ids` / `deny.patterns` are never touched; raw AppleScript
+  is off by default.
 * On a screen the decider judges risky, any other action needs confirmation too — unless the decider, asked about
   that very action, judges that it only backs out (cancel, close, later).
 * While the screen is locked only non-UI channels run (`engine.locked_channels`).

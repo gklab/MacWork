@@ -1,15 +1,21 @@
 # What the engine may do on its own. Matching is on "<verb> <label> <context>" of an affordance.
 #
-# confirm.categories is the safety floor. Its words only *find candidates* (they are ambiguous: 下载 is both
-# "download" and the Downloads folder, 替换 both "replace the file" and a text replacement setting); a candidate
-# is then classified by the decider from what the action is and where it sits — never from screen text, so
-# content on a page cannot talk it out of the floor. Only "it just opens, shows or navigates" at
-# >= release_threshold releases it; anything else asks the user, or is dropped when the goal never called for it.
-# Every release is written to the audit log. Direct step-level use (mac_act) and routine replay use the words alone.
+# confirm.categories is the safety floor. EVERY action about to be run is classified by the decider from what
+# it is and where it sits — never from screen text, so content on a page cannot talk it out of the floor. The
+# words below do not decide anything: they are two languages wide (a German "Löschen" or a Japanese "削除"
+# matches none of them), so a miss must never read as "safe". What they do is say which actions to classify
+# first, and which categories to offer the classifier for them. They are also ambiguous on purpose — 下载 is
+# both "download" and the Downloads folder, 替换 both "replace the file" and a text-replacement setting — which
+# is exactly why the decider, not the pattern, gives the verdict.
+# Only "it just opens, shows or navigates" at >= release_threshold releases a flagged action; anything else asks
+# the user, or is dropped when the goal never called for it. Every release is written to the audit log.
+# With no decider reachable at all, the words are the only fallback left, and that is logged too.
 confirm:
   mode: caller              # caller: return need_confirm | never: act without asking (not recommended)
   release_threshold: 0.9
-  classify_nondescript_over: 0.3   # screen risk above which unlabeled clicks and prompt buttons are classified too
+  classify_step_level: true   # mac_act classifies the action too (one request the first time it sees one).
+                              # false: the words alone, which is only as wide as the two languages below
+  other: it does something else irreversible or outward-facing
   navigate: >-
     it only opens, shows, selects, plays or navigates to something (a folder, a page, a view, a setting, a list
     item, a song); nothing is deleted, sent, paid, installed, granted, agreed to, saved, run, quit or changed

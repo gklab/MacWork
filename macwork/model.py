@@ -26,7 +26,6 @@ class Affordance:
     target: dict[str, Any] = field(default_factory=dict)   # executor-specific (refs, pids, paths); never sent out
     slots: dict[str, Slot] = field(default_factory=dict)
     context: str = ""              # where it lives (app ▸ menu path, window)
-    score: float = 0.0             # local relevance before the decider sees it
 
     def describe(self) -> str:
         text = f"{self.label}" + (f" — in {self.context}" if self.context and self.context not in self.label else "")
@@ -147,6 +146,26 @@ class Task:
     reason: str = ""
     decider_calls: int = 0
     cost_usd: float = 0.0
+    # One *run* is one uninterrupted turn of the loop: do(), or a resume() after the caller answered. The step
+    # and time budgets are per run, because the caller's thinking time is not the task's — a task that waited
+    # two minutes for a "yes" must not come back already out of budget. What bounds a task over all its runs
+    # are the `total_` ceilings, checked against `started` and `steps` as a whole.
+    run_started: float = field(default_factory=time.monotonic)
+    run_step0: int = 0                                         # len(steps) when this run began
+    spent_s: float = 0.0                                       # working time of the runs that are over
+    run_calls0: int = 0                                        # the decider's call count when this run began
+    run_cost0: float = 0.0
+
+    def begin_run(self, calls: int, cost: float) -> None:
+        self.run_started, self.run_step0, self.run_calls0, self.run_cost0 = time.monotonic(), len(self.steps), calls, cost
+
+    def end_run(self) -> None:
+        self.spent_s += time.monotonic() - self.run_started
+
+    @property
+    def working_s(self) -> float:
+        """Time actually spent working, waiting for the caller excluded: what the total budget is about."""
+        return self.spent_s + (time.monotonic() - self.run_started)
 
     def result(self) -> dict[str, Any]:
         out: dict[str, Any] = {"task_id": self.id, "status": self.status, "goal": self.goal,

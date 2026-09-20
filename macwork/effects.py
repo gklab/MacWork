@@ -56,7 +56,7 @@ class EffectsMixin:
                 if poll_ms and baseline is not None and out.watch_pid == base_pid:
                     extra["baseline"] = baseline
                 w = self.helper.call("ax.wait", pid=out.watch_pid, timeout_ms=timeout_ms,
-                                     settle_ms=0 if spec else int(v.get("settle_ms", 250)), timeout=30, **extra)
+                                     settle_ms=0 if spec else int(v.get("settle_ms", 150)), timeout=30, **extra)
                 return [e["name"] for e in w.get("events", [])]
             except HelperError as exc:
                 return [f"wait failed: {exc.code}"]
