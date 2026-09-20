@@ -9,7 +9,7 @@ private let batchAttrs: [String] = [
     kAXEnabledAttribute, kAXFocusedAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute,
     "AXPlaceholderValue", kAXHelpAttribute, kAXSelectedAttribute, kAXIdentifierAttribute,
     "AXMenuItemCmdChar", "AXMenuItemCmdModifiers", kAXRoleDescriptionAttribute, "AXMenuItemMarkChar",
-    kAXURLAttribute, kAXSelectedTextAttribute,
+    kAXURLAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
 ].map { $0 as String }
 
 final class AXStore {
@@ -109,8 +109,21 @@ func axActions(_ el: AXUIElement) -> [String] {
     return arr
 }
 
+/// What the app calls an action, in the user's language, straight from the element.
+///
+/// Only asked for actions the caller says it cannot name itself: every app may define its own, and a table
+/// of the ones we happened to think of would make the rest invisible. One extra round trip per element that
+/// has such an action, so the caller sends down what it already knows.
+func axActionDescription(_ el: AXUIElement, _ action: String) -> String? {
+    var desc: CFString?
+    guard AXUIElementCopyActionDescription(el, action as CFString, &desc) == .success else { return nil }
+    let s = (desc as String?)?.trimmingCharacters(in: .whitespaces)
+    return (s?.isEmpty ?? true) ? nil : s
+}
+
 /// One node as a plain dictionary (children not included).
-private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, settableRoles: Set<String> = []) -> (node: [String: Any], children: [AXUIElement], frame: CGRect?) {
+private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, settableRoles: Set<String> = [],
+                      byCapability: Bool = false, knownActions: Set<String> = []) -> (node: [String: Any], children: [AXUIElement], frame: CGRect?) {
     var raw: CFArray?
     AXUIElementCopyMultipleAttributeValues(el, batchAttrs as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw)
     let vals = (raw as? [CFTypeRef]) ?? []
@@ -144,13 +157,40 @@ private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, sett
     if let s = axString(at(17), limit: 4) { node["mark"] = s }   // ✓ on the current mode / a toggled setting
     if let u = at(18) as? NSURL, let s = u.absoluteString { node["url"] = String(s.prefix(300)) }
     if let s = axString(at(19), limit: textLimit) { node["selected_text"] = s }
-    if let role = node["role"] as? String, settableRoles.contains(role) {   // can its value really be changed?
+    // What can be done with this element, asked of the element itself rather than assumed from its role.
+    // A role list makes anything with an unusual role — a web input, a contenteditable group, a custom
+    // control — simply not exist for the engine; these attributes are the element's own answer.
+    // Settable, not merely present. Inside a web view nearly every element answers AXSelected and
+    // AXSelectedTextRange (with nothing in them), so "the attribute exists" would call 435 of 441 elements
+    // selectable. Whether the app will actually accept a value is the question that matters.
+    func settable(_ attr: String) -> Bool {
         var ok: DarwinBoolean = false
-        if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &ok) == .success { node["editable"] = ok.boolValue }
+        return AXUIElementIsAttributeSettable(el, attr as CFString, &ok) == .success && ok.boolValue
+    }
+    if byCapability {
+        if at(20) != nil, settable(kAXSelectedTextRangeAttribute as String) { node["text_range"] = true }
+        if axBool(at(12)) != nil, settable(kAXSelectedAttribute as String) { node["selectable"] = true }
+        // A settable AXValue is not the same as "text can be typed here": a scroll bar's position is settable
+        // too, and reporting it as a typing target offered "type into the scroll bar (now: 0)". The raw value
+        // has to actually be text — `axString` turns numbers into strings, so `node["value"]` cannot say.
+        let raw = at(4)
+        let valueIsText = (raw as? String) != nil || (raw as? NSAttributedString) != nil
+        if valueIsText || node["placeholder"] != nil || at(20) != nil {
+            node["editable"] = settable(kAXValueAttribute as String)
+        }
+    } else if let role = node["role"] as? String, settableRoles.contains(role) {
+        node["editable"] = settable(kAXValueAttribute as String)
     }
     if withActions {
         let acts = axActions(el)
         if !acts.isEmpty { node["actions"] = acts }
+        // the app's own name for anything the caller could not name; localized, and free of our vocabulary
+        let unknown = acts.filter { !knownActions.contains($0) }
+        if !unknown.isEmpty {
+            var described: [String: String] = [:]
+            for a in unknown { if let d = axActionDescription(el, a) { described[a] = d } }
+            if !described.isEmpty { node["action_desc"] = described }
+        }
     }
     return (node, children, frame)
 }
@@ -170,6 +210,8 @@ func axSnapshot(_ p: Params) throws -> Any {
     let skipRoles = Set(p["skip_roles"] as? [String] ?? [])   // e.g. AXApplication/AXMenuBar inside a window scope
     let keepRoles = Set(p["keep_offscreen_roles"] as? [String] ?? [])   // e.g. rows: a list's content even when scrolled away
     let settableRoles = Set(p["settable_roles"] as? [String] ?? [])
+    let byCapability = p["by_capability"] as? Bool ?? false
+    let knownActions = Set(p["known_actions"] as? [String] ?? [])
 
     var roots: [AXUIElement] = []
     var pid: pid_t = 0
@@ -223,7 +265,8 @@ func axSnapshot(_ p: Params) throws -> Any {
     while let item = stack.popLast() {
         if nodes.count >= maxNodes || Date().timeIntervalSince(started) > budget { truncated = true; break }
         guard firstVisit(item.el) else { continue }
-        let d = describe(item.el, textLimit: textLimit, withActions: withActions, settableRoles: settableRoles)
+        let d = describe(item.el, textLimit: textLimit, withActions: withActions, settableRoles: settableRoles,
+                         byCapability: byCapability, knownActions: knownActions)
         if item.depth > 0, let role = d.node["role"] as? String, skipRoles.contains(role) { continue }
         let free = item.free || keepRoles.contains(d.node["role"] as? String ?? "")
         if visibleOnly, !free, let clip = item.clip, let f = d.frame, f.width > 0 || f.height > 0, !clip.intersects(f) { continue }

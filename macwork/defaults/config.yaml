@@ -38,7 +38,16 @@ observe:
     skip_first_menu: true        # the Apple menu (recent items, shutdown) is never a target by default
     include_disabled: false
   window:
-    action_labels:               # AX action -> how it is offered ("" = just the element); anything else is not offered
+    # What can be done with an element is asked of the element (is this attribute settable? what does the app
+    # call this action?), not decided by the role lists below. Those are kept as a second source, not dropped:
+    # the Mac's "not settable" is not the last word, because the engine can click a row or focus a field and
+    # type. Measured on a real screen: typing targets 3 -> 18 in an editor, 2 -> 9 in a chat app, while the
+    # role lists still contributed 9 rows the attribute refused. false = role lists only, as before.
+    by_capability: true
+    action_labels:               # AX action -> how it is offered ("" = just the element)
+                                 # an action that is not here is offered too, under the name the app gives it
+                                 # (AXActionDescription), but only where nothing here already reaches the
+                                 # element — AXScrollToVisible sits on 428 of 441 elements that all have AXPress
       AXPress: ""
       AXConfirm: ""
       AXPick: ""
@@ -51,6 +60,8 @@ observe:
     context_menu_roles: [AXRow, AXCell, AXImage, AXStaticText, AXList, AXOutline, AXTable, AXWebArea, AXTextArea, AXLink, AXGroup]   # buttons expose AXShowMenu everywhere; offer it where it means something
     text_roles: [AXTextField, AXTextArea, AXComboBox, AXSearchField, AXSecureTextField]
     select_roles: [AXRow]          # rows of lists, tables and outlines: offered as "select …", named by the text they show
+    # whether Return submits is the one thing here the Mac does not answer: a one-line field and a document
+    # are the same to it, so this stays a role list until a better signal turns up
     submit_roles: [AXTextField, AXComboBox, AXSearchField]   # single-line fields also get "type and press Return"
     range_roles: [AXTextArea]      # documents: select a part of the text, or put the cursor at the end
     read_roles: [AXStaticText, AXHeading, AXCell, AXLink]

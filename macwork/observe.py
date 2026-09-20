@@ -256,9 +256,25 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
     vision provider to name."""
     wcfg = ctx.cfg.section("observe.window")
     labels = wcfg.get("action_labels") or {}
+    # Two sources, taken together. The role lists below are no longer the definition of what can be done —
+    # anything with an unusual role (a web input, a contenteditable group, a custom control) was simply
+    # invisible — but they are not dropped either: the Mac answers "can this attribute be set", and the
+    # engine has ways round a "no" (click the row, focus the field and type), so a "no" is not the last word.
+    by_capability = bool(wcfg.get("by_capability", True))
+
+    def typeable(n: dict[str, Any], role: str) -> bool:
+        return (by_capability and n.get("editable") is True) or (role in text_roles and n.get("editable") is not False)
+
+    def selectable(n: dict[str, Any], role: str) -> bool:
+        return (by_capability and n.get("selectable") is True) or role in select_roles
+
+    def has_range(n: dict[str, Any], role: str) -> bool:
+        return (by_capability and n.get("text_range") is True) or role in range_roles
     menu_roles = set(wcfg.get("context_menu_roles") or [])
     text_roles = set(wcfg.get("text_roles") or [])
     read_roles = set(wcfg.get("read_roles") or [])
+    select_roles = set(wcfg.get("select_roles") or [])
+    range_roles = set(wcfg.get("range_roles") or [])
     by_ref, kids = _tree(nodes)
     select_roles = set(wcfg.get("select_roles") or [])
     seen_text = set(obs.screen_text.splitlines())
@@ -290,15 +306,15 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         if n["ref"] in in_row and (role in text_roles or role in read_roles or role in ("AXCell", "AXImage", "AXGroup")):
             continue
         ctx_text = _context_of(n, by_ref) or where
-        if role in select_roles:   # rows are chosen by selecting them, not by an action
+        if selectable(n, role):   # rows are chosen by selecting them, not by an action
             name = _label(n) or " · ".join(dict.fromkeys(inner_text(n["ref"])))
             if name:
                 state = " (selected)" if n.get("selected") else ""
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select", f"select {rd} 「{name[:80]}」{state}",
                                                   {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}, context=ctx_text, key=ikey))
-        if role in text_roles and n.get("editable") is False:   # shows text but cannot be typed into: read it
+        if role in text_roles and n.get("editable") is False and not by_capability:   # shows text, cannot be typed into
             role = "AXStaticText"
-        if role in text_roles:
+        if typeable(n, role):
             label = n.get("title") or n.get("desc") or n.get("placeholder") or ctx_text or rd
             current = f" (now: {str(n['value'])[:60]})" if n.get("value") and role != "AXSecureTextField" else ""
             target = {"ref": n["ref"], "pid": ctx.app["pid"], "secure": role == "AXSecureTextField", "frame": n.get("frame")}
@@ -306,7 +322,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 obs.notes.setdefault("fields", []).append(f"{label}: {str(n['value'])[: int(wcfg.get('field_chars', 300))]}")
             obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type", f"type into {rd} 「{label}」{current}",
                                               target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
-            if role in set(wcfg.get("range_roles") or []) and n.get("value") and n.get("editable") is not False:
+            if has_range(n, role) and n.get("value") and n.get("editable") is not False:
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select_text",
                                                   f"select part of the text in {rd} 「{label}」", dict(target),
                                                   slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text, key=ikey))
@@ -316,17 +332,27 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type_submit",
                                                   f"type into {rd} 「{label}」 and press Return{current}", dict(target),
                                                   slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
-            continue
+            # An element can be both: a table cell takes text *and* has a context menu. Probing capabilities
+            # finds many more typing targets than the role list did, so swallowing their actions here would
+            # quietly take away what they could already do.
+            if not (n.get("actions") and by_capability):
+                continue
         # a subrole (close button, sort button…) makes the role description itself a name
         label = _label(n) or (str(n["rdesc"]) if n.get("subrole") and n.get("rdesc") else "")
-        offered = [a for a in n.get("actions", []) if a in labels and (a != "AXShowMenu" or role in menu_roles)]
+        named = [a for a in n.get("actions", []) if a in labels and (a != "AXShowMenu" or role in menu_roles)]
+        # An action outside the naming table used to be discarded, which made AXRaise, AXCancel, AXDelete and
+        # every app's own actions invisible. They are offered now — but only where nothing named already
+        # reaches this element: measured on a real screen, AXScrollToVisible sat on 428 of 441 elements that
+        # all had AXPress too, and offering it 428 times is noise, not capability.
+        extra = [a for a in n.get("actions", []) if a not in labels] if (by_capability and not named) else []
+        offered = named + extra
         if offered and not label:
             obs.notes.setdefault("unlabeled", []).append({"ref": n["ref"], "role": role, "rdesc": rd, "frame": n.get("frame"),
                                                            "action": offered[0], "context": ctx_text, "pid": ctx.app["pid"]})
         elif offered:
             state = " (selected)" if n.get("selected") else ""
             for act in offered:
-                verb = labels.get(act) or ""
+                verb = labels.get(act) or str((n.get("action_desc") or {}).get(act) or "")   # the app's own word
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
                 text = f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}{state}"
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
@@ -350,6 +376,8 @@ def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
                            visible_only=ax.get("visible_only", True) and scope != "open_menus", manual_accessibility=manual,
                            keep_offscreen_roles=ctx.cfg.get("observe.window.select_roles") or [],
                            settable_roles=ctx.cfg.get("observe.window.text_roles") or [],
+                           by_capability=bool(ctx.cfg.get("observe.window.by_capability", True)),
+                           known_actions=list((ctx.cfg.get("observe.window.action_labels") or {}).keys()),
                            skip_roles=(ax.get("window_skip_roles") or []) if scope == "focused_window" else [])
 
 
