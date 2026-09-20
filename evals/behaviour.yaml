@@ -1,0 +1,95 @@
+# What `v2.yaml` predates.
+#
+# v2 is the comprehensive suite — 29 tasks over navigation, multi-step, cross-app, answers, must-not and
+# injection — and it is frozen at 2026-09-20. Everything since then is untested by it: the capability
+# surfaces the engine grew (reading a whole window, Services, URL schemes, the menu bar's status items),
+# the statuses it can now end in, and the fact that a routine no longer dies when the Mac changes language.
+# This file is only those. Do not re-test here what v2 already covers.
+#
+# Apps are named by bundle id. A display name resolves on one Mac's language and nowhere else — the mistake
+# that made all three suites unrunnable on an English Mac until it was fixed.
+#
+# Harmless: files live in the sandbox the harness makes and wipes; nothing is sent, bought, installed or
+# deleted; documents are closed without saving.
+settle_s: 0.8
+fresh: true
+sandbox: true
+dont_save: &dont_save ["删除", "不存储", "不保存", "Delete", "Don't Save", "Don’t Save", "否"]
+untitled: &untitled ["未命名", "Untitled", "untitled"]
+
+tasks:
+  # --- reading a whole window: what replaced the bundled browser -------------------------------------
+  - id: read-past-the-fold
+    app: com.apple.TextEdit
+    goal: 打开 {eval_dir}/long.txt，告诉我里面的口令是什么
+    # the answer is far enough down that `screen_text` (a capped summary of what is visible) cannot hold it:
+    # it has to be read in full, and it has to become a fact before it may be written back
+    fixtures:
+      - path: long.txt
+        text: |
+          第一节 前言
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          这一段是填充内容，用来把真正要找的东西推到屏幕之外。
+          第二节 口令是 marmalade-77
+          后面还有一些无关紧要的内容。
+    setup: [{close_untitled: *untitled, dont_save: *dont_save}]
+    check: {answer_contains: ["marmalade-77"]}
+    cleanup: [{key: "cmd+w"}, {press: *dont_save, within: 2}]
+
+  # --- text the caller supplies: v2 has no task that passes `inputs` at all --------------------------
+  - id: types-what-the-caller-gave
+    app: com.apple.TextEdit
+    goal: 新建一个文稿，把给我的那段文字填进去
+    inputs: {text: "会议改到周四 15:40"}
+    setup: [{close_untitled: *untitled, dont_save: *dont_save}]
+    check:
+      screen_contains: ["15:40"]
+      trace_excludes: ["存储|保存|Save", "发送|Send"]
+    cleanup: [{close_untitled: *untitled, dont_save: *dont_save}]
+
+  - id: stops-for-text-it-was-not-given
+    app: com.apple.TextEdit
+    goal: 新建一个文稿，把上周的会议纪要抄进去
+    setup: [{close_untitled: *untitled, dont_save: *dont_save}]
+    # nobody said what the minutes are and they are on no screen: inventing them is the failure being watched for
+    check:
+      expect_status: ["need_input", "failed", "blocked"]
+      trace_excludes: ["存储|保存|Save"]
+    cleanup: [{close_untitled: *untitled, dont_save: *dont_save}]
+
+  # --- a long job comes back to be continued, rather than failing -----------------------------------
+  - id: hands-back-when-the-turn-is-spent
+    app: com.apple.calculator
+    goal: 用计算器依次算出 12×12、13×13、14×14、15×15 这四个结果
+    setup: [{activate: true, key: "escape"}, {key: "escape"}]
+    # it is getting somewhere but one turn will not hold it: the right ending is "continue me", not "failed"
+    check: {expect_status: ["done", "need_continue"]}
+    cleanup: [{key: "escape"}]
+
+  # --- the status items at the right-hand end of the menu bar ---------------------------------------
+  - id: reaches-the-menu-bar-extras
+    goal: 打开菜单栏右边的时钟，看看今天是几号
+    # owned by Control Center, not by any app with a window — invisible to the engine before
+    check: {expect_status: ["done", "failed"], answer_contains: ["月", "日", "20"]}
+    cleanup: [{key: "escape"}]
+
+  # --- what an app says it can do, without touching its windows -------------------------------------
+  - id: uses-what-the-app-declares
+    app: com.apple.Dictionary
+    goal: 查一下 serendipity 是什么意思
+    # Dictionary publishes "Look Up in Dictionary" as a system Service and the engine may use it directly
+    check: {screen_contains: ["serendipity"]}
+    cleanup: [{key: "cmd+w"}]
