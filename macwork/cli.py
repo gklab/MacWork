@@ -100,8 +100,10 @@ def _extra_surfaces(eng: Any) -> dict[str, Any]:
     from .appmodel import parse_app_intents
     out: dict[str, Any] = {}
     try:
+        from .observe import installed_apps
         dirs = eng.cfg.get("observe.apps.dirs") or []
-        out["apps (dirs)"] = len(eng.helper.call("apps.installed", dirs=dirs))
+        out["apps"] = (f"{len(installed_apps(eng.cfg, eng.helper))} via LaunchServices, "
+                       f"{len(eng.helper.call('apps.installed', dirs=dirs, source='dirs'))} by scanning folders")
     except Exception as exc:  # noqa: BLE001
         out["apps (dirs)"] = f"error: {exc}"
     try:

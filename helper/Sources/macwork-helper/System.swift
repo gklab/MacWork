@@ -477,21 +477,78 @@ private func localizedAppName(_ path: String) -> String? {
     return nil
 }
 
+/// Every bundle Spotlight knows about. Spotlight indexes the whole disk, so this finds apps wherever they
+/// were put — including the ones macOS keeps outside the usual folders, such as Finder.
+private func spotlightAppPaths(timeout: Double) -> [String] {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+    task.arguments = ["kMDItemContentType == 'com.apple.application-bundle'"]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = FileHandle.nullDevice
+    guard (try? task.run()) != nil else { return [] }
+    let deadline = Date().addingTimeInterval(timeout)
+    let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+    while task.isRunning && Date() < deadline { usleep(10_000) }
+    if task.isRunning { task.terminate() }
+    return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+}
+
+/// The apps this Mac would actually launch.
+///
+/// Scanning a few fixed folders is both too narrow and too wide. Too narrow: it misses everything installed
+/// anywhere else — on this Mac 147 found that way against 461 bundles on disk, with
+/// /System/Library/CoreServices/Finder.app among the missing. Too wide, if one simply took every bundle:
+/// build products, simulator copies and helper apps buried inside other apps are not things a user can open.
+///
+/// Neither judgement needs a list of paths to believe in. Spotlight says where the bundles are; LaunchServices
+/// says which one it would open for a given bundle identifier. An app counts as installed when the two agree
+/// — that is the system's own answer to "would this launch", and it costs no knowledge of our own.
 func appsInstalled(_ p: Params) throws -> Any {
-    let dirs = p["dirs"] as? [String] ?? ["/Applications", "/System/Applications", "/System/Applications/Utilities", "~/Applications"]
     let fm = FileManager.default
-    var out: [[String: Any]] = []
-    for d in dirs {
+    let dirs = p["dirs"] as? [String] ?? ["/Applications", "/System/Applications", "/System/Applications/Utilities", "~/Applications"]
+    let useSpotlight = (p["source"] as? String ?? "launchservices") != "dirs"
+
+    var candidates: [String] = []
+    for d in dirs {                            // always included: Spotlight can be off, or still indexing
         let dir = (d as NSString).expandingTildeInPath
-        guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-        for item in items where item.hasSuffix(".app") {
-            let path = dir + "/" + item
-            var name = localizedAppName(path) ?? fm.displayName(atPath: path)
-            if name.hasSuffix(".app") { name = String(name.dropLast(4)) }
-            var d: [String: Any] = ["name": name, "file": String(item.dropLast(4)), "path": path]
-            if let b = Bundle(path: path)?.bundleIdentifier { d["bundle_id"] = b }
-            out.append(d)
+        for item in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where item.hasSuffix(".app") {
+            candidates.append(dir + "/" + item)
         }
+    }
+    if useSpotlight {
+        candidates += spotlightAppPaths(timeout: (p["timeout_s"] as? Double) ?? 8)
+    }
+
+    var out: [[String: Any]] = []
+    var seen = Set<String>()
+    for candidate in candidates {
+        guard candidate.hasSuffix(".app") else { continue }
+        // a bundle inside another bundle is that app's business, not something a person opens
+        if candidate.dropLast(4).contains(".app/") { continue }
+        guard let bundleId = Bundle(path: candidate)?.bundleIdentifier else { continue }
+        guard !seen.contains(bundleId) else { continue }
+        seen.insert(bundleId)
+
+        // LaunchServices is asked which copy it would actually open for this identifier, and that is the one
+        // reported — not the copy that happened to be found. It collapses duplicates (a build product, an old
+        // version in Downloads) and it finds apps the search could not see at all: Safari really lives in a
+        // cryptex, and requiring the found path to match would have dropped it.
+        let path = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId)?.standardizedFileURL.path ?? candidate
+        let bundle = Bundle(path: path) ?? Bundle(path: candidate)
+        let item = (path as NSString).lastPathComponent
+        var name = localizedAppName(path) ?? fm.displayName(atPath: path)
+        if name.hasSuffix(".app") { name = String(name.dropLast(4)) }
+        var d: [String: Any] = ["name": name, "file": String(item.dropLast(4)), "path": path, "bundle_id": bundleId]
+        // the app's own statement that it runs without a window (a menu-bar agent, a system service). Not a
+        // reason to hide it — the engine reaches such apps through their status items — but the decider
+        // should know that "open it" will not put anything on screen.
+        let info = bundle?.infoDictionary ?? [:]
+        if (info["LSUIElement"] as? Bool ?? false) || (info["LSBackgroundOnly"] as? Bool ?? false)
+            || (info["LSUIElement"] as? String) == "1" || (info["LSBackgroundOnly"] as? String) == "1" {
+            d["background"] = true
+        }
+        out.append(d)
     }
     return out
 }

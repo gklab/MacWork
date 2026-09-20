@@ -29,7 +29,7 @@ class LearnMixin:
             target = self._resolve_app(app, running)
             if target is None:
                 key = app.casefold()
-                inst = next((a for a in self.helper.call("apps.installed", dirs=self.cfg.get("observe.apps.dirs") or [])
+                inst = next((a for a in installed_apps(self.cfg, self.helper)
                              if key in (a.get("name", "").casefold(), a.get("file", "").casefold(), str(a.get("bundle_id", "")).casefold())), None)
                 if inst is None:
                     return {"error": f"no app called {app}"}

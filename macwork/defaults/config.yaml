@@ -56,6 +56,12 @@ observe:
     read_roles: [AXStaticText, AXHeading, AXCell, AXLink]
     screen_text_chars: 1500
   apps:
+    # launchservices: Spotlight finds the bundles, LaunchServices says which copy it would open for each
+    #   bundle id — that copy is the one reported. Finds apps wherever they are (405 here against 146 by
+    #   scanning, Finder and Safari among the missing) and collapses duplicates and build products.
+    # dirs: scan the folders below and nothing else.
+    source: launchservices
+    timeout_s: 15                # how long Spotlight gets
     dirs: [/Applications, /System/Applications, /System/Applications/Utilities, ~/Applications]
     include_installed: true
   vision:

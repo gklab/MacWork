@@ -90,6 +90,17 @@ def _cached(ctx: Ctx, key: str, ttl: float, make: Callable[[], Any]) -> Any:
     return value
 
 
+def installed_apps(cfg: Any, helper: Any) -> list[dict[str, Any]]:
+    """Every app this Mac would open, asked of the Mac rather than of a list of folders.
+
+    ``observe.apps.source: dirs`` goes back to scanning the configured folders, which on this Mac finds 146
+    apps against 405 — Finder and Safari among the missing, because macOS keeps them outside them.
+    """
+    return helper.call("apps.installed", dirs=cfg.get("observe.apps.dirs") or [],
+                       source=str(cfg.get("observe.apps.source", "launchservices")),
+                       timeout=float(cfg.get("observe.apps.timeout_s", 15)) + 5)
+
+
 # ----------------------------------------------------------------------------- apps
 @provider("apps")
 def apps(ctx: Ctx, obs: Observation) -> None:
@@ -103,13 +114,15 @@ def apps(ctx: Ctx, obs: Observation) -> None:
                                           {"pid": a["pid"], "bundle_id": a.get("bundle_id"), "name": a["name"]}))
     if not ctx.cfg.get("observe.apps.include_installed", True):
         return
-    dirs = ctx.cfg.get("observe.apps.dirs") or []
-    installed = _cached(ctx, "apps.installed", 600, lambda: ctx.helper.call("apps.installed", dirs=dirs))
+    installed = _cached(ctx, "apps.installed", 600, lambda: installed_apps(ctx.cfg, ctx.helper))
     for i, a in enumerate(installed):
         if a.get("path") in running_paths:
             continue
         name = a["name"] if a["name"] == a.get("file") else f"{a['name']} ({a.get('file')})"
-        obs.affordances.append(Affordance(f"i{i}", "app", "open", f"open app {name}",
+        # the app's own declaration that it runs without a window: not hidden, but the decider should not
+        # expect a window to appear (its menu bar item is reachable through the menubar_extras provider)
+        kind = " (a background app: no window, it puts an item in the menu bar)" if a.get("background") else ""
+        obs.affordances.append(Affordance(f"i{i}", "app", "open", f"open app {name}{kind}",
                                           {"path": a["path"], "bundle_id": a.get("bundle_id"), "name": a["name"]}))
 
 
@@ -738,7 +751,7 @@ def services(ctx: Ctx, obs: Observation) -> None:
 
     def scan() -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for app in ctx.helper.call("apps.installed", dirs=ctx.cfg.get("observe.apps.dirs") or []):
+        for app in installed_apps(ctx.cfg, ctx.helper):
             for s in parse_services(app.get("path") or ""):
                 out.append({**s, "app": app.get("name") or ""})
         return out

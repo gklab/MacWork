@@ -152,7 +152,7 @@ def _launch(engine: Engine, app_hint: str) -> int | None:
     if engine._resolve_app(app_hint, engine.helper.call("apps.running")):
         return None
     key = app_hint.casefold()
-    inst = next((a for a in engine.helper.call("apps.installed", dirs=engine.cfg.get("observe.apps.dirs") or [])
+    inst = next((a for a in installed_apps(engine.cfg, engine.helper)
                  if key in (a.get("name", "").casefold(), a.get("file", "").casefold())), None)
     if inst:
         import subprocess

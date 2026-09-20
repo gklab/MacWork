@@ -33,7 +33,7 @@ from .learn import LearnMixin
 from .loop import LoopMixin, Progress
 from .policy import PolicyMixin
 from .model import PENDING, Affordance, Observation, Task
-from .observe import Ctx, observe
+from .observe import Ctx, installed_apps, observe
 from .privacy import Audit, Gate, RedactionError, Redactor
 from .skills import Skills
 from .tidy import TidyMixin
@@ -106,7 +106,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         """App names on this Mac: the tagger likes to call them people or companies; they are not personal data."""
         if "privacy.vocab" not in self.cache:
             names: list[str] = []
-            for a in self.helper.call("apps.installed", dirs=self.cfg.get("observe.apps.dirs") or []) + self.helper.call("apps.running"):
+            for a in installed_apps(self.cfg, self.helper) + self.helper.call("apps.running"):
                 names += [a.get("name", ""), a.get("file", ""), str(a.get("bundle_id", ""))]
             self.cache["privacy.vocab"] = [n for n in names if n]
         return self.cache["privacy.vocab"]
@@ -146,7 +146,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
 
     def _installed_named(self, hint: str) -> dict[str, Any] | None:
         h = _norm_name(hint)
-        inst = self.cache.get("installed") or self.helper.call("apps.installed", dirs=self.cfg.get("observe.apps.dirs") or [])
+        inst = self.cache.get("installed") or installed_apps(self.cfg, self.helper)
         self.cache["installed"] = inst
         return next((a for a in inst if h in _names(a)), None) or next((a for a in inst if any(h in n for n in _names(a) if n)), None)
 
