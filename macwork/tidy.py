@@ -191,13 +191,23 @@ class TidyMixin:
                 self.helper.call("ax.perform", ref=w["close"], action="AXPress")
             except HelperError as exc:
                 log.info("close window: %s", exc)
-            time.sleep(float(self.cfg.get("engine.close_wait_s", 0.6)))
-            if self._gone(w["pid"], w["id"]):
+            if self._wait_gone(w["pid"], w["id"]):
                 return True
         self._back_out(task, {"pid": w["pid"], "name": w["app"], "bundle_id": w.get("bundle_id")}, "dismiss_window",
                        window=w["title"])
-        time.sleep(float(self.cfg.get("engine.close_wait_s", 0.6)))
-        return bool(not w.get("close") and self._gone(w["pid"], w["id"]))
+        gone = self._wait_gone(w["pid"], w["id"])
+        return bool(not w.get("close") and gone)
+
+    def _wait_gone(self, pid: int, wid: int) -> bool:
+        """A window is closed when it is no longer there — which is a thing to watch for, not to wait out.
+        Closing can also put a question on screen instead (save?), and then it never goes: hence a ceiling."""
+        deadline = time.monotonic() + float(self.cfg.get("engine.close_wait_s", 0.6))
+        while True:
+            if self._gone(pid, wid):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def _quit(self, task: Task, app: dict[str, Any]) -> bool:
         r = self.helper.call("apps.quit", pid=app["pid"], timeout_ms=int(self.cfg.get("engine.quit_wait_ms", 3000)), timeout=15)

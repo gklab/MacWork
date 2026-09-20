@@ -721,6 +721,37 @@ def test_a_goal_that_asks_for_information_does_not_finish_without_any(tmp_path):
     assert len(asked) > 2, "it stopped at the first 'done', with nothing to report"
 
 
+def test_an_action_that_keeps_leading_back_where_it_was_is_dropped(tmp_path):
+    """The shape a stuck task really has is not "again" but "again, and back where I was". A real run opened
+    the same 「文件 ▸ 打开…」 six times, escaping each time, and the per-screen count started over every time
+    because each escape left a screen just different enough. The circle is what counts, wherever it happens."""
+    class TwoScreens(FakeHelper):
+        """A dialog that opens and closes: the window alternates, so no screen repeats twice running."""
+        def __init__(self):
+            super().__init__()
+            self.open = False
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("scope") not in ("menubar", "windows"):
+                self.open = not self.open
+                title = "打开" if self.open else "未命名"
+                return {"nodes": [{"ref": "d.0", "role": "AXWindow", "title": title, "depth": 0},
+                                  {"ref": "d.1", "role": "AXStaticText", "value": title, "parent": "d.0"}]}
+            return super().call(method, timeout, **p)
+
+    def open_it(state, questions):
+        opts = questions["action"]["criteria"]
+        pick = next((k for k, v in opts.items() if "打开" in v), None)
+        return {"pick": pick or "done", "move": "act" if pick else "done"}
+
+    d = ScriptedDecider([open_it] * 12)
+    eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 12}}), helper=TwoScreens(), decider=d)
+    res = eng.do("把这个文件打开")
+    opened = [a for a in (res.get("steps") or []) if "打开" in a]
+    assert len(opened) <= int(Config.load().get("engine.max_circles")), \
+        f"it went round the same loop {len(opened)} times: {opened}"
+
+
 def test_a_locked_screen_is_reported_as_such(tmp_path):
     c = cfg(tmp_path, config={"engine": {"locked_channels": ["keys"]}})
     eng = Engine(c, helper=FakeHelper(locked=True), decider=ScriptedDecider([{"pick": "pagedown", "move": "blocked"}]))

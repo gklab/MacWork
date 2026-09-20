@@ -128,3 +128,45 @@ def test_the_harness_opens_an_app_the_suites_name_by_bundle_id(_no_real_processe
     monkeypatch.setattr(evals.time, "sleep", lambda s: None)   # the harness waits for the app; the test need not
     evals._launch(_Engine(), "com.apple.calculator")
     assert ["open", "-g", "-a", "/System/Applications/Calculator.app"] in _no_real_processes
+
+
+def test_a_run_whose_decider_changed_halfway_is_not_counted(tmp_path, monkeypatch):
+    """The decider has no equal fallback, by design: when the one in front cannot answer, the next takes over
+    and stays. A real suite lost its network mid-run and scored the fallback for the rest — 14 of 28 "passes"
+    that were partly measuring a different model. A run decided by two deciders is not a run."""
+    class Swapping:
+        """Answers once as one decider, then reports itself as another — a mid-run switch."""
+        name = "jev"
+        calls, cost_usd, last_ms = 0, 0.0, 1.0
+
+        def decide(self, state, questions):
+            Swapping.name = "local:local"
+            raise AssertionError("not reached: the engine is stubbed below")
+
+    class Engine:
+        decider = Swapping()
+        cfg = evals_cfg = None
+        cache: dict = {}
+        models = None
+
+        def do(self, *a, **k):
+            self.decider.name = "local:local"    # what ChainDecider does when the one in front dies
+            return {"status": "done", "steps": [], "decider": {"calls": 3, "cost_usd": 0.01}}
+
+    suite = tmp_path / "s.yaml"
+    suite.write_text("fresh: false\ntasks:\n  - id: t1\n    goal: do something\n    check:\n      expect_status: [done]\n",
+                     encoding="utf-8")
+
+    from tests.test_engine import cfg as engine_cfg
+    engine = Engine()
+    engine.cfg = engine_cfg(tmp_path)
+    monkeypatch.setattr(evals, "_locked", lambda e: False)
+    monkeypatch.setattr(evals, "_desktop", lambda e: {})
+    monkeypatch.setattr(evals, "sweep", lambda e, before: [])
+    monkeypatch.setattr(evals, "cleanup", lambda e, t, key: None)
+    report = evals.run_suite(engine, suite, out_dir=tmp_path)
+
+    row = report["rows"][0] if "rows" in report else report["results"][0]
+    assert row["status"] == "error" and "decider changed mid-run" in row["why"]
+    summary = report["summary"]
+    assert summary["errors"] == 1 and summary["passed"] == 0 and summary["valid"] == 0

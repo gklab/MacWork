@@ -186,6 +186,14 @@ class LoopMixin:
         for label, times in self._taken_here(task, sig).items():           # done from this very screen already
             if times >= int(self.cfg.get("engine.max_repeats", 4)):         # enough of that one: it has had its turns
                 task.memory.no_effect.add(f"{sig}|{label}")
+        # …and the shape a stuck task really has is not "again" but "again, and back where I was": a real run
+        # opened the same 「文件 ▸ 打开…」 six times, escaping each time, and every escape left a screen just
+        # different enough that a per-screen count started over. What matters is that the action keeps leading
+        # somewhere this task has already been, so that is what is counted — wherever it is taken from.
+        going_nowhere = int(self.cfg.get("engine.max_circles", 3))
+        for label in set(task.memory.circles):
+            if task.memory.circles.count(label) >= going_nowhere:
+                task.memory.declined.add(label)
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
         affs = [a for a in affs if a.label not in dead_here and a.label not in task.memory.declined]   # facts: did nothing / not asked for
         if locked:                                # nothing on screen can be operated; keep what works without UI

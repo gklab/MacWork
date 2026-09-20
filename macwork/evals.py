@@ -361,14 +361,23 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                 return base | {"status": "invalid", "passed": False, "valid": False, "why": "already satisfied before the task started",
                                "reason": "", "steps": 0, "seconds": 0.0, "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
         lap("pre_check")
+        answering = getattr(engine.decider, "name", "?")   # who is deciding: a run decided by two is two runs
         t0 = time.monotonic()
         try:
             res = engine.do(t["goal"], t.get("inputs") or {}, t.get("app"), progress=lambda m: progress(f"   → {m}"))
         except Exception as exc:  # noqa: BLE001  (one broken task must not stop the suite)
             res = {"status": "error", "reason": str(exc)[:200], "steps": [], "decider": {"calls": 0, "cost_usd": 0.0}}
         seconds = round(time.monotonic() - t0, 1)
+        now_answering = getattr(engine.decider, "name", "?")
         lap("task")
         time.sleep(float(suite.get("settle_s", 0.8)))
+        if now_answering != answering:
+            # The decider has no fallback that is as good, on purpose: when the one in front cannot answer,
+            # the next one takes over and stays. That is the right thing to do in a task and the wrong thing
+            # to count — half a run decided by a calibrated model and half by an uncalibrated one says nothing
+            # about either. A real suite lost its network mid-run and the rest of it scored the fallback.
+            progress(f"   ERROR the decider changed mid-run ({answering} → {now_answering}, not counted)")
+            return base | _error_row(t, f"the decider changed mid-run: {answering} → {now_answering}")
         if _locked(engine) or "screen is locked" in str(res.get("reason", "")):
             progress("   ERROR the screen was locked during the task (not counted)")
             cleanup(engine, t)
@@ -398,7 +407,8 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         lap("sweep")
         row = base | {"status": res.get("status"), "passed": ok, "valid": True, "why": why, "reason": res.get("reason", ""),
                       "steps": len(res.get("steps", [])), "seconds": seconds, "decider_calls": res.get("decider", {}).get("calls", 0),
-                      "cost_usd": res.get("decider", {}).get("cost_usd", 0.0), "planned": bool(res.get("plan")),
+                      "cost_usd": max(0.0, res.get("decider", {}).get("cost_usd", 0.0)), "planned": bool(res.get("plan")),
+                      "decider": answering,
                       "trace": res.get("steps", []), "answer": (res.get("outputs") or {}).get("answer"), "tidy": tidy,
                       "harness_s": phase, "left_by_engine": left_by_engine,
                       "left_after_sweep": [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in stuck]}

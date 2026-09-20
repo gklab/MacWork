@@ -83,7 +83,9 @@ def _bring_forward(ctx: Ctx, pid: int) -> None:
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             if front_pid() == pid:
-                time.sleep(float(ctx.cfg.get("engine.activate_settle_s", 0.3)))   # let its key window take focus
+                # its key window still has to take the focus: wait for that, not for a number
+                _until(ctx, lambda: (ctx.helper.call("ax.focused") or {}).get("pid") == pid,
+                       float(ctx.cfg.get("engine.activate_settle_s", 0.3)))
                 return
             time.sleep(0.1)
     raise NotInFront(f"could not bring {(app or {}).get('name', pid)} to the front; nothing was typed")
@@ -102,12 +104,40 @@ def _focus_field(ctx: Ctx, t: dict[str, Any]) -> None:
     f = t.get("frame")
     if ctx.cfg.get("input.focus_by_click", True) and f and f[2] > 2 and f[3] > 2:
         ctx.helper.call("input.click", x=f[0] + f[2] / 2, y=f[1] + f[3] / 2)
-        time.sleep(0.15)
+        _await_focus(ctx, t)
         return
     try:
         ctx.helper.call("ax.set", ref=t["ref"], attribute="AXFocused", value=True)
     except HelperError:
         ctx.helper.call("ax.perform", ref=t["ref"], action="AXPress")
+    _await_focus(ctx, t)
+
+
+def _await_focus(ctx: Ctx, t: dict[str, Any]) -> None:
+    """Wait until the field really has the keyboard, instead of guessing how long that takes.
+
+    A sheet that has just appeared takes the focus a moment later than it takes the click, and the first
+    keystrokes go nowhere: a real run typed a path into "Go to Folder" and the field ended up holding
+    "/rs/wangzhaokai/…" — the opening "/Use" gone. The engine then retyped, which is what going round in
+    circles looks like from outside.
+    """
+    ref, frame = t.get("ref"), t.get("frame")
+    # Measured on this Mac: `ax.focused` answers from a fresh snapshot, so its ref (g21.0) is never the ref the
+    # field was found under (g1.142) — but the frame is the same to the pixel. With no frame there is nothing
+    # to compare, and waiting for a comparison that cannot be made is just the fixed pause under another name.
+    if not frame:
+        return
+    deadline = time.monotonic() + float(ctx.cfg.get("input.focus_wait_s", 0.8))
+    while time.monotonic() < deadline:
+        try:
+            node = (ctx.helper.call("ax.focused") or {}).get("focused")
+        except HelperError:
+            return
+        if isinstance(node, dict):
+            here = node.get("frame")
+            if (ref and node.get("ref") == ref) or (frame and here and all(abs(x - y) <= 3 for x, y in zip(frame, here))):
+                return
+        time.sleep(0.05)
 
 
 @channel("app")
@@ -199,7 +229,9 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         _focus_field(ctx, t)
         ctx.helper.call("input.key", combo="cmd+a")
         _type(ctx, text)
-        time.sleep(0.1)
+        if text.strip():   # Return once the field holds it — submitting a half-typed value is how a wrong search runs
+            _until(ctx, lambda: text.strip() in str((ctx.helper.call("ax.get", ref=t["ref"], attribute="AXValue") or {}).get("value") or ""),
+                   float(ctx.cfg.get("input.submit_wait_s", 0.8)))
         ctx.helper.call("input.key", combo="return")
         return Outcome(True, watch_pid=t["pid"])
     # like a person: focus the field, select what is in it, type. Setting the value behind the app's back looks
@@ -286,7 +318,8 @@ def service_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     out = ctx.helper.call("services.perform", name=a.target["name"], text=str(params.get("text", "")), files=files)
     if not out.get("ok"):
         return Outcome(False, error=f"the system did not run the service 「{a.target['name']}」", wait=False)
-    time.sleep(0.4)                       # a service usually brings its app forward
+    was = (ctx.app or {}).get("pid")       # a service usually brings its app forward: wait for that, not 0.4 s
+    _until(ctx, lambda: (_frontmost(ctx) or {}).get("pid") != was, float(ctx.cfg.get("engine.service_front_s", 1.5)), poll=0.1)
     front = _frontmost(ctx) or {}
     return Outcome(True, watch_pid=front.get("pid"),
                    target={"pid": front["pid"], "name": front.get("name"), "bundle_id": front.get("bundle_id")} if front.get("pid") else None)
@@ -296,6 +329,31 @@ def service_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 def clipboard_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     out = ctx.helper.call("clipboard.write", text=str(params.get("text", "")))
     return Outcome(True, output={"clipboard_change_count": out.get("change_count")}, wait=False)
+
+
+def _until(ctx: Ctx, ready: Callable[[], bool], ceiling: float, poll: float = 0.05) -> bool:
+    """Wait for something to be true of the Mac, not for a number of seconds.
+
+    Every pause in here used to be a guess at how long an app takes — 0.3 s for a window to take focus, 0.4 s
+    for a service to come forward, 0.2 s for a menu to open. A guess is wrong twice: too short on a cold app
+    (the keystrokes go nowhere) and wasted on a warm one. The ceiling stays, because something has to give up.
+    """
+    deadline = time.monotonic() + ceiling
+    while time.monotonic() < deadline:
+        try:
+            if ready():
+                return True
+        except HelperError:
+            return False
+        time.sleep(poll)
+    return False
+
+
+def _window_count(ctx: Ctx) -> int:
+    try:
+        return len(ctx.helper.call("screen.windows") or [])
+    except HelperError:
+        return -1
 
 
 @channel("file")
@@ -324,7 +382,10 @@ def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     # reveal is the exception — it is meant to stay put — and either way the wait is bounded.
     deadline = time.monotonic() + (0.5 if a.verb == "reveal" else float(ctx.cfg.get("engine.open_front_s", 6)))
     front = _frontmost(ctx) or {}
+    windows = _window_count(ctx)
     while front.get("pid") == was and time.monotonic() < deadline:
+        if _window_count(ctx) > windows:      # it opened where it already was: nothing is coming to the front
+            break
         time.sleep(0.15)
         front = _frontmost(ctx) or {}
     return Outcome(r.returncode == 0, watch_pid=front.get("pid"), error=r.stderr.strip()[:200] or None,
@@ -382,7 +443,7 @@ def menusearch_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outco
     t = a.target
     _bring_forward(ctx, t["pid"])
     ctx.helper.call("ax.perform", ref=t["menu_ref"], action="AXPress")
-    time.sleep(0.2)
+    _until(ctx, lambda: bool((ctx.helper.call("ax.get", ref=t["field_ref"], attribute="AXValue") or {}).get("value") is not None), 1.0)
     try:
         ctx.helper.call("ax.set", ref=t["field_ref"], attribute="AXValue", value=str(params.get("text", "")))
     except HelperError:

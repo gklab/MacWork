@@ -290,8 +290,10 @@ engine:
   min_steps_before_giving_up: 4  # …but not while the screen still offers things this task has never tried
   max_answer_tries: 2            # a goal asking for information keeps looking this many times before it gives up
   open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front
+  service_front_s: 1.5           # a service that brings its app forward does it quickly, or it does not do it
   repeat_notice: 3               # the same action three times running is put in front of the decider as a fact
   max_repeats: 4                 # an action taken this many times from the very same screen stops being offered there
+  max_circles: 3                 # …and one that keeps leading back to a screen already seen stops being offered at all
   max_waits: 4                   # times per task the decider may choose to wait for a loading/busy app
   wait_s: 1.5
   fold_groups_over: 60           # a group larger than this (every installed app) is always one "look into" away
@@ -346,6 +348,8 @@ input:
   non_ascii: paste               # paste (clipboard, restored after) | unicode (synthetic unicode key events)
   set_value_first: false         # true: set a field's value through Accessibility first (background-friendly, but many fields ignore it)
   focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
+  focus_wait_s: 0.8              # how long to wait for the field to really have the keyboard before typing
+  submit_wait_s: 0.8             # …and for the typed text to be in it before Return is sent
 
 audit:
   enabled: true
