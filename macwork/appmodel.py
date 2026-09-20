@@ -176,11 +176,18 @@ def static_model(app: dict[str, Any]) -> dict[str, Any]:
     return model
 
 
-def signature(app: dict[str, Any] | None, window: str | None, labels: list[str], take: int = 30) -> str:
-    """A screen's identity: app + window title + the set of what can be done there (numbers ignored, so a
-    calculator's display or a counter does not make every screen new)."""
+def signature(app: dict[str, Any] | None, window: str | None, labels: list[str], take: int = 30,
+              by_window: bool = True) -> str:
+    """A screen's identity: app + the set of what can be done there (numbers ignored, so a calculator's
+    display or a counter does not make every screen new).
+
+    ``labels`` are the affordances' identities, not their labels, wherever the Mac gives one — so a screen
+    keeps its identity when the interface language changes and everything learned about it still applies.
+    The window title cannot be made language-independent, so ``by_window`` can leave it out.
+    """
     norm = sorted({re.sub(r"\d+", "#", lab) for lab in labels})[:take]
-    raw = json.dumps([(app or {}).get("bundle_id"), re.sub(r"\d+", "#", window or ""), norm], ensure_ascii=False)
+    title = re.sub(r"\d+", "#", window or "") if by_window else ""
+    raw = json.dumps([(app or {}).get("bundle_id"), title, norm], ensure_ascii=False)
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 

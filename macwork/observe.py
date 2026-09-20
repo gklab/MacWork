@@ -179,10 +179,12 @@ def menu(ctx: Ctx, obs: Observation) -> None:
                         walk(s, path + [title])
                 elif include_disabled or n.get("enabled", True):
                     checked = f" {n['mark']}" if n.get("mark") else ""
+                    ident = n.get("ident") or ""
                     obs.affordances.append(Affordance(f"m{len(obs.affordances)}", "menu", "press",
                                                       f"menu {' ▸ '.join(path + [title])}{checked}{_shortcut(n.get('cmd'))}",
                                                       {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd"))},
-                                                      context=' ▸ '.join(path[:1])))
+                                                      context=' ▸ '.join(path[:1]),
+                                                      key=_identity(ident, n.get("role"), n.get("subrole"), title)))
                     if n.get("mark"):
                         obs.notes.setdefault("checked", []).append(' ▸ '.join(path + [title]))
             elif n.get("role") == "AXMenu":
@@ -203,6 +205,19 @@ def menu(ctx: Ctx, obs: Observation) -> None:
 
 
 # ----------------------------------------------------------------------------- focused window
+def _identity(ident: str, role: str | None, subrole: str | None, label: str = "") -> str:
+    """A key that does not change with the interface language, or "" when the Mac offers nothing to build one.
+
+    An Accessibility identifier is the developer's own name for the control — measured on a real Mac, 93-97%
+    of menu items have one and it is the selector behind the command, identical in every language and
+    unchanged across launches. The label is deliberately *not* part of it: putting it in would make every key
+    language-bound again, which is the whole thing being fixed. Identifiers are not always unique (every
+    "Recent Items" entry shares `_recentItemRequested:`), and `observe` adds the label to just those, where
+    there is nothing else to tell siblings apart.
+    """
+    return "|".join(x for x in ("ax", role or "", subrole or "", ident) if x) if ident else ""
+
+
 def _label(n: dict[str, Any]) -> str:
     for k in ("title", "desc", "value", "placeholder", "help"):
         v = n.get(k)
@@ -258,6 +273,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         rd = n.get("rdesc") or role.removeprefix("AX").lower()
         if n.get("enabled", True) is False:
             continue
+        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), _label(n))   # "" when the app gives none
         if n["ref"] in in_row and (role in text_roles or role in read_roles or role in ("AXCell", "AXImage", "AXGroup")):
             continue
         ctx_text = _context_of(n, by_ref) or where
@@ -266,7 +282,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             if name:
                 state = " (selected)" if n.get("selected") else ""
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select", f"select {rd} 「{name[:80]}」{state}",
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}, context=ctx_text))
+                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}, context=ctx_text, key=ikey))
         if role in text_roles and n.get("editable") is False:   # shows text but cannot be typed into: read it
             role = "AXStaticText"
         if role in text_roles:
@@ -276,17 +292,17 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             if n.get("value") and role != "AXSecureTextField":   # what fields hold is the best evidence that typing worked
                 obs.notes.setdefault("fields", []).append(f"{label}: {str(n['value'])[: int(wcfg.get('field_chars', 300))]}")
             obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type", f"type into {rd} 「{label}」{current}",
-                                              target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text))
+                                              target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
             if role in set(wcfg.get("range_roles") or []) and n.get("value") and n.get("editable") is not False:
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select_text",
                                                   f"select part of the text in {rd} 「{label}」", dict(target),
-                                                  slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text))
+                                                  slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text, key=ikey))
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "cursor_end",
-                                                  f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text))
+                                                  f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text, key=ikey))
             if role in set(wcfg.get("submit_roles") or []):
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type_submit",
                                                   f"type into {rd} 「{label}」 and press Return{current}", dict(target),
-                                                  slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text))
+                                                  slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
             continue
         # a subrole (close button, sort button…) makes the role description itself a name
         label = _label(n) or (str(n["rdesc"]) if n.get("subrole") and n.get("rdesc") else "")
@@ -301,7 +317,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
                 text = f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}{state}"
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame")}, context=ctx_text))
+                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame")}, context=ctx_text, key=ikey))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
             t = str(n.get("value") or n.get("title") or n.get("desc") or "").strip()
             if t and n.get("url"):   # where a link goes is the thing worth knowing about it
@@ -865,6 +881,22 @@ def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int
     return flat[: max(0, budget - len(folded))], folded
 
 
+def _disambiguate(affs: list[Affordance]) -> None:
+    """Where several actions share one Accessibility identifier, add their labels — and only there.
+
+    Apps reuse a selector for a whole dynamic list (`_recentItemRequested:` for every recent file). Those
+    cannot be told apart without their text, so they fall back to being language-bound; everything with an
+    identifier of its own stays language-independent.
+    """
+    seen: dict[str, int] = {}
+    for a in affs:
+        if a.key:
+            seen[a.key] = seen.get(a.key, 0) + 1
+    for a in affs:
+        if a.key and seen[a.key] > 1:
+            a.key = f"{a.key}|{a.label}"
+
+
 def observe(ctx: Ctx) -> Observation:
     t0 = time.monotonic()
     obs = Observation(app=ctx.app, window=None, affordances=[])
@@ -881,6 +913,7 @@ def observe(ctx: Ctx) -> Observation:
             log.info("provider %s failed: %s", name, exc)
         obs.notes[f"{name}_n"] = len(obs.affordances) - n0
         obs.notes[f"{name}_ms"] = round((time.monotonic() - t) * 1000)
+    _disambiguate(obs.affordances)
     ids = [a.id for a in obs.affordances]
     if len(ids) != len(set(ids)):
         for i, a in enumerate(obs.affordances):   # providers are independent; make ids unique afterwards

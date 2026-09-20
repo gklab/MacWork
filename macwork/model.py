@@ -26,6 +26,18 @@ class Affordance:
     target: dict[str, Any] = field(default_factory=dict)   # executor-specific (refs, pids, paths); never sent out
     slots: dict[str, Slot] = field(default_factory=dict)
     context: str = ""              # where it lives (app ▸ menu path, window)
+    key: str = ""                  # language-independent identity, where the Mac gives one (see `identity`)
+
+    def identity(self) -> str:
+        """What this action *is*, as independently of the interface language as the Mac allows.
+
+        Labels are the app's own words, so everything keyed on them — a screen's signature, a learned
+        routine's steps — breaks the moment the Mac's language changes. Menu items almost always carry an
+        Accessibility identifier (the selector behind the command: `_systemSettingsRequested:`), which is the
+        same in every language and stable across launches. Window controls mostly carry none, and there the
+        label is the only identity there is; that is a limit of what the Mac exposes, not a choice.
+        """
+        return self.key or self.label
 
     def describe(self) -> str:
         text = f"{self.label}" + (f" — in {self.context}" if self.context and self.context not in self.label else "")
@@ -71,6 +83,7 @@ class Step:
     context: str = ""
     slot_keys: list[str] = field(default_factory=list)
     before: str | None = None                    # screen state the step was taken from (signature + text digest)
+    key: str = ""                                # the affordance's language-independent identity, if it had one
 
 
 TERMINAL = {"done", "failed", "cancelled"}

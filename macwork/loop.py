@@ -494,7 +494,7 @@ class LoopMixin:
         before = f"{sig}:{hash(obs.screen_text)}" if (sig and obs is not None) else None
         task.steps.append(Step(len(task.steps), chosen.label, chosen.id, out.ok, events, decision,
                                round((time.monotonic() - t0) * 1000), out.error, chosen.channel, chosen.verb,
-                               chosen.context, sorted(params), before))
+                               chosen.context, sorted(params), before, key=chosen.key))
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
         task.prev = {"sig": sig, "label": chosen.label, "ok": out.ok, "events": events, "app": ctx.app,
@@ -537,7 +537,10 @@ class LoopMixin:
         return out
 
     def _signature(self, app: dict[str, Any] | None, obs: Observation) -> str:
-        return signature(app, obs.window, [a.label for a in obs.affordances if a.channel in ("window", "menu", "pointer")])
+        """Keyed on what each action *is*, not on what it is called: a screen keeps its identity across a
+        change of interface language, and so does everything learned about it."""
+        parts = [a.identity() for a in obs.affordances if a.channel in ("window", "menu", "pointer")]
+        return signature(app, obs.window, parts, by_window=bool(self.cfg.get("appmodel.signature_window", True)))
 
     def _learn_from_prev(self, task: Task, app: dict[str, Any] | None, sig: str, obs: Observation) -> None:
         """Now that we see where the last step led, remember it (and remember steps that did nothing)."""
@@ -576,7 +579,8 @@ class LoopMixin:
             t0 = time.monotonic()
             out, events = self._execute(ctx, a, params)
             task.steps.append(Step(len(task.steps), a.label, a.id, out.ok, events, {"replay": skill["id"]},
-                                   round((time.monotonic() - t0) * 1000), out.error, a.channel, a.verb, a.context, sorted(params)))
+                                   round((time.monotonic() - t0) * 1000), out.error, a.channel, a.verb, a.context,
+                                   sorted(params), key=a.key))
             if out.target:
                 task.target = out.target
             if not out.ok:

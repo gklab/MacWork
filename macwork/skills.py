@@ -72,8 +72,8 @@ class Skills:
         if any(not s.ok for s in task.steps) or any(s.decision.get("replay") for s in task.steps):
             return None
         body = [{k: v for k, v in b.items() if k != "before"} for b in _without_detours(
-            [{"channel": s.channel, "verb": s.verb, "label": _norm(s.action), "context": s.context, "inputs": s.slot_keys,
-              "before": s.before} for s in steps])]
+            [{"channel": s.channel, "verb": s.verb, "label": _norm(s.action), "key": s.key, "context": s.context,
+              "inputs": s.slot_keys, "before": s.before} for s in steps])]
         sid = hashlib.sha1(json.dumps([start_app, body], ensure_ascii=False).encode()).hexdigest()[:12]
         f = self.dir / f"{sid}.json"
         if f.exists():
@@ -95,8 +95,18 @@ class Skills:
 
     @staticmethod
     def find(step: dict[str, Any], obs: Observation) -> Affordance | None:
-        """The affordance on screen that means the same as a stored step."""
-        same = [a for a in obs.affordances if a.channel == step["channel"] and a.verb == step["verb"] and _norm(a.label) == step["label"]]
+        """The affordance on screen that means the same as a stored step.
+
+        By identity first — the Accessibility identifier behind the command, which does not change with the
+        interface language — and by label only where the app offered no identity, or for routines recorded
+        before identities were kept.
+        """
+        kind = [a for a in obs.affordances if a.channel == step["channel"] and a.verb == step["verb"]]
+        if step.get("key"):
+            by_identity = [a for a in kind if a.identity() == step["key"]]
+            if by_identity:
+                return by_identity[0]
+        same = [a for a in kind if _norm(a.label) == step["label"]]
         if len(same) > 1 and step.get("context"):
             same = [a for a in same if a.context == step["context"]] or same
         return same[0] if same else None
