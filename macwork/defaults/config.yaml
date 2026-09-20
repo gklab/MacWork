@@ -263,6 +263,9 @@ engine:
   yield_idle_s: 1.5              # the user counts as busy until their keyboard and mouse have been quiet this long
   yield_max_s: 60                # how long one step waits for them before the task gives up its turn
   tasks_ttl_s: 1800
+  persist: true                  # keep tasks across restarts, so a pending one survives `macwork serve`
+                                 # being restarted and tidying still knows what that task opened
+  store: ~/Library/Application Support/macwork/tasks.db
   activate_wait_s: 1.5           # how long to wait for an app to come to the front before refusing to type
   activate_settle_s: 0.3         # after it comes forward, before its key window has focus
   close_wait_s: 0.6              # tidy: after asking a window to close

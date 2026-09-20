@@ -36,6 +36,7 @@ from .model import PENDING, Affordance, Observation, Task
 from .observe import Ctx, installed_apps, observe
 from .privacy import Audit, Gate, RedactionError, Redactor
 from .skills import Skills
+from .store import Store
 from .tidy import TidyMixin
 
 log = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         self._lock = threading.RLock()
         self.models = AppModels(self.cfg)
         self.skills = Skills(self.cfg)
+        self.store = Store(self.cfg)
         self.cache["appmodels"] = self.models
         self.cache["skills"] = self.skills
         self._planner: Any = None
@@ -237,7 +239,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
     def resume(self, task_id: str, inputs: dict[str, Any] | None = None, confirm: bool | None = None,
                choice_id: str | None = None, progress: Progress | None = None) -> dict[str, Any]:
         self._gc()
-        task = self.tasks.get(task_id)
+        task = self.tasks.get(task_id) or self._recall(task_id)
         if task is None:
             return {"task_id": task_id, "status": "failed", "reason": "unknown or expired task"}
         if task.status not in PENDING:
@@ -258,6 +260,21 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         task.held = held
         return self._run(task, progress)
 
+    def _recall(self, task_id: str) -> Task | None:
+        """A task the engine does not remember may still be on disk: a restart is not an expiry.
+
+        What comes back is the task's own state. Pids, window numbers and element references are left behind
+        deliberately — they described a machine that has moved on — so a resumed task looks at the screen
+        again, which is what it would do anyway.
+        """
+        task = self.store.get(task_id)
+        if task is None:
+            return None
+        log.info("task %s picked up again after a restart", task_id)
+        task.outputs.setdefault("resumed_after_restart", True)
+        self.tasks[task_id] = task
+        return task
+
     def feedback(self, task_id: str, ok: bool, note: str = "") -> dict[str, Any]:
         """Ground truth from the caller (or an eval check): a task judged done that was not, must not become a routine."""
         task = self.tasks.get(task_id)
@@ -274,7 +291,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         return {"task_id": task_id, "ok": ok, "routine_removed": bool(not ok and routine)}
 
     def cancel(self, task_id: str) -> dict[str, Any]:
-        task = self.tasks.get(task_id)
+        task = self.tasks.get(task_id) or self._recall(task_id)
         if task is None:   # saying "cancelled" for an id nobody knows only hides a typo or an expired task
             return {"task_id": task_id, "cancelled": False, "error": "unknown or expired task"}
         self._cancelled.add(task_id)
@@ -289,6 +306,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                 self.tasks.pop(tid, None)
                 self._redactors.pop(tid, None)
                 self._cancelled.discard(tid)   # else the set grows for the life of the process
+        self.store.sweep()
 
     def exclusive(self) -> bool:
         """Does this run own the Mac, or does it belong to the user (the default)?"""
@@ -326,6 +344,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
     def _finish(self, task: Task, status: str, reason: str = "", pending: dict[str, Any] | None = None) -> dict[str, Any]:
         task.status, task.reason, task.pending = status, reason, pending or {}
         task.updated = time.time()
+        self.store.save(task)
         if status == "done":
             path = self.skills.record(task, task.start_app)
             if path:
