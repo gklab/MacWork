@@ -36,6 +36,7 @@ class Ctx:
     gate: Any = None                            # privacy.Gate: the only way to ask the decider
     hands: Any = None                           # callable: may the engine use the keyboard and the front app now?
     redactor: Any = None                        # this task's pseudonym table
+    task: str = ""                              # whose look this is: for what is remembered per task, not per Mac
 
 
 Provider = Callable[[Ctx, Observation], None]
@@ -611,7 +612,10 @@ def vision(ctx: Ctx, obs: Observation) -> None:
     if mode == "auto" and not sparse and not unlabeled:
         return
     key = f"{ctx.app['pid']}|{obs.window}"
-    if mode == "auto" and not sparse and vc.get("on_demand", True) and key not in ctx.cache.setdefault("vision.wanted", set()):
+    # "this task asked to read that window" is that task's business; kept globally, one task's choice made
+    # every later task OCR the same window for the life of the process
+    wanted = ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set())
+    if mode == "auto" and not sparse and vc.get("on_demand", True) and key not in wanted:
         # the tree names most things: reading the screen for the rest costs ~0.3 s, so it happens when asked for
         obs.affordances.append(Affordance("vr", "vision", "reveal", f"read the {len(unlabeled)} controls without a label in this window "
                                           "from the screen (to see what they are)", {"key": key}, context=ctx.app.get("name", "")))

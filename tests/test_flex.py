@@ -196,7 +196,7 @@ def test_unlabeled_container_offers_each_text_inside_as_a_target(tmp_path):
     ctx = Ctx(cfg(tmp_path), GalleryHelper(), app={"pid": 1})
     vision(ctx, obs)                                  # the tree is not sparse: reading the screen is offered, not done
     assert [(a.channel, a.verb) for a in obs.affordances] == [("vision", "reveal")] and not ctx.helper.did("screen.ocr")
-    ctx.cache.setdefault("vision.wanted", set()).add(obs.affordances[0].target["key"])
+    ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set()).add(obs.affordances[0].target["key"])
     obs.affordances.clear()
     vision(ctx, obs)
     labels = [a.label for a in obs.affordances]

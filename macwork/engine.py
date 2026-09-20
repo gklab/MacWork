@@ -67,7 +67,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         self._cancelled: set[str] = set()
         self._last: tuple[Ctx, Observation] | None = None
         self._obs_seq = 0                     # every observation stamps its affordance ids, so a stale id cannot act
-        self._lock = threading.RLock()
+        # One Mac, one keyboard, one front app: whatever *drives* it goes one at a time, and that is not a
+        # limitation to design away. What was wrong is that *looking* waited for it too — a `mac_observe`
+        # blocked for the whole length of a task, then came back describing a screen from minutes ago.
+        self._lock = threading.RLock()      # driving the Mac
+        self._slot = threading.Lock()       # the observe → act hand-off, held for an instant
         self.models = AppModels(self.cfg)
         self.skills = Skills(self.cfg)
         self.store = Store(self.cfg)
@@ -80,7 +84,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
     def _helper_restarted(self) -> None:
         """A new helper process means every Accessibility reference handed out by the old one is gone, and pids
         may be reused. Anything keyed on them has to go with it."""
-        for key in ("menu.snap", "menubar.snap", "menubar.owners", "ambient", "vision.ocr", "vision.wanted"):
+        for key in ("menu.snap", "menubar.snap", "menubar.owners", "ambient", "vision.ocr"):
             self.cache.pop(key, None)
         self._last = None
         log.info("helper restarted: dropped the caches that held its references")
@@ -181,24 +185,26 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         running = self.helper.call("apps.running")
         return Ctx(self.cfg, self.helper, goal=goal, inputs=inputs, app=self._resolve_app(app, running), running=running,
                    cache=self.cache, redactor=self.redactor(key),   # gate is attached only where a decision is needed
-                   hands=self.take_hands)
+                   hands=self.take_hands, task=key)
 
     # --------------------------------------------------------------- step level
     def observe(self, app: str | None = None, goal: str = "", inputs: dict[str, Any] | None = None, limit: int = 200) -> dict[str, Any]:
-        with self._lock:
-            ctx = self._ctx(goal, inputs or {}, app, "observe")
-            obs = observe(ctx)
-            affs = [a for a in obs.affordances if not self._denied(a, ctx.app)]   # in provider order: no relevance guessing
+        """Reading the screen. Deliberately not behind the lock that serialises driving: looking changes
+        nothing, and a caller asking what is on screen should not wait out someone else's task."""
+        ctx = self._ctx(goal, inputs or {}, app, "observe")
+        obs = observe(ctx)
+        affs = [a for a in obs.affordances if not self._denied(a, ctx.app)]   # in provider order: no relevance guessing
+        with self._slot:
             self._obs_seq += 1
             for a in affs:   # ids carry which observation they came from: acting on a stale one fails instead of
                 a.id = f"o{self._obs_seq}:{a.id}"   # resolving to whatever element now happens to sit at that id
             obs.affordances = affs
             self._last = (ctx, obs)
-            return {"app": ctx.app, "window": obs.window, "screen_text": obs.screen_text,
-                    "affordances": [a.public() for a in affs[:limit]], "total": len(affs), "notes": obs.notes}
+        return {"app": ctx.app, "window": obs.window, "screen_text": obs.screen_text,
+                "affordances": [a.public() for a in affs[:limit]], "total": len(affs), "notes": obs.notes}
 
     def act(self, affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False) -> dict[str, Any]:
-        with self._lock:
+        with self._lock:      # acting does drive the Mac, so it waits its turn like a task does
             if not self._last:
                 return {"ok": False, "error": "call observe first"}
             seen, obs = self._last
@@ -378,6 +384,13 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                     task.cost_usd += self._decider.cost_usd - cost0
             return task.result()
 
+    def busy(self) -> bool:
+        """Is something driving the Mac right now? Answering without waiting is the point."""
+        if self._lock.acquire(blocking=False):
+            self._lock.release()
+            return False
+        return True
+
     def status(self) -> dict[str, Any]:
         out: dict[str, Any] = {"config": str(self.cfg.get("helper.mode"))}
         try:
@@ -395,5 +408,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         out["planner"] = {"kind": self.cfg.get("planner.kind"), "using": getattr(backend, "name", None) if backend else None,
                           "model": getattr(backend, "model", None) if backend else None}
         out["skills"] = len(self.skills.all())
+        out["busy"] = self.busy()
+        out["tasks"] = {"in_memory": len(self.tasks), "kept": bool(self.store.enabled)}
         out["dry_run"] = bool(self.cfg.get("audit.dry_run"))
         return out

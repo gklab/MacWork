@@ -419,7 +419,7 @@ class LoopMixin:
             log.info("step %d: letting the app finish before leaving it", len(task.steps))
             return AGAIN
         if chosen.channel == "vision":            # read the unlabeled controls of this window, then decide again
-            look.ctx.cache.setdefault("vision.wanted", set()).add(chosen.target["key"])
+            look.ctx.cache.setdefault("vision.wanted", {}).setdefault(look.ctx.task, set()).add(chosen.target["key"])
             task.pace.looks += 1
             progress("read the screen")
             if task.pace.looks <= int(self.cfg.get("engine.max_looks", 6)):

@@ -79,3 +79,29 @@ def test_a_restarted_helper_takes_its_stale_references_with_it(tmp_path):
     assert "menu.snap" not in engine.cache and "ambient" not in engine.cache and "vision.ocr" not in engine.cache
     assert engine.cache["installed"], "what is installed does not depend on the helper's references"
     assert engine._last is None
+
+
+def test_looking_does_not_wait_for_a_task_to_finish(tmp_path):
+    """There is one Mac, so driving it goes one at a time — but a caller asking what is on screen was made to
+    wait out the whole task, and then came back describing a screen from minutes ago."""
+    import threading
+    import time as _t
+
+    engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    driving = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with engine._lock:          # what a running task holds
+            driving.set()
+            release.wait(2)
+
+    threading.Thread(target=hold, daemon=True).start()
+    assert driving.wait(2)
+    assert engine.busy() is True
+
+    started = _t.monotonic()
+    seen = engine.observe()
+    assert _t.monotonic() - started < 1.5, "looking waited for the lock"
+    assert seen["affordances"], "and it really did look"
+    release.set()
