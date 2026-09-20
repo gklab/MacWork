@@ -159,8 +159,6 @@ observe:
     limit: 15
     roots: ["~"]
     input_keys: [query, keywords, file]   # inputs that trigger a Spotlight search
-  web:
-    enabled: true
 
 planner:
   kind: auto                     # auto | none | foundation | anthropic | any name under endpoints (deepseek, local, …)
@@ -234,7 +232,7 @@ engine:
   max_cost_usd: 0.5              # 0 = no ceiling
   max_options: 200               # Jev accepts at most 255 per choice
   history: 6
-  locked_channels: [web, shortcut]   # what still works while the screen is locked (no UI needed)
+  locked_channels: [shortcut]    # what still works while the screen is locked (no UI needed)
   evidence:                      # what every question sees about the screen (not only the action's options)
     controls: 60
     label_chars: 60
@@ -298,23 +296,6 @@ input:
   non_ascii: paste               # paste (clipboard, restored after) | unicode (synthetic unicode key events)
   set_value_first: false         # true: set a field's value through Accessibility first (background-friendly, but many fields ignore it)
   focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
-
-web:
-  locale: auto                   # auto = this Mac's locale. Pinned (it was zh-CN) every page comes back in
-                                 # that language, with its prices, cookie walls and geo-redirects
-  # A profile of macwork's own, so a sign-in lasts: without one every look-up started with no cookies and
-  # anything behind a login was a sign-in form for ever. Never the user's own Chrome profile — that would
-  # lock it while Chrome runs and put the engine inside their whole browsing identity.
-  keep_session: true
-  profile: ~/Library/Application Support/macwork/browser
-  search: [duckduckgo, bing]     # plain-HTTP search (engines block headless browsers)
-  results: 8
-  max_steps: 12
-  budget_s: 30
-  headed: false
-  note_chars: 2500
-  max_notes: 3
-  thresholds: {useful: 0.6, enough: 0.8, stuck: 0.85}
 
 audit:
   enabled: true

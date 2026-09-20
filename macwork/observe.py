@@ -914,15 +914,6 @@ def skills(ctx: Ctx, obs: Observation) -> None:
 
 
 # ----------------------------------------------------------------------------- web research
-@provider("web")
-def web(ctx: Ctx, obs: Observation) -> None:
-    if not ctx.cfg.get("observe.web.enabled", True):
-        return
-    try:
-        import playwright  # noqa: F401
-    except ImportError:
-        return
-    obs.affordances.append(Affordance("r0", "web", "research", str(ctx.cfg.get("observe.labels.web_research") or "research this on the web"), {}))
 
 
 # ----------------------------------------------------------------------------- grouping

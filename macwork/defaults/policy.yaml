@@ -58,7 +58,7 @@ confirm:
       what: it runs a command, a script or program code (in a terminal, a console or through an app's scripting)
       patterns: ['(?i)\b(shell|script|scripting|terminal|command line|execute|eval|sudo)\b', '脚本|终端|命令行|执行']
   patterns: []              # extra floor patterns without a category ("irreversible or outward-facing")
-  screen_gate_exempt: [web]   # channels that never touch the screen; every other one obeys a risky screen
+  screen_gate_exempt: []      # channels that never touch the screen; every other one obeys a risky screen
 deny:
   host_app: true            # never touch the app the caller runs in (the terminal or client this engine lives under)
   bundle_ids: []            # apps the engine must never touch

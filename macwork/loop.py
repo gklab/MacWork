@@ -242,9 +242,6 @@ class LoopMixin:
             task.memory.screen_notes[sig] = f"{state['app']} — {obs.window or '(no window)'}: {obs.screen_text[:200]}"
         if task.memory.circles:
             state["went_in_circles"] = task.memory.circles[-6:]
-        if task.outputs.get("web"):
-            state["found_on_the_web"] = [{"title": n.get("title"), "excerpt": str(n.get("text", ""))[:600]}
-                                         for n in (task.outputs["web"].get("found") or [])[:3]]
         if suggested or any(t.get("keys") or t.get("type") for t in task.tries):
             state["planner_suggests"] = [t.get("action") or f"press {t.get('keys')}" if not t.get("type") else f"type {t['type']}"
                                          for t in task.tries][:8]

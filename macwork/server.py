@@ -2,7 +2,6 @@
 
 * ``mac_do`` / ``mac_resume`` / ``mac_cancel`` — give a goal; the decider drives; answer what it asks
 * ``mac_observe`` / ``mac_act``                — see the affordances and pick yourself (no decider involved)
-* ``web_research``                             — look something up on the web and get the relevant passages
 """
 
 from __future__ import annotations
@@ -79,16 +78,6 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
     async def mac_act(affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False) -> dict[str, Any]:
         """Execute one affordance from the latest mac_observe. Irreversible actions need confirm=true."""
         return await anyio.to_thread.run_sync(lambda: eng.act(affordance_id, params, confirm))
-
-    @mcp.tool()
-    async def web_research(goal: str, query: str = "", url: str = "") -> dict[str, Any]:
-        """Search the web (or start at `url`), open and read pages, and return the passages relevant to `goal` with sources."""
-        from .web import research
-
-        def run() -> dict[str, Any]:
-            eng.system()          # so the browser opens with this Mac's locale, not one written into the code
-            return research(cfg, eng.gate, eng.redactor("web"), goal=goal, query=query, url=url, cache=eng.cache)
-        return await anyio.to_thread.run_sync(run)
 
     @mcp.tool()
     async def mac_status() -> dict[str, Any]:

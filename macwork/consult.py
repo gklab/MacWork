@@ -90,9 +90,6 @@ class ConsultMixin:
         if backend is None:
             return
         brief = self._brief(task, None, obs)
-        if task.outputs.get("web"):
-            brief["found_on_the_web"] = [{"title": n.get("title"), "excerpt": str(n.get("text", ""))[:800]}
-                                         for n in (task.outputs["web"].get("found") or [])[:3]]
         brief["screen_text"] = (task.outputs.get("result_screen") or {}).get("text") or brief.get("screen_text", "")
         try:
             answer = Planning(self.cfg, backend, self.redactor(task.id), self.audit).answer(task.goal, brief)

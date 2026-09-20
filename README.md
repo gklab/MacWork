@@ -2,8 +2,10 @@
 
 **A worker that lives in your Mac.** [macwork.org](https://macwork.org)
 
-MacWork operates a Mac through its **native interfaces** — menus, the Accessibility tree, apps, files, Shortcuts
-and the web — with [TypeSafe Jev](https://docs.typesafe.ai) making the fast "which one / is it done" decisions.
+MacWork operates a Mac through its **native interfaces** — menus, the Accessibility tree, apps, files, Shortcuts,
+Services, App Intents — with [TypeSafe Jev](https://docs.typesafe.ai) making the fast "which one / is it done"
+decisions. Every one of those is the Mac describing itself; nothing here knows the name of a single app or
+website, because you cannot know what someone has installed.
 It works the way a colleague would: it looks at the screen, decides one step at a time, asks before anything
 irreversible, hands the keyboard back the moment you touch it, and tidies up after itself.
 
@@ -13,7 +15,7 @@ keeps screenshots off the network entirely.
 
 ```
 caller (Claude Code, a voice assistant, your script)
-   │  MCP: mac_do / mac_resume / mac_observe / mac_act / web_research
+   │  MCP: mac_do / mac_resume / mac_observe / mac_act
    ▼
 macwork  (Python engine: policy, privacy, decisions)
    │  observe → one Jev request (which action + which kind of move) → safety floor → act → wait for the UI to settle
@@ -38,7 +40,7 @@ macwork-helper   (small signed Swift app that holds the macOS permissions)
   or outward-facing steps (`policy.yaml`) return `need_confirm`.
 * **Native first, pixels never (yet).** Candidates come from the app's menus (every command, with its
   shortcut), the focused window's Accessibility tree (buttons, fields, lists), running/installed apps (with
-  localized names), Spotlight, Shortcuts and the web. Electron/Chromium apps get their tree switched on
+  localized names), Spotlight, Shortcuts, Services and App Intents. Electron/Chromium apps get their tree switched on
   (`AXManualAccessibility`). The engine verifies each step by waiting for Accessibility events, not by sleeping.
 * **No hand-written operating knowledge.** No app names, no table of "useful" shortcuts, no word lists that
   decide what to click or what is safe to explore, no relevance ranking. App commands come from the app itself
@@ -81,9 +83,15 @@ Nothing in the engine names an app. Everything comes from what the Mac can tell 
 
 | level | tools | who drives |
 |---|---|---|
-| goal | `mac_do(goal, inputs, app)` → `done` · `failed` · `need_input` · `need_confirm` · `ambiguous`; continue with `mac_resume` | Jev, asking the caller when it must |
+| goal | `mac_do(goal, inputs, app)` → `done` · `failed` · `need_input` · `need_confirm` · `ambiguous` · `need_continue`; continue with `mac_resume` | Jev, asking the caller when it must |
 | step | `mac_observe(app, goal)` → affordances; `mac_act(id, params, confirm)` | the caller — the decider is asked nothing but the safety floor's "what does this action do" |
-| web | `web_research(goal, query, url)` → relevant passages with sources | Jev in a headless browser |
+
+Looking something up on the web is a goal like any other: `mac_do("find out when Python 3.14 came out")`
+drives the browser that is already on this Mac, with the sessions you are already signed into. There is no
+bundled browser and no built-in list of search engines — a browser is an app, and it is operated like any
+other app. What that costs: a page is read from the screen (on-device OCR), so a long one takes a scroll or
+two, because Chrome does not put page content in the Accessibility tree at all (measured: 41 nodes, all
+toolbar, with every accessibility flag set).
 
 ## Install
 
@@ -91,7 +99,6 @@ Requires macOS 13+, Python 3.10+, and the Swift toolchain (Xcode or Command Line
 
 ```sh
 pip install -e ".[web]"            # or: uv pip install -e ".[web]"
-python -m playwright install chromium   # for web_research
 macwork helper install                 # builds the Swift helper into ~/Applications/MacWork Helper.app
 macwork key set                        # stores your TypeSafe API key in the login Keychain
 macwork doctor

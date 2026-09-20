@@ -290,21 +290,6 @@ def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
                    target={"pid": front["pid"], "name": front.get("name"), "bundle_id": front.get("bundle_id")} if front.get("pid") else None)
 
 
-@channel("web")
-def web_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
-    if "system.locale" not in ctx.cache:      # the browser opens with this Mac's locale, not a fixed one
-        try:
-            ctx.cache["system.locale"] = ctx.helper.call("system.locale")
-        except HelperError:
-            ctx.cache["system.locale"] = {}
-    from .web import research
-
-    res = research(ctx.cfg, ctx.gate, ctx.redactor, goal=ctx.goal,
-                   query=str(ctx.inputs.get("query") or ""), url=str(ctx.inputs.get("url") or ""), cache=ctx.cache)
-    # what was found goes back to the decider as evidence; whether it answers the goal is its judgement, not ours
-    return Outcome(res.get("status") in ("found", "done"), output={"web": res}, error=res.get("error"), wait=False)
-
-
 @channel("script")
 def script_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     if not ctx.cfg.policy.get("allow", {}).get("raw_applescript"):

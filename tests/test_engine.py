@@ -356,13 +356,15 @@ def test_step_level_observe_act_needs_confirm_and_input(tmp_path):
 
 
 # ----------------------------------------------------------------- MCP surface
-def test_mcp_server_exposes_three_levels(tmp_path):
+def test_mcp_server_exposes_both_levels_of_control(tmp_path):
     from macwork.server import build
 
     eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
     mcp = build(cfg(tmp_path), eng)
     tools = {t.name for t in anyio.run(mcp.list_tools)}
-    assert {"mac_do", "mac_resume", "mac_cancel", "mac_feedback", "mac_observe", "mac_act", "web_research", "mac_status"} <= tools
+    assert {"mac_do", "mac_resume", "mac_cancel", "mac_feedback", "mac_observe", "mac_act", "mac_status"} <= tools
+    # looking something up is a goal like any other, driven by the same loop through the Mac's own browser
+    assert "web_research" not in tools
 
 
 def test_backing_out_of_a_risky_screen_is_judged_by_the_decider_and_paste_always_asks(tmp_path):
@@ -588,17 +590,29 @@ def test_a_planner_suggestion_inside_a_folded_group_is_shown(tmp_path):
     assert "menu 文件 ▸ 新建文稿 (⌘N) — suggested by the planner" in offered
 
 
-def test_web_research_is_evidence_not_the_end_of_the_task(tmp_path, monkeypatch):
-    import macwork.web as web
-    monkeypatch.setattr(web, "research", lambda *a, **k: {"status": "found", "found": [{"title": "t", "url": "u", "text": "3.14 was released on 7 October 2025"}]})
-    c = cfg(tmp_path, config={"observe": {"providers": ["web"]}})
-    d = ScriptedDecider([{"pick": "research"}, {"pick": "done"}])
-    eng = Engine(c, helper=FakeHelper(), decider=d)
-    monkeypatch.setattr("macwork.observe.web", lambda ctx, obs: obs.affordances.append(Affordance("r0", "web", "research", "research this on the web", {})))
-    eng.cfg.docs["config"]["observe"]["providers"] = ["web"]
-    res = eng.do("查一下 Python 3.14 的发布日期")
-    assert res["status"] == "done" and len(d.seen) == 2
-    assert "October 2025" in d.seen[1][0]["found_on_the_web"][0]["excerpt"]
+def test_what_was_looked_up_becomes_a_fact_the_answer_can_be_written_from(tmp_path):
+    """What the web subsystem was *for*, done the ordinary way: read a window in full, and what it said is
+    a fact — so the answer comes from what was actually read, not from the planner's memory."""
+    from tests.test_flex import FakeBackend
+
+    class Article(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("visible_only") is False:
+                return {"nodes": [{"ref": "w.0", "role": "AXWindow", "depth": 0},
+                                  {"ref": "w.1", "role": "AXStaticText", "parent": "w.0",
+                                   "value": "Python 3.14 was released on 7 October 2025."}]}
+            return super().call(method, timeout, **p)
+
+    # the goal asks for something to be reported back, so the answer is written at the end
+    d = ScriptedDecider([{"pick": "read all the text", "wants_answer": 1.0}, {"pick": "done", "done": 0.95}])
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["readall"], "readall": {"offer_over": 0}}}),
+                 helper=Article(), decider=d)
+    eng._planner = FakeBackend([{"answer": "7 October 2025"}])
+
+    res = eng.do("Python 3.14 是哪天发布的")
+    assert res["status"] == "done"
+    assert res["outputs"]["answer"] == "7 October 2025"
+    assert "answer_refused" not in res["outputs"], "it was read, so it may be written"
 
 
 def test_a_locked_screen_is_reported_as_such(tmp_path):

@@ -4,7 +4,6 @@
   macwork observe [--app A] [--goal G]   what can be done right now
   macwork surfaces [--app A]             read-only: what each capability surface can see, and how long it takes
   macwork do "goal" [-i key=value] [--app A]   let the decider drive (asks you when it must)
-  macwork web "goal" [--query Q] [--url U]     web research
   macwork serve [--transport T]          MCP server
   macwork key set [typesafe|deepseek|…]  store an API key in the Keychain
   macwork learn <app>                    explore an app safely ahead of time (builds its model)
@@ -166,29 +165,6 @@ def cmd_do(cfg: Config, args: argparse.Namespace) -> int:
             res = eng.resume(res["task_id"], choice_id=input("choose id: ").strip(), progress=lambda m: print(f"  → {m}", file=sys.stderr))
     _print(res)
     return 0 if res["status"] == "done" else 1
-
-
-def cmd_web(cfg: Config, args: argparse.Namespace) -> int:
-    from .engine import Engine
-    from .web import Browser, research
-
-    eng = Engine(cfg)
-    eng.system()
-    if args.login:
-        # A window opens and waits. Nothing is typed for the user and no credential is ever read: they sign
-        # in themselves, the session lands in macwork's own browser profile, and later look-ups have it.
-        profile = expand(cfg.get("web.profile"))
-        browser = Browser(headed=True, profile=profile,
-                          locale=((eng.system().get("locale") or "").replace("_", "-") or None))
-        print(f"signing in to {args.login} — the window closes itself when you are done, or close it yourself",
-              file=sys.stderr)
-        try:
-            _print(browser.sign_in(args.login, float(args.wait)))
-        finally:
-            browser.reset()
-        return 0
-    _print(research(cfg, eng.gate, eng.redactor("web"), goal=args.goal, query=args.query or "", url=args.url or "", cache=eng.cache))
-    return 0
 
 
 def cmd_serve(cfg: Config, args: argparse.Namespace) -> int:
@@ -410,12 +386,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("goal")
     p.add_argument("--app")
     p.add_argument("-i", "--input", action="append", default=[], help="key=value (text, query, url, file…)")
-    p = sub.add_parser("web")
-    p.add_argument("--login", metavar="URL", help="open a window and wait while you sign in; the session is kept")
-    p.add_argument("--wait", type=float, default=300, help="how long the sign-in window stays open")
-    p.add_argument("goal", nargs="?", default="")
-    p.add_argument("--query")
-    p.add_argument("--url")
     p = sub.add_parser("serve")
     p.add_argument("--transport", choices=["stdio", "streamable-http"])
     p.add_argument("--port", type=int)
@@ -446,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
-    handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "web": cmd_web, "serve": cmd_serve,
+    handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "serve": cmd_serve,
                 "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     return handlers[args.cmd](cfg, args)
 
