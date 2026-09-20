@@ -80,3 +80,49 @@ def test_the_old_behaviour_is_one_setting_away(tmp_path):
     offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXGroup", "rdesc": "group", "title": "消息",
                                  "editable": True, "parent": "w.0"}], by_capability=False)
     assert not any(verb == "type" for verb, _ in offered)
+
+
+# --- not paying for what cannot be read -------------------------------------------------------------------
+
+def test_an_empty_tree_is_not_retried_as_a_sparse_one(tmp_path):
+    """Manual accessibility unlocks a *thin* Electron tree. It cannot conjure a window that is not open —
+    asking again just waits out the same timeouts: measured at 1516 ms for nothing, then 2018 ms more."""
+    from macwork.model import Observation
+    from macwork.observe import window
+
+    class NoWindow(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("scope") == "focused_window":
+                self.calls.append((method, p))
+                return {"nodes": [], "ms": 1516}
+            return super().call(method, timeout, **p)
+
+    ctx = Ctx(cfg(tmp_path), NoWindow(), app={"pid": 42, "name": "app"})
+    window(ctx, Observation(app=ctx.app, window=None, affordances=[]))
+    assert len(ctx.helper.did("ax.snapshot")) == 1, "it asked twice for a window that is not there"
+
+
+def test_reading_the_screen_is_skipped_when_there_is_no_window(tmp_path):
+    """The capture waits for a window that does not exist, and an empty tree reads as "sparse"."""
+    from macwork.model import Observation
+    from macwork.observe import vision
+
+    obs = Observation(app={"pid": 42}, window=None, affordances=[], notes={"open_windows": []})
+    ctx = Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 42, "name": "app"})
+    vision(ctx, obs)
+    assert not ctx.helper.did("screen.ocr")
+
+
+def test_an_app_that_does_not_answer_says_so_to_the_decider(tmp_path):
+    from macwork.model import Observation
+    from macwork.observe import window
+
+    class Silent(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("scope") == "focused_window":
+                return {"nodes": [], "ms": 0, "not_answering": True}
+            return super().call(method, timeout, **p)
+
+    obs = Observation(app={"pid": 42}, window=None, affordances=[])
+    window(Ctx(cfg(tmp_path), Silent(), app={"pid": 42, "name": "app"}), obs)
+    assert obs.notes["window_not_answering"] is True

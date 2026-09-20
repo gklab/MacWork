@@ -80,7 +80,42 @@ private func axSize(_ v: CFTypeRef?) -> CGSize? {
 
 func axAttr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
     var v: CFTypeRef?
-    return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
+    let err = AXUIElementCopyAttributeValue(el, name as CFString, &v)
+    if err == .cannotComplete { Unresponsive.shared.note(el) }   // the app did not answer in time
+    return err == .success ? v : nil
+}
+
+/// Apps that do not answer Accessibility.
+///
+/// Every call to such an app waits out the messaging timeout — measured on one: 500 ms per scope, 1500 ms
+/// for "the focused window" (three attributes tried), and a full look cost nearly five seconds to learn
+/// nothing. `.cannotComplete` is the system saying exactly this, so it is believed for a short while rather
+/// than rediscovered on every call. Short, because an app that was busy may answer a moment later.
+final class Unresponsive {
+    static let shared = Unresponsive()
+    private let lock = NSLock()
+    private var seen: [pid_t: TimeInterval] = [:]
+    var cooldown: TimeInterval = 20
+
+    private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    func note(_ el: AXUIElement) {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(el, &pid) == .success else { return }
+        lock.lock(); seen[pid] = now(); lock.unlock()
+    }
+
+    /// True when this app timed out recently: ask it nothing, and say why.
+    func skip(_ pid: pid_t) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let at = seen[pid] else { return false }
+        if now() - at < cooldown { return true }
+        seen.removeValue(forKey: pid)
+        return false
+    }
+
+    func clear(_ pid: pid_t) { lock.lock(); seen.removeValue(forKey: pid); lock.unlock() }
 }
 
 /// Which running processes own a menu bar extra, in one call.
@@ -209,6 +244,11 @@ func axSnapshot(_ p: Params) throws -> Any {
     let scope = p["scope"] as? String ?? "focused_window"
     let skipRoles = Set(p["skip_roles"] as? [String] ?? [])   // e.g. AXApplication/AXMenuBar inside a window scope
     let keepRoles = Set(p["keep_offscreen_roles"] as? [String] ?? [])   // e.g. rows: a list's content even when scrolled away
+    // Reading a list's scrolled-away rows costs an Accessibility round trip each. Measured on a chat app:
+    // 520 nodes in 211 ms with them clipped away, 1441 nodes in 3031 ms with them kept — three seconds on
+    // every single look. Kept, but not without end: past this many, the rest of that list stays off-screen.
+    let maxOffscreen = p["max_offscreen"] as? Int ?? 200
+    var offscreen = 0
     let settableRoles = Set(p["settable_roles"] as? [String] ?? [])
     let byCapability = p["by_capability"] as? Bool ?? false
     let knownActions = Set(p["known_actions"] as? [String] ?? [])
@@ -221,6 +261,9 @@ func axSnapshot(_ p: Params) throws -> Any {
     } else {
         guard let pidNum = p["pid"] as? Int else { throw RPCError("bad_params", "pid or ref required") }
         pid = pid_t(pidNum)
+        if Unresponsive.shared.skip(pid) {
+            return ["nodes": [Any](), "ms": 0, "truncated": false, "not_answering": true]
+        }
         let app = AXUIElementCreateApplication(pid)
         for (flag, attr) in [("manual_accessibility", "AXManualAccessibility"), ("enhanced_ui", "AXEnhancedUserInterface")] {
             if p[flag] as? Bool == true { AXUIElementSetAttributeValue(app, attr as CFString, kCFBooleanTrue) }
@@ -268,8 +311,16 @@ func axSnapshot(_ p: Params) throws -> Any {
         let d = describe(item.el, textLimit: textLimit, withActions: withActions, settableRoles: settableRoles,
                          byCapability: byCapability, knownActions: knownActions)
         if item.depth > 0, let role = d.node["role"] as? String, skipRoles.contains(role) { continue }
-        let free = item.free || keepRoles.contains(d.node["role"] as? String ?? "")
-        if visibleOnly, !free, let clip = item.clip, let f = d.frame, f.width > 0 || f.height > 0, !clip.intersects(f) { continue }
+        // Off-screen by geometry, whatever anyone's opinion of it — a kept row's children inherit "keep",
+        // and they are most of the cost: 191 rows carried 1000 more nodes. Everything kept is counted.
+        let offScreen = visibleOnly && item.clip != nil && d.frame != nil
+            && (d.frame!.width > 0 || d.frame!.height > 0) && !item.clip!.intersects(d.frame!)
+        var free = item.free || keepRoles.contains(d.node["role"] as? String ?? "")
+        if offScreen, free {
+            offscreen += 1
+            if offscreen > maxOffscreen { truncated = true; free = false }
+        }
+        if offScreen, !free { continue }
         var node = d.node
         let ref = store.add(item.el, gen: gen, n: nodes.count)
         node["ref"] = ref

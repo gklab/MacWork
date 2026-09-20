@@ -379,6 +379,7 @@ def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
                            settable_roles=ctx.cfg.get("observe.window.text_roles") or [],
                            by_capability=bool(ctx.cfg.get("observe.window.by_capability", True)),
                            known_actions=list((ctx.cfg.get("observe.window.action_labels") or {}).keys()),
+                           max_offscreen=int(ctx.cfg.get("observe.ax.max_offscreen", 200)),
                            skip_roles=(ax.get("window_skip_roles") or []) if scope == "focused_window" else [])
 
 
@@ -392,7 +393,10 @@ def window(ctx: Ctx, obs: Observation) -> None:
     count = lambda nodes: sum(1 for n in nodes if actions & set(n.get("actions", [])) or n.get("role") in text_roles)  # noqa: E731
     mode = ax.get("manual_accessibility", "auto")
     s = _snap(ctx, "focused_window", mode == "always")
-    if mode == "auto" and count(s.get("nodes", [])) < int(ax.get("sparse_tree_below", 8)):
+    # An *empty* tree is not a sparse one: it means the app has no window open, and asking again with manual
+    # accessibility on will not conjure one — it just waits out the same timeouts. Measured on an app with no
+    # window: 1516 ms for nothing, then 2018 ms more for nothing.
+    if mode == "auto" and s.get("nodes") and count(s.get("nodes", [])) < int(ax.get("sparse_tree_below", 8)):
         s2 = _snap(ctx, "focused_window", True)  # Electron/Chromium apps only expose their tree when asked
         if count(s2.get("nodes", [])) > count(s.get("nodes", [])):
             s = s2
@@ -403,6 +407,8 @@ def window(ctx: Ctx, obs: Observation) -> None:
         obs.notes["window_frame"] = nodes[0].get("frame")
     element_affordances(ctx, obs, nodes, "w")
     obs.notes["window_actionable"] = count(nodes)
+    if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
+        obs.notes["window_not_answering"] = True
     obs.notes["window_ms"] = s.get("ms")
     obs.notes["window_truncated"] = s.get("truncated")
 
@@ -606,6 +612,10 @@ def vision(ctx: Ctx, obs: Observation) -> None:
     vc = ctx.cfg.section("observe.vision")
     mode = vc.get("mode", "auto")
     if not ctx.app or mode == "never":
+        return
+    # No window means nothing to read. The capture waits for one that is not there — measured at 1.5 s on
+    # an app with none — and an empty Accessibility tree reads as "sparse", so this used to run every time.
+    if obs.notes.get("open_windows") == [] or obs.notes.get("window_not_answering"):
         return
     unlabeled = obs.notes.get("unlabeled", [])
     sparse = int(obs.notes.get("window_actionable", 0)) < int(vc.get("sparse_below", 8))

@@ -32,6 +32,11 @@ observe:
     visible_only: true
     manual_accessibility: auto   # auto | always | never — expose Electron/Chromium trees
     sparse_tree_below: 8         # "auto": retry with manual accessibility when fewer actionable nodes than this
+                                 # (an *empty* tree is not retried: no window is not the same as a thin one)
+    # Nodes kept from a list that is scrolled out of view — the rows *and* their contents, which are most
+    # of them. Each costs an Accessibility round trip. Measured on a chat app: no limit 3030 ms / 188 rows,
+    # 600 -> 1662 ms / 121, 400 -> 1133 ms / 96, 200 -> 660 ms / 71, 0 -> 171 ms / 46 (the visible ones).
+    max_offscreen: 200
     window_skip_roles: [AXApplication, AXMenuBar]   # never descend into these from a window (menus have their own provider)
   menu:
     cache_s: 4                   # reuse the menu tree for the same app+window this long; any action invalidates it
