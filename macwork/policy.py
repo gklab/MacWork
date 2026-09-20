@@ -85,13 +85,26 @@ class PolicyMixin:
         app = ctx.app or {}
         return f"{self.models.key(app) or app.get('bundle_id')}|{a.label}|{a.context}"
 
+    def _releases(self, a: Affordance | None = None) -> dict[str, str]:
+        """The verdicts that let an action through, named by policy rather than written into the code: what a
+        Mac holds harmless is a policy question, and it grew — deleting a word inside the document being edited
+        is not the delete the floor is there for, and asking the user about it stopped a real task dead."""
+        conf = self.cfg.policy.get("confirm", {}) or {}
+        only_for = conf.get("release_only_for") or {}
+        out = {}
+        for name in conf.get("release") or ["navigate", "enter"]:
+            verbs = only_for.get(name)
+            if verbs and a is not None and a.verb not in verbs:   # a is None: asking what counts, not what to offer
+                continue
+            if conf.get(name):
+                out[name] = str(conf[name]).strip()
+        return out or {"navigate": "it only opens, shows or navigates to something"}
+
     def _floor_options(self, a: Affordance, hits: list[str]) -> dict[str, str]:
         conf = self.cfg.policy.get("confirm", {}) or {}
         cats = {k: str((v or {}).get("what") or k) for k, v in (conf.get("categories") or {}).items()}
         cats["other"] = str(conf.get("other") or "it does something else irreversible or outward-facing").strip()
-        options = {"navigate": str(conf.get("navigate") or "it only opens, shows or navigates to something").strip()}
-        if a.verb in ("type", "type_submit"):
-            options["enter"] = str(conf.get("enter") or "it only enters text into a field or a document").strip()
+        options = self._releases(a)
         # a word hit narrows the question to what the words suggested; with no hit the whole floor is on the
         # table, because the words being silent says nothing about the action
         return options | ({k: cats[k] for k in hits if k in cats} if hits else cats)
@@ -130,7 +143,7 @@ class PolicyMixin:
             a = ans.get(qid) or {}
             probs = a.get("probabilities") or {}
             if a:
-                cache[key] = (a.get("choice", ""), float(probs.get("navigate", 0.0)) + float(probs.get("enter", 0.0)))
+                cache[key] = (a.get("choice", ""), sum(float(probs.get(r, 0.0)) for r in self._releases()))
 
     def _verdict(self, task_id: str, ctx: Ctx, a: Affordance, hits: list[str], window: str | None,
                  ask: bool) -> tuple[str, float] | None:
@@ -155,7 +168,7 @@ class PolicyMixin:
             return None
         probs = (ans.get("what") or {}).get("probabilities") or {}
         cache[key] = ((ans.get("what") or {}).get("choice", ""),
-                      float(probs.get("navigate", 0.0)) + float(probs.get("enter", 0.0)))
+                      sum(float(probs.get(r, 0.0)) for r in self._releases()))
         return cache[key]
 
     def _floor(self, task_id: str, ctx: Ctx, a: Affordance, window: str | None = None, ask: bool = True) -> list[str]:
@@ -185,7 +198,7 @@ class PolicyMixin:
                 self.audit.record("floor", task=task_id, action=a.label, released=True, navigate=round(nav, 3), words=hits)
                 return []
             return hits
-        return [] if top in ("navigate", "enter", "") else [top]
+        return [] if top in self._releases() or top == "" else [top]
 
     def _risky(self, a: Affordance, ctx: Ctx | None = None) -> bool:
         """A cheap read for the places that filter a whole pool of actions before a decider question picks one
@@ -194,7 +207,7 @@ class PolicyMixin:
         if ctx is not None:
             cached = (self.cache.get("floor.verdicts") or {}).get(self._floor_key(ctx, a))
             if cached is not None:
-                return cached[0] not in ("navigate", "enter", "")
+                return cached[0] not in self._releases() and cached[0] != ""
         return bool(self._floor_hits(a))
 
     def _needs_confirm(self, a: Affordance, risky_screen: float, approved: set[str],

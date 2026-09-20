@@ -102,6 +102,8 @@ class FakeHelper:
             return {"idle_s": 99}
         if method == "ax.fingerprint":
             return {"fingerprint": 1}
+        if method == "apps.openers":       # what the system would open this file with
+            return list(getattr(self, "openers", []))
         if method == "ax.focused":
             # the cursor sits in this app's document, holding whatever was last typed at it
             return {"focused": {"role": "AXTextArea", "rdesc": "文本", "ref": "focus", "value": self.typed},
@@ -126,6 +128,7 @@ class ScriptedDecider:
     backs_out = 0.0
     calls_for = 1.0
     serves = 1.0
+    stands = 1.0     # answer judged to follow from what was seen, when it is not traceable word for word
     what: dict = {}
     what_when: str = ""      # apply `what` only where this appears in the question (i.e. to one action)
     why = "failed"
@@ -140,10 +143,11 @@ class ScriptedDecider:
         crit = q["criteria"]
         if self.what and (not self.what_when or self.what_when in q.get("instructions", "")):
             return {"type": "choice", "choice": max(self.what, key=self.what.get), "probabilities": dict(self.what)}
-        if len([c for c in crit if c not in ("navigate", "enter")]) > 4:      # the whole floor was offered
+        released = ("navigate", "enter", "edit")      # the verdicts policy.yaml lets through
+        if len([c for c in crit if c not in released]) > 4:      # the whole floor was offered
             pick = "enter" if "enter" in crit else "navigate"
         else:
-            pick = next(c for c in crit if c != "navigate")
+            pick = "enter" if "enter" in crit else next(c for c in crit if c not in released)
         return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
 
     def decide(self, state, questions):
@@ -161,7 +165,8 @@ class ScriptedDecider:
                     out[k] = {"type": "choice", "choice": self.why}
                 else:
                     out[k] = {"type": "noul", "noul": self.backs_out if k == "backs_out" else self.verify if k == "verified"
-                              else self.calls_for if k == "calls_for" else self.serves if k == "serves" else 1.0}
+                              else self.calls_for if k == "calls_for" else self.serves if k == "serves"
+                              else self.stands if k == "stands" else 1.0}
             return out
         self.seen.append((state, questions))
         step = self.script.pop(0)
@@ -622,6 +627,100 @@ def test_what_was_looked_up_becomes_a_fact_the_answer_can_be_written_from(tmp_pa
     assert "answer_refused" not in res["outputs"], "it was read, so it may be written"
 
 
+def _counting_engine(tmp_path, answer):
+    """A task that reads a window listing three files and then answers a question about them."""
+    from tests.test_flex import FakeBackend
+
+    class Listing(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("visible_only") is False:
+                return {"nodes": [{"ref": "w.0", "role": "AXWindow", "depth": 0},
+                                  {"ref": "w.1", "role": "AXStaticText", "parent": "w.0",
+                                   "value": "one.txt\ntwo.txt\nthree.txt"}]}
+            return super().call(method, timeout, **p)
+
+    d = ScriptedDecider([{"pick": "read all the text", "wants_answer": 1.0}, {"pick": "done", "done": 0.95}])
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["readall"], "readall": {"offer_over": 0}}}),
+                 helper=Listing(), decider=d)
+    eng._planner = FakeBackend([{"answer": answer}])
+    return eng, d
+
+
+def test_an_answer_that_counts_what_it_saw_is_reported(tmp_path):
+    """The word-for-word check cannot pass a sentence: "there are three files" is prose around a count, and
+    prose is on no screen. A real run answered this correctly and had the answer thrown away — so an answer
+    it cannot trace is judged against what was seen instead of being dropped."""
+    eng, d = _counting_engine(tmp_path, "文件夹里有三个文件：one.txt、two.txt 和 three.txt。")
+    res = eng.do("这个文件夹里有几个文件？")
+    assert res["outputs"]["answer"].startswith("文件夹里有三个文件")
+    assert "answer_refused" not in res["outputs"]
+    assert any("stands" in q for _, q in d.side), "the untraceable answer went out unjudged"
+
+
+def test_an_answer_holding_a_value_no_screen_showed_is_still_refused(tmp_path):
+    """The guard that matters: judging the answer must not turn into accepting whatever the planner writes."""
+    eng, d = _counting_engine(tmp_path, "文件夹里有三个文件，一共 4096 字节。")
+    d.stands = 0.0
+    res = eng.do("这个文件夹里有几个文件？")
+    assert "answer" not in res["outputs"] and res["outputs"]["answer_refused"].startswith("文件夹里有三个文件")
+
+
+def test_the_same_action_over_and_over_is_noticed_and_then_stopped(tmp_path):
+    """A real run scrolled one Finder list eleven times and called it progress every time: each scroll showed a
+    new screen (so the circle check saw nothing) and the decider kept scoring it well (so the no-effect check
+    saw nothing either). How many times running an action has been taken is a plain fact, so it is stated —
+    and past a ceiling the action stops being offered, whatever it happens to be."""
+    def again(state, questions):   # keep choosing the same thing for as long as it is on offer
+        offered = any("press the pagedown key" in v for v in questions["action"]["criteria"].values())
+        return {"pick": "press the pagedown key" if offered else "done", "conf": 0.6, "move": "act" if offered else "done"}
+
+    picks = [again for _ in range(12)]
+    eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 12}}), helper=FakeHelper(),
+                 decider=ScriptedDecider(picks))
+    eng.do("把这封邮件发出去")
+    states = [st for st, q in eng.decider.seen if "action" in q]
+    noticed = next((i for i, st in enumerate(states) if "done_over_and_over" in st), None)
+    assert noticed is not None and noticed <= 4, "repeating one action went unmentioned"
+    assert len(states) <= 7, "the ceiling did not arrive: the same screen kept offering the same action"
+    offered = [any("press the pagedown key" in v for v in q["action"]["criteria"].values()) for _, q in eng.decider.seen if "action" in q]
+    assert offered[0] and not offered[-1], "the action was still on offer after its ceiling"
+
+
+def test_a_goal_that_asks_for_information_does_not_finish_without_any(tmp_path):
+    """A real run opened a page and called itself done one step later — before the page was on screen — and
+    handed back "the title could not be found". Asking for something to be reported is not accomplished until
+    there is something to report, so it looks again."""
+    from tests.test_flex import FakeBackend
+
+    class Page(FakeHelper):
+        def __init__(self):
+            super().__init__()
+            self.opened = False
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("visible_only") is False:
+                text = "Morning News" if self.opened else ""
+                self.opened = True                       # the page is only there from the second look on
+                return {"nodes": [{"ref": "w.0", "role": "AXWindow", "depth": 0},
+                                  {"ref": "w.1", "role": "AXStaticText", "parent": "w.0", "value": text}]}
+            return super().call(method, timeout, **p)
+
+    def step(state, questions):    # read the window when that is on offer, otherwise say it is done
+        reading = next((k for k, v in questions["action"]["criteria"].items() if "read all the text" in v), None)
+        return {"pick": reading or "done", "wants_answer": 1.0, "done": 0.95,
+                "move": "act" if reading else "done"}
+
+    d = ScriptedDecider([step] * 6)
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["readall"], "readall": {"offer_over": 0}}}),
+                 helper=Page(), decider=d)
+    eng._planner = FakeBackend([{"answer": ""}, {"answer": "Morning News"}])
+
+    res = eng.do("这个页面的标题是什么")
+    assert res["outputs"]["answer"] == "Morning News"
+    asked = [q for _, q in d.seen if "action" in q]
+    assert len(asked) > 2, "it stopped at the first 'done', with nothing to report"
+
+
 def test_a_locked_screen_is_reported_as_such(tmp_path):
     c = cfg(tmp_path, config={"engine": {"locked_channels": ["keys"]}})
     eng = Engine(c, helper=FakeHelper(locked=True), decider=ScriptedDecider([{"pick": "pagedown", "move": "blocked"}]))
@@ -709,10 +808,19 @@ def test_a_gated_action_the_goal_never_asked_for_is_dropped_not_put_to_the_user(
 
 
 def test_rethinking_with_no_new_route_ends_in_a_diagnosis_not_wandering(tmp_path):
-    d = ScriptedDecider([{"pick": "新建文稿"}, {"pick": "新建文稿", "move": "rethink"}, {"pick": "新建文稿", "move": "rethink"}])
+    """It still says why instead of wandering — but only once the screen itself has had a fair try. A real task
+    gave up after two steps with the action it needed sitting in the options, because the planner (which it did
+    not even have here) had nothing to add."""
+    def rethink(state, questions):   # the same thing while it is offered; the repeat ceiling takes it away
+        opts = questions["action"]["criteria"]
+        pick = next((k for k, v in opts.items() if "新建文稿" in v), None) or next(k for k in opts if k != "done")
+        return {"pick": pick, "move": "rethink"}
+
+    d = ScriptedDecider([rethink] * 8)
     d.why = "blocked"
     res = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d).do("打开设置")     # no planner configured
-    assert res["status"] == "blocked" and res["reason"].startswith("no route to the goal was found") and len(res["steps"]) == 2
+    assert res["status"] == "blocked" and res["reason"].startswith("no route to the goal was found")
+    assert len(res["steps"]) >= int(Config.load().get("engine.min_steps_before_giving_up"))
 
 
 def test_an_app_without_windows_can_have_its_main_window_brought_back(tmp_path):
@@ -775,7 +883,8 @@ def test_floor_words_are_candidates_the_decider_classifies_them(tmp_path):
     state, asked = next((s, q) for s, q in d.side if any(k.startswith("floor") for k in q))
     assert "screen_text" not in state and "actions" in state                 # judged without page content
     mine = next(q for k, q in asked.items() if k.startswith("floor") and "显示替换" in q["instructions"])
-    assert set(mine["criteria"]) == {"navigate", "write"}                    # only the words it actually hit
+    releases = set(Config.load().policy["confirm"]["release"]) - {"enter"}   # enter is offered for typing only
+    assert set(mine["criteria"]) == releases | {"write"}                     # the releases, plus the words it hit
     d2 = ScriptedDecider([{"pick": "显示替换"}])
     d2.what = {"navigate": 0.6, "write": 0.4}            # not sure enough: the floor stands
     res = Engine(cfg(tmp_path), helper=WordsHelper(), decider=d2).do("显示文本替换面板")

@@ -106,3 +106,25 @@ def test_the_later_suite_covers_only_what_the_frozen_one_predates():
     assert any(t.get("inputs") for t in later), "v2 passes caller-supplied text in no task at all"
     expected = " ".join(str((t.get("check") or {}).get("expect_status", "")) for t in later)
     assert "need_continue" in expected, "the status a long job now ends in is untested"
+
+
+def test_the_harness_opens_an_app_the_suites_name_by_bundle_id(_no_real_processes, monkeypatch):
+    """The suites name apps the way the engine resolves them, and the harness has to resolve them the same
+    way. It did not: `_launch` called a function it never imported, so every run died on its first task —
+    436 tests passed over a harness that could not start one."""
+    class _Helper:
+        def call(self, method, **kw):
+            return [] if method == "apps.running" else []
+
+    class _Engine:
+        helper = _Helper()
+
+        def _resolve_app(self, hint, running):
+            return None if not running else {"pid": 7}
+
+        def _installed_named(self, hint):
+            return {"name": "计算器", "bundle_id": "com.apple.calculator", "path": "/System/Applications/Calculator.app"}
+
+    monkeypatch.setattr(evals.time, "sleep", lambda s: None)   # the harness waits for the app; the test need not
+    evals._launch(_Engine(), "com.apple.calculator")
+    assert ["open", "-g", "-a", "/System/Applications/Calculator.app"] in _no_real_processes

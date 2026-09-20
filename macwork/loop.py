@@ -183,6 +183,9 @@ class LoopMixin:
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
 
         affs = [a for a in obs.affordances + self._suggested(task, obs) if not self._denied(a, ctx.app)]
+        for label, times in self._taken_here(task, sig).items():           # done from this very screen already
+            if times >= int(self.cfg.get("engine.max_repeats", 4)):         # enough of that one: it has had its turns
+                task.memory.no_effect.add(f"{sig}|{label}")
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
         affs = [a for a in affs if a.label not in dead_here and a.label not in task.memory.declined]   # facts: did nothing / not asked for
         if locked:                                # nothing on screen can be operated; keep what works without UI
@@ -242,6 +245,9 @@ class LoopMixin:
             task.memory.screen_notes[sig] = f"{state['app']} — {obs.window or '(no window)'}: {obs.screen_text[:200]}"
         if task.memory.circles:
             state["went_in_circles"] = task.memory.circles[-6:]
+        last, run = self._run_length(task)
+        if run >= int(self.cfg.get("engine.repeat_notice", 3)):
+            state["done_over_and_over"] = f"{last} — {run} times in a row now, with the goal still not reached"
         if suggested or any(t.get("keys") or t.get("type") for t in task.tries):
             state["planner_suggests"] = [t.get("action") or f"press {t.get('keys')}" if not t.get("type") else f"type {t['type']}"
                                          for t in task.tries][:8]
@@ -254,6 +260,35 @@ class LoopMixin:
         if task.steps:
             state["last_action"] = hist[-1]
         return state
+
+    def _run_length(self, task: Task) -> tuple[str, int]:
+        """The action just taken, and how many times in a row it has now been taken. Scrolling a list is a
+        legitimate repeat; scrolling it eleven times is a task going nowhere, and neither the circle check
+        (every scroll shows a new screen) nor the no-effect check (the decider kept calling it progress)
+        can see it. The count is a plain fact about what was done, so the decider is simply told."""
+        if not task.steps:
+            return "", 0
+        last = task.steps[-1].action
+        run = 0
+        for st in reversed(task.steps):
+            if st.action != last:
+                break
+            run += 1
+        return last, run
+
+    def _taken_here(self, task: Task, sig: str) -> dict[str, int]:
+        """How many times each action has already been taken *from this very screen*.
+
+        Counting only consecutive repeats misses the shape a stuck task really has: a real run opened "Go to
+        Folder" and pressed Return, over and over, alternating between two screens and getting nowhere. Doing
+        the same thing from the same screen again says the last time changed nothing — while a scroll that
+        moves down a list leaves a different screen each time and is not counted against itself.
+        """
+        out: dict[str, int] = {}
+        for st in task.steps:
+            if st.before and st.before.split(":")[0] == sig:
+                out[st.action] = out.get(st.action, 0) + 1
+        return out
 
     def _history(self, task: Task) -> list[str]:
         return [f"{s.action} -> {'ok' if s.ok else 'failed'}" + (f" (ui: {', '.join(s.events[:4])})" if s.events else " (no ui change)")
@@ -372,7 +407,14 @@ class LoopMixin:
             return AGAIN
         if self._verified_done(task, look.decision):
             if (task.wants_answer or 0.0) >= float(self.cfg.get("engine.thresholds.wants_answer", 0.5)):
-                self._write_answer(task, look.obs)
+                self._write_answer(task, look.ctx, look.obs)
+                # A goal that asks for something to be reported is not accomplished until there is something to
+                # report. A real run opened a page and called itself done in one step, before the page was ever
+                # on screen to be read; look again instead of handing back "it could not be found".
+                if not task.outputs.get("answer") and task.pace.answer_tries < int(self.cfg.get("engine.max_answer_tries", 2)):
+                    task.pace.answer_tries += 1
+                    log.info("the goal asks for an answer and there is none yet: looking again")
+                    return AGAIN
             return self._finish(task, "done", "goal judged accomplished" if task.steps else "already accomplished")
         move = "act" if move == "done" else move
         if key == "done":
@@ -416,7 +458,13 @@ class LoopMixin:
                                     {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]})
             return AGAIN
         task.pace.fruitless += 1                       # no new route to be had: after a second time, say why instead of wandering
-        if task.pace.fruitless >= int(self.cfg.get("engine.max_fruitless_rethinks", 2)) and task.steps:
+        # …but not before the screen itself has been given a fair try. A real task gave up after two steps,
+        # with the very action it needed sitting in the options, because the planner had nothing to add. The
+        # planner having no route is not the same as there being none.
+        enough = len(task.steps) >= int(self.cfg.get("engine.min_steps_before_giving_up", 4))
+        untried = any(a.label not in {st.action for st in task.steps} for a in look.flat)
+        if task.pace.fruitless >= int(self.cfg.get("engine.max_fruitless_rethinks", 2)) and task.steps \
+                and (enough or not untried):
             return self._diagnose(task, look.ctx, look.obs, look.state, reason="no route to the goal was found")
         return None
 

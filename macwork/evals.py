@@ -151,9 +151,7 @@ def _launch(engine: Engine, app_hint: str) -> int | None:
     """Open the task's app in the background if it is not running; return its pid when the harness opened it."""
     if engine._resolve_app(app_hint, engine.helper.call("apps.running")):
         return None
-    key = app_hint.casefold()
-    inst = next((a for a in installed_apps(engine.cfg, engine.helper)
-                 if key in (a.get("name", "").casefold(), a.get("file", "").casefold())), None)
+    inst = engine._installed_named(app_hint)   # the same resolution the engine uses: name, bundle id, or file name
     if inst:
         import subprocess
         subprocess.run(["open", "-g", "-a", inst["path"]], capture_output=True, timeout=15, check=False)   # -g: stay in the background

@@ -122,6 +122,7 @@ class OpenAICompatPlanner:
         self.name = name
         self.base = str(conf.get("base_url", "")).rstrip("/")
         self.model = conf.get("model") or ""
+        self.spare: list[str] = []     # other models the server listed, tried in turn when it refuses this one
         self.timeout = float(conf.get("timeout_s", 60))
         self.json_mode = bool(conf.get("json_mode", False))
         self.max_tokens = conf.get("max_tokens")
@@ -143,24 +144,43 @@ class OpenAICompatPlanner:
             return False
         if not self.local:
             return bool(self.key and self.model)
+        # A local server lists every model cached on this Mac, not the one it has loaded: this Mac listed a
+        # vision model and a TTS model ahead of the served one, and naming the first row made every plan 404.
+        # So an unnamed model stays unnamed — the server answers with whatever it is serving — and the list
+        # is kept only as candidates for a server that insists on being told (LM Studio, Ollama).
         try:
-            models = self._post("/models", None, 2).get("data") or []
+            data = self._post("/models", None, 2).get("data") or []
         except (OSError, urllib.error.URLError, ValueError):
             return False
-        if not self.model and models:
-            self.model = models[0].get("id", "")
-        return bool(models)
+        if not self.model:
+            self.spare = [m.get("id", "") for m in data if m.get("id")]
+        return bool(data) or bool(self.model)
+
+    def _next_model(self) -> bool:
+        """Name a model the server listed, after it refused the request as it stood. False: nothing left."""
+        if not self.spare:
+            return False
+        self.model = self.spare.pop(0)
+        log.info("planner %s: the server wants a model named; trying %s", self.name, self.model)
+        return True
 
     def warm(self) -> None:
-        """A tiny request so a local model's weights are resident before a real plan is needed."""
-        try:
-            self._post("/chat/completions", {"model": self.model, "messages": [{"role": "user", "content": "ok"}], "max_tokens": 1}, self.timeout)
-        except Exception:  # noqa: BLE001  (best effort)
-            pass
+        """A tiny request so a local model's weights are resident before a real plan is needed — and so a
+        model the server will not serve is found now rather than in the middle of a task."""
+        for _ in range(len(self.spare) + 1):
+            try:
+                self._post("/chat/completions", {**({"model": self.model} if self.model else {}),
+                                                 "messages": [{"role": "user", "content": "ok"}], "max_tokens": 1}, self.timeout)
+                return
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (400, 404) or not self._next_model():   # not "no such model here": leave it be
+                    return
+            except Exception:  # noqa: BLE001  (best effort)
+                return
 
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         example = {k: ([] if v.get("type") == "array" else {} if v.get("type") == "object" else "") for k, v in schema.get("properties", {}).items()}
-        body: dict[str, Any] = {"model": self.model, "messages": [
+        body: dict[str, Any] = {"messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": f"{prompt}\n\nReply with one JSON object only, shaped like this example: {json.dumps(example)}"}],
             **self.extra}
@@ -169,7 +189,9 @@ class OpenAICompatPlanner:
         if self.max_tokens:
             body["max_tokens"] = int(self.max_tokens)
         last: Exception | None = None
-        for _ in range(2):   # JSON mode may occasionally return empty content: ask once more
+        for _ in range(2 + len(self.spare)):   # JSON mode may occasionally return empty content: ask once more
+            if self.model:
+                body["model"] = self.model
             try:
                 r = self._post("/chat/completions", body, self.timeout)
                 content = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
@@ -180,6 +202,8 @@ class OpenAICompatPlanner:
                 if exc.code in (401, 403):
                     raise PlannerError(f"{self.name}: credentials rejected ({exc.code})", refused=True) from exc
                 last = exc
+                if exc.code in (400, 404) and not self._next_model():   # this server cannot serve this model
+                    break
             except (OSError, urllib.error.URLError, ValueError, PlannerError) as exc:
                 last = exc
         raise PlannerError(f"{self.name}: {last}")

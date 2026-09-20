@@ -194,6 +194,7 @@ observe:
     limit: 15
     roots: ["~"]
     input_keys: [query, keywords, file]   # inputs that trigger a Spotlight search
+    openers: 4                           # besides the default one, how many apps the system says can open a file are offered
 
 planner:
   kind: auto                     # auto | none | foundation | anthropic | any name under endpoints (deepseek, local, …)
@@ -286,6 +287,11 @@ engine:
   carry_chars: 600               # what each app showed, carried along so a later step uses real values, not guesses
   result_chars: 800              # the last screen text kept in the result (so closing an app loses no answer)
   max_fruitless_rethinks: 2      # "rethink" twice with no new route from the planner: diagnose and stop
+  min_steps_before_giving_up: 4  # …but not while the screen still offers things this task has never tried
+  max_answer_tries: 2            # a goal asking for information keeps looking this many times before it gives up
+  open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front
+  repeat_notice: 3               # the same action three times running is put in front of the decider as a fact
+  max_repeats: 4                 # an action taken this many times from the very same screen stops being offered there
   max_waits: 4                   # times per task the decider may choose to wait for a loading/busy app
   wait_s: 1.5
   fold_groups_over: 60           # a group larger than this (every installed app) is always one "look into" away
@@ -303,6 +309,8 @@ engine:
     risky_screen: 0.6
     backs_out: 0.8               # on a risky screen, an action judged to only back out goes ahead without asking
     wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done
+    answer_stands: 0.6           # an answer no screen holds word for word is reported only if it follows from what was seen
+    text_stands: 0.75            # …and text to type is held to more: the same value rewritten, never a new one
     serves_goal: 0.35            # leaving the app worked in (another app, a Shortcut, the web) must serve the stated goal
     goal_calls_for: 0.3          # a floor-gated action the goal does not call for is dropped instead of asking the user
     keep_window: 0.5             # tidy: a window the task opened in an app already running stays when still needed
@@ -310,6 +318,7 @@ engine:
     stays_running: 0.5           # …or the kind of app that keeps running in the background
   verify:
     timeout_ms: 2500             # ceiling; most steps return as soon as an event or a content change is seen
+    readback_ms: 800             # how long a typed field is given to settle before it is judged to hold the wrong text
     settle_ms: 150
     poll_ms: 80                  # also watch the window's content (many SwiftUI apps post no notifications); 0 = events only
     quiet_ms: 300                # after something changed, wait until the window stays unchanged this long (settled)

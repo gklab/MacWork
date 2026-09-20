@@ -109,6 +109,7 @@ class Pace:
     settled_done: bool = False                                 # the screen was let settle before judging "done"
     redo: int = 0                                              # decisions discarded because the screen moved meanwhile
     fruitless: int = 0                                         # "rethink" asked with no new route to be had
+    answer_tries: int = 0                                      # times a goal asking for information ended with none
 
 
 @dataclass

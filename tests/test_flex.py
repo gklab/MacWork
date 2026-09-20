@@ -135,12 +135,26 @@ def test_engine_consults_planner_on_rethink_and_lets_it_write_text(tmp_path):
 
 
 def test_a_value_the_task_never_saw_is_not_typed(tmp_path):
-    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([
-        {"pick": "新建文稿", "move": "rethink"}, {"pick": "收件人"}, {"pick": "done"}]))
+    d = ScriptedDecider([{"pick": "新建文稿", "move": "rethink"}, {"pick": "收件人"}, {"pick": "done"}])
+    d.stands = 0.0                        # an address from nowhere: no source holds it, in any wording
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
     eng._planner = FakeBackend([{"steps": ["填写收件人"], "inputs": {}}, {"text": "someone@example.com"}])
     res = eng.do("把收件人填好")
     assert res["status"] == "need_input"                                       # nobody has seen that address
     assert not eng.helper.did("input.type") and res["outputs"]["refused_text"][0]["text"] == "someone@example.com"
+    assert any("stands" in q for _, q in d.side), "it was dropped without being judged"
+
+
+def test_a_value_the_task_has_may_be_written_the_way_the_field_needs_it(tmp_path):
+    """A path typed into an address bar becomes file:///… — the same value, one word longer. Word-for-word
+    matching called that an invention and ended a real task at step zero, before anything had been typed."""
+    d = ScriptedDecider([{"pick": "新建文稿", "move": "rethink"}, {"pick": "收件人"}, {"pick": "done"}])
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([{"steps": ["打开页面"], "inputs": {}},
+                                {"text": "file:///Users/me/Caches/form.html"}])
+    res = eng.do("打开 /Users/me/Caches/form.html")
+    assert eng.helper.did("input.type")[0]["text"] == "file:///Users/me/Caches/form.html"
+    assert "refused_text" not in res["outputs"]
 
 
 def test_deepseek_endpoint_request_shape(monkeypatch, tmp_path):

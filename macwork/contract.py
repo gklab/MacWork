@@ -14,6 +14,7 @@ the stricter "is it really done" question decides those, as before.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from .helper import HelperError
@@ -81,14 +82,24 @@ def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list
         # answer that fills it as "could not be read" rather than "wrong". Reporting a long file as failed
         # because the typed line sits past the cut is the worse mistake of the two.
         limit = max(2000, len(text) * 4)
-        now = _field_text(ctx, ref) if ref else _cursor_text(ctx, limit)
         where = "the field" if ref else "where the cursor is"
-        if now is None:
-            return None, f"{'the field' if ref else 'the focused element'} could not be read back"
         if not text.strip():
             return True, "there was nothing to type"
-        if text.strip() in now:
-            return True, f"the text is in {where}"
+        # Read back until the field settles. A field is not written the instant the keys are sent: a long path
+        # arrives character by character and an app may complete it as it goes, so one immediate read caught
+        # "/Users/…/Caches/macwor" mid-flight and a real step was recorded as having broken its promise.
+        deadline = time.monotonic() + float(ctx.cfg.get("engine.verify.readback_ms", 800)) / 1000
+        now = seen = None
+        while True:
+            now = _field_text(ctx, ref) if ref else _cursor_text(ctx, limit)
+            if now is None:
+                return None, f"{'the field' if ref else 'the focused element'} could not be read back"
+            if text.strip() in now:
+                return True, f"the text is in {where}"
+            if time.monotonic() >= deadline or now == seen:   # settled on something else: that is an answer
+                break
+            seen = now
+            time.sleep(0.08)
         if len(now) >= limit:
             return None, f"{where} holds more text than can be read back"
         return False, f"{where} holds {now[:40]!r}, not what was typed"

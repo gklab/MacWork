@@ -162,3 +162,58 @@ def test_acting_step_by_step_needs_no_decider_when_classification_is_off(tmp_pat
     seen = engine.observe()
     pressable = next(a for a in seen["affordances"] if a["verb"] == "press" and not a.get("slots"))
     assert engine.act(pressable["id"])["ok"] is True      # would have raised DeciderError
+
+
+# --------------------------------------------------------------------------- a path the user named
+
+def test_a_path_the_goal_names_can_be_opened_read_or_shown(tmp_path):
+    """Three real tasks failed the same way: the goal named an absolute path, and the engine drove Finder's
+    "Go to Folder" — opening it, pressing Return, opening it again — because nothing offered the path itself.
+    The Mac can be asked whether that path exists, and what to do with it follows from the answer."""
+    from macwork.observe import PROVIDERS
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "keep.txt").write_text("keep me", encoding="utf-8")
+    obs = Observation(app=None, window=None, affordances=[])
+    ctx = Ctx(cfg(tmp_path), FakeHelper(), goal=f"删除 {tmp_path}/keep.txt", running=[])
+    PROVIDERS["files"](ctx, obs)
+
+    verbs = {a.verb for a in obs.affordances}
+    assert verbs == {"open", "reveal", "read", "trash"}, [a.label for a in obs.affordances]
+    assert all(str(tmp_path / "keep.txt") == a.target["path"] for a in obs.affordances)
+
+
+def test_the_apps_the_system_says_can_open_it_are_offered_by_name(tmp_path):
+    """"Open it in Safari" can only be followed if Safari is an option: a real task was told to open a page in
+    Safari, took the one "open it" on offer, and the Mac's default browser got it instead. Which apps can open
+    a file is the system's answer, not a table of extensions kept here."""
+    from macwork.observe import PROVIDERS
+
+    (tmp_path / "news.html").write_text("<title>Morning News</title>", encoding="utf-8")
+    helper = FakeHelper()
+    helper.openers = [{"name": "Safari浏览器", "bundle_id": "com.apple.Safari", "path": "/Applications/Safari.app"},
+                      {"name": "Chrome", "bundle_id": "com.google.Chrome", "path": "/Applications/Chrome.app"}]
+    obs = Observation(app=None, window=None, affordances=[])
+    PROVIDERS["files"](Ctx(cfg(tmp_path), helper, goal=f"在 Safari 里打开 {tmp_path}/news.html", running=[]), obs)
+
+    with_safari = next(a for a in obs.affordances if "Safari" in a.label)
+    assert with_safari.target["app"] == "/Applications/Safari.app"
+    assert sum(1 for a in obs.affordances if a.verb == "open") == 3      # the plain one, plus the two named
+
+
+def test_a_path_that_is_not_there_is_not_offered(tmp_path):
+    from macwork.observe import PROVIDERS
+
+    obs = Observation(app=None, window=None, affordances=[])
+    PROVIDERS["files"](Ctx(cfg(tmp_path), FakeHelper(), goal=f"打开 {tmp_path}/nope.txt", running=[]), obs)
+    assert obs.affordances == []
+
+
+def test_a_folder_the_goal_names_is_offered_without_a_way_to_read_it(tmp_path):
+    from macwork.observe import PROVIDERS
+
+    (tmp_path / "docs").mkdir()
+    obs = Observation(app=None, window=None, affordances=[])
+    PROVIDERS["files"](Ctx(cfg(tmp_path), FakeHelper(), goal=f"{tmp_path}/docs 里有几个文件？", running=[]), obs)
+    assert {a.verb for a in obs.affordances} == {"open", "reveal", "trash"}   # a folder has no text to read
+    assert any("folder" in a.label for a in obs.affordances)

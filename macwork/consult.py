@@ -7,6 +7,7 @@ import logging
 import re
 from typing import Any
 
+from .decider import DeciderError, noul
 from .model import Affordance, Observation, Task
 from .observe import Ctx
 from .planner import Planning, PlannerError, make_planner
@@ -83,7 +84,22 @@ class ConsultMixin:
         self.audit.record("plan", task=task.id, steps=plan["steps"], problem=problem)
         return True
 
-    def _write_answer(self, task: Task, obs: Observation | None) -> None:
+    def _answer_stands(self, task: Task, ctx: Ctx | None, answer: str) -> bool:
+        """The word-for-word check refuses any answer written as a sentence: "there are three files" is prose
+        around a count, and prose is not on screen. So an answer the check cannot trace is not dropped — it is
+        judged against what the task saw, which still catches a value that was never on any screen."""
+        if ctx is None or ctx.gate is None:
+            return False
+        state = {"goal": task.goal, "answer": answer, "seen_in_each_app": task.memory.facts.brief()}
+        try:
+            ans = ctx.gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("answer_stands"))}, task=task.id)
+        except DeciderError:
+            return False
+        stands = float(ans.get("stands", {}).get("noul", 0.0))
+        log.info("answer not traceable word for word; judged %.2f", stands)
+        return stands >= float(self.cfg.get("engine.thresholds.answer_stands", 0.6))
+
+    def _write_answer(self, task: Task, ctx: Ctx | None, obs: Observation | None) -> None:
         """The goal asked for information: the planner states it from what the screen (and the web) showed.
         Without a planner, the final screen text stays in outputs.result_screen for the caller to read."""
         backend = self.planning_backend
@@ -91,12 +107,18 @@ class ConsultMixin:
             return
         brief = self._brief(task, None, obs)
         brief["screen_text"] = (task.outputs.get("result_screen") or {}).get("text") or brief.get("screen_text", "")
+        if task.memory.facts and task.memory.facts.seen:
+            # what the task saw in each app, window titles included. Without it the answer was written from the
+            # last screen alone: a page whose title was in the window title came back as "not in the information
+            # provided", and it is also what the answer is checked against afterwards.
+            brief["seen_in_each_app"] = task.memory.facts.brief()
         try:
             answer = Planning(self.cfg, backend, self.redactor(task.id), self.audit).answer(task.goal, brief)
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
-        if answer and task.memory.facts and task.memory.facts.source_of(answer) is None:
+        if answer and task.memory.facts and task.memory.facts.source_of(answer) is None \
+                and not self._answer_stands(task, ctx, answer):
             log.info("refused answer not seen anywhere: %r", answer[:60])
             task.outputs["answer_refused"] = answer[:200]
             return
@@ -119,13 +141,32 @@ class ConsultMixin:
             return None
         if text and task.memory.facts:
             source = task.memory.facts.source_of(text)
-            if source is None:   # a value nobody has seen: it would be the planner's own invention
-                log.info("refused text not seen anywhere: %r", text[:60])
-                self.audit.record("refused_text", task=task.id, text=text[:120], into=a.label)
-                task.outputs.setdefault("refused_text", []).append({"into": a.label, "text": text[:120]})
-                return None
+            if source is None:
+                # Not word for word — which a field often cannot take: a path typed into an address bar becomes
+                # file:///…, and that one extra word was enough to end a real task on the spot. So it is judged
+                # instead: the same value written another way is allowed, a value from nowhere is not.
+                if not self._text_stands(task, ctx, text, a):
+                    log.info("refused text not seen anywhere: %r", text[:60])
+                    self.audit.record("refused_text", task=task.id, text=text[:120], into=a.label)
+                    task.outputs.setdefault("refused_text", []).append({"into": a.label, "text": text[:120]})
+                    return None
+                source = "judged to be what the task already had"
             self.audit.record("filled_text", task=task.id, into=a.label, source=source)
         return text
+
+    def _text_stands(self, task: Task, ctx: Ctx | None, text: str, a: Affordance) -> bool:
+        """Text no source holds word for word, judged against everything the task has to draw from."""
+        if ctx is None or ctx.gate is None:
+            return False
+        state = {"goal": task.goal, "inputs": dict(task.inputs), "text": text, "into": a.label,
+                 "seen_in_each_app": task.memory.facts.brief()}
+        try:
+            ans = ctx.gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("text_stands"))}, task=task.id)
+        except DeciderError:
+            return False
+        stands = float(ans.get("stands", {}).get("noul", 0.0))
+        log.info("text not traceable word for word; judged %.2f: %r", stands, text[:60])
+        return stands >= float(self.cfg.get("engine.thresholds.text_stands", 0.75))
 
     def _suggestion_label(self, t: dict[str, Any]) -> str:
         if t.get("keys"):

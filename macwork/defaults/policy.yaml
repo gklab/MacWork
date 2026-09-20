@@ -22,6 +22,15 @@ confirm:
   enter: >-
     it only enters text into a field or a document (a name, a search, a note); the text is not run as a command and
     nothing is sent or saved by typing it
+  edit: >-
+    it only changes what the app in front is working on and holds in its own window — text in a document or
+    note, an entry in a calculator or a form, a selection, a value being edited — including clearing it,
+    deleting part of it or undoing it. Nothing outside that window changes: no file, message, account, purchase
+    or system setting is touched, nothing is saved, sent or installed, and doing it again or undoing it in the
+    app would put things back
+  release: [navigate, enter, edit]      # the verdicts that let an action through; every other one asks the user
+  release_only_for:                     # a release offered only for certain verbs (others are always offered)
+    enter: [type, type_submit]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something

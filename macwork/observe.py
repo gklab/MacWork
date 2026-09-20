@@ -1027,11 +1027,55 @@ def drag(ctx: Ctx, obs: Observation) -> None:
                "onto": Slot("text", "the label of what to drop it onto")}))
 
 
+def _openers(ctx: Ctx, path: Path) -> list[dict[str, Any]]:
+    """The apps this Mac would open a file with, asked of the system rather than guessed from the extension.
+    The default one is first, and it is left out here: opening with it is the plain "open" above."""
+    if path.is_dir():
+        return []
+    try:
+        apps = ctx.helper.call("apps.openers", path=str(path),
+                               limit=int(ctx.cfg.get("observe.files.openers", 4)) + 1) or []
+    except HelperError:
+        return []      # an older helper: the plain "open" is still there
+    return [a for a in apps if not a.get("default")][: int(ctx.cfg.get("observe.files.openers", 4))]
+
+
 @provider("files")
 def files(ctx: Ctx, obs: Observation) -> None:
     fc = ctx.cfg.section("observe.files")
     if ctx.inputs.get("url"):
         obs.affordances.append(Affordance("u0", "file", "open", f"open {ctx.inputs['url']} in the default app/browser", {"path": str(ctx.inputs["url"])}))
+    # A path the user named is a thing on this Mac, and the Mac can be asked about it: if it exists, the
+    # engine can open it, show where it is, or read it, with no window to drive at all. Three real tasks
+    # failed for want of this — each one opened Finder's "Go to Folder" and typed a long path instead.
+    named = 0
+    for value in [ctx.goal, *(str(v) for v in ctx.inputs.values())]:
+        for raw in re.findall(r"(?:~|/)[^\s\u4e00-\u9fff，。、：；？！「」（）]+", str(value or "")):
+            here = Path(raw.rstrip(".,;:").replace("\\ ", " ")).expanduser()
+            if not here.exists() or str(here) in {a.target.get("path") for a in obs.affordances}:
+                continue
+            what = "folder" if here.is_dir() else "file"
+            obs.affordances.append(Affordance(f"p{named}", "file", "open",
+                                              f"open the {what} {here} in whichever app this Mac opens it with",
+                                              {"path": str(here)}))
+            # …and in any of the apps the system says can open it. A goal that names one ("open it in Safari")
+            # can only be followed if that is an option: with just the line above, a real task opened the page
+            # in the default browser and the goal was not met.
+            for j, opener in enumerate(_openers(ctx, here)):
+                obs.affordances.append(Affordance(
+                    f"p{named}o{j}", "file", "open", f"open {here.name} with {opener['name']}",
+                    {"path": str(here), "app": opener.get("path"), "bundle_id": opener.get("bundle_id")}))
+            obs.affordances.append(Affordance(f"P{named}", "file", "reveal", f"show where {here} is on disk", {"path": str(here)}))
+            if here.is_file():
+                obs.affordances.append(Affordance(f"T{named}", "file", "read", f"read the text of {here}", {"path": str(here)}))
+            # The Mac can put a file in the Trash without Finder being driven at all. It is offered like any
+            # other action and gated like any other: the floor classifies it, and the user is asked first.
+            obs.affordances.append(Affordance(f"X{named}", "file", "trash",
+                                              f"move the {what} {here} to the Trash", {"path": str(here)}))
+            named += 1
+            if named >= int(fc.get("named_limit", 4)):
+                break
+
     query = next((str(ctx.inputs[k]) for k in fc.get("input_keys", []) if ctx.inputs.get(k)), "")
     if not query:
         return

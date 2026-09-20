@@ -307,11 +307,26 @@ def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         except HelperError as exc:
             return Outcome(False, error=str(exc), wait=False)
         return Outcome(True, output={"file_read": {"path": path, "kind": got.get("kind"), "text": got.get("text", "")}}, wait=False)
+    if a.verb == "trash":       # recoverable by design: the system's Trash, never an outright delete
+        try:
+            got = ctx.helper.call("file.trash", path=str(a.target["path"]))
+        except HelperError as exc:
+            return Outcome(False, error=str(exc), wait=False)
+        return Outcome(True, output={"trashed": got}, wait=False)
     what = str(params.get("url") or a.target["path"])
-    args = ["open", "-R", what] if a.verb == "reveal" else ["open", what]
+    with_app = a.target.get("app")          # the app the system named, when this option was "open it with X"
+    args = ["open", "-R", what] if a.verb == "reveal" else \
+        (["open", "-a", str(with_app), what] if with_app else ["open", what])
+    was = (_frontmost(ctx) or {}).get("pid")
     r = subprocess.run(args, capture_output=True, text=True, timeout=15, check=False)
-    time.sleep(0.4)
+    # Whoever ends up in front is where the work continues, so wait for them to actually get there: an app
+    # that has to launch takes seconds, and a fixed pause reported the app that opened the file instead. A
+    # reveal is the exception — it is meant to stay put — and either way the wait is bounded.
+    deadline = time.monotonic() + (0.5 if a.verb == "reveal" else float(ctx.cfg.get("engine.open_front_s", 6)))
     front = _frontmost(ctx) or {}
+    while front.get("pid") == was and time.monotonic() < deadline:
+        time.sleep(0.15)
+        front = _frontmost(ctx) or {}
     return Outcome(r.returncode == 0, watch_pid=front.get("pid"), error=r.stderr.strip()[:200] or None,
                    target={"pid": front["pid"], "name": front.get("name"), "bundle_id": front.get("bundle_id")} if front.get("pid") else None)
 

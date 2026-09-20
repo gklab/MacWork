@@ -443,6 +443,23 @@ func nlDetect(_ p: Params) throws -> Any {
 /// A task may only write what it saw, and until now "saw" meant a screen: a file the goal is about had to be
 /// opened in an app and read off its window. The frameworks already know how to read these formats, so
 /// nothing here parses one by hand, and what kind of file it is comes from the system, not from its name.
+/// Move a file or folder to the Trash — the system's own trashItem, so it keeps where it came from and the
+/// user can put it back. Deleting outright is deliberately not offered: the engine never destroys anything
+/// that the person cannot get back, and the safety floor still asks before this runs at all.
+func fileTrash(_ p: Params) throws -> Any {
+    guard let path = p["path"] as? String else { throw RPCError("bad_params", "path required") }
+    let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    var moved: NSURL?
+    do {
+        try FileManager.default.trashItem(at: url, resultingItemURL: &moved)
+    } catch {
+        throw RPCError("trash_failed", "\(url.lastPathComponent): \(error.localizedDescription)")
+    }
+    var out: [String: Any] = ["path": url.path]
+    if let now = moved as URL? { out["now_at"] = now.path }      // where it can be put back from
+    return out
+}
+
 func fileReadText(_ p: Params) throws -> Any {
     guard let path = p["path"] as? String else { throw RPCError("bad_params", "path required") }
     let url = URL(fileURLWithPath: path)
@@ -646,6 +663,31 @@ func appsInstalled(_ p: Params) throws -> Any {
             d["background"] = true
         }
         out.append(d)
+    }
+    return out
+}
+
+/// Which apps this Mac would open a file with, as LaunchServices answers it — the system's own list, in its
+/// own order (the default handler first). A goal that says "open it in Safari" needs that to be an option;
+/// without it the engine could only ask the system to open the file and take whatever came up.
+func appsOpeners(_ p: Params) throws -> Any {
+    guard let raw = p["path"] as? String else { throw RPCError("bad_params", "path required") }
+    let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+    guard FileManager.default.fileExists(atPath: url.path) else { return [Any]() }
+    let limit = p["limit"] as? Int ?? 6
+    var out: [[String: Any]] = []
+    var seen = Set<String>()
+    let preferred = NSWorkspace.shared.urlForApplication(toOpen: url)
+    var urls = NSWorkspace.shared.urlsForApplications(toOpen: url)
+    if let preferred, let i = urls.firstIndex(of: preferred) { urls.remove(at: i) }      // the default one leads
+    for appURL in ([preferred].compactMap { $0 } + urls) {
+        let path = appURL.standardizedFileURL.path
+        guard let bundleId = Bundle(path: path)?.bundleIdentifier, !seen.contains(bundleId) else { continue }
+        seen.insert(bundleId)
+        var name = localizedAppName(path) ?? FileManager.default.displayName(atPath: path)
+        if name.hasSuffix(".app") { name = String(name.dropLast(4)) }
+        out.append(["name": name, "path": path, "bundle_id": bundleId, "default": appURL == preferred])
+        if out.count >= limit { break }
     }
     return out
 }

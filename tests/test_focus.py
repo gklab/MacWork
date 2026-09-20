@@ -27,7 +27,8 @@ class Helper:
     def call(self, method: str, timeout: float = 30.0, **p: Any) -> Any:
         self.calls.append(method)
         if method == "ax.focused":
-            return self.focus
+            hook = getattr(self, "on_focused", None)      # a field whose value changes while it is read
+            return hook() if hook else self.focus
         if method == "ax.get":
             return {"value": "whatever the field holds"}
         raise AssertionError(method)
@@ -128,3 +129,29 @@ def test_nothing_focused_is_not_a_failure(focused):
     helper = Helper(focused=focused)
     ok, _ = typed("会议改到周四", helper)
     assert ok is None
+
+
+def test_a_field_still_filling_in_is_given_time_to_settle():
+    """A long path arrives character by character, and the app may complete it as it goes. One immediate read
+    caught "/Users/…/Caches/macwor" mid-flight, called the step broken and sent a real task off course."""
+    helper = Helper()
+    path = "/Users/me/Library/Caches/macwork-eval/keep.txt"
+    steps = [path[:24], path[:38], path]          # what the field holds on each successive read
+    helper.focus["focused"]["value"] = steps[0]
+
+    def next_value(*a, **k):
+        if len(steps) > 1:
+            steps.pop(0)
+        helper.focus["focused"]["value"] = steps[0]
+        return helper.focus
+    helper.on_focused = next_value
+
+    ok, why = typed(path, helper)
+    assert ok is True, why
+
+
+def test_a_field_that_settles_on_the_wrong_text_is_still_caught():
+    helper = Helper()
+    helper.focus["focused"]["value"] = "somewhere else"
+    ok, why = typed("/Users/me/keep.txt", helper)
+    assert ok is False, why

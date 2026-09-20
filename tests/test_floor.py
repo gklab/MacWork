@@ -115,3 +115,62 @@ def test_the_step_level_classification_can_be_turned_off(tmp_path):
     loeschen = next(a for a in seen["affordances"] if "Löschen" in a["label"])
 
     assert engine.act(loeschen["id"])["ok"] is True      # the words never saw it, and nobody else was asked
+
+
+def test_editing_inside_a_document_goes_ahead_but_deleting_a_file_still_asks(tmp_path):
+    """Deleting the selected text on the way to replacing it is not the delete the floor exists for: a real run
+    stopped to ask about 「编辑 ▸ 删除」 while rewriting an unsaved note, and the task ended there. The line is
+    drawn by the classifier — "inside the document being worked on" — not by a list of menu items."""
+    class InDocument(ScriptedDecider):
+        def _classify(self, q):
+            pick = "edit" if "编辑" in q.get("instructions", "") else "delete"
+            return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
+
+    class Editing(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("scope") == "menubar":
+                self.calls.append((method, p))
+                return {"nodes": [
+                    {"ref": "e.0", "role": "AXMenuBar", "depth": 0},
+                    {"ref": "e.1", "role": "AXMenuBarItem", "title": "编辑", "parent": "e.0"},
+                    {"ref": "e.2", "role": "AXMenu", "parent": "e.1"},
+                    {"ref": "e.3", "role": "AXMenuItem", "title": "删除", "parent": "e.2"},
+                    {"ref": "e.4", "role": "AXMenuBarItem", "title": "文件", "parent": "e.0"},
+                    {"ref": "e.5", "role": "AXMenu", "parent": "e.4"},
+                    {"ref": "e.6", "role": "AXMenuItem", "title": "移到废纸篓", "parent": "e.5"},
+                ], "ms": 3}
+            return super().call(method, timeout, **p)
+
+    inside = Engine(cfg(tmp_path), helper=Editing(),
+                    decider=InDocument([{"pick": "menu 编辑 ▸ 删除"}, {"pick": "done", "done": 0.95}]))
+    assert inside.do("把这段文字改掉")["status"] == "done"
+
+    outside = Engine(cfg(tmp_path), helper=Editing(), decider=InDocument([{"pick": "menu 文件 ▸ 移到废纸篓"}]))
+    res = outside.do("把这段文字改掉")
+    assert res["status"] == "need_confirm" and res["pending"]["because"] == ["delete"]
+
+
+def test_putting_a_file_in_the_trash_is_offered_but_asks_first(tmp_path):
+    """The must-not tasks were failing for want of the action, not for want of a guard: the engine could not
+    delete a file at all, so it wandered Finder until it gave up. It can now — through the system's Trash,
+    which is recoverable — and the floor stops it in front of the user, which is the whole point."""
+    from macwork.observe import PROVIDERS, Ctx as _Ctx
+    from macwork.model import Observation
+
+    (tmp_path / "keep.txt").write_text("keep me", encoding="utf-8")
+
+    class Trashing(ScriptedDecider):
+        def _classify(self, q):
+            pick = "delete" if "废纸篓" in q.get("instructions", "") or "Trash" in q.get("instructions", "") else "navigate"
+            return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
+
+    obs = Observation(app=None, window=None, affordances=[])
+    PROVIDERS["files"](_Ctx(cfg(tmp_path), FakeHelper(), goal=f"删除 {tmp_path}/keep.txt", running=[]), obs)
+    trashing = [a for a in obs.affordances if a.verb == "trash"]
+    assert trashing and str(tmp_path / "keep.txt") == trashing[0].target["path"]
+
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["files"]}}),
+                 helper=FakeHelper(), decider=Trashing([{"pick": "to the Trash"}]))
+    res = eng.do(f"删除 {tmp_path}/keep.txt")
+    assert res["status"] == "need_confirm" and res["pending"]["because"] == ["delete"]
+    assert (tmp_path / "keep.txt").exists(), "it went ahead without being confirmed"
