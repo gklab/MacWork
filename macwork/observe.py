@@ -443,40 +443,64 @@ def _overlap(a: list[int], b: list[int]) -> bool:
 
 @provider("overlays")
 def overlays(ctx: Ctx, obs: Observation) -> None:
-    """What covers the app from another process — a permission prompt, a system alert: windows above the app's
-    own, overlapping it, owned by a process without a Dock presence (not another ordinary app). Their text is
-    evidence for the decider and their controls are options like any other, so an unexpected prompt can be
-    answered; the policy floor makes granting anything ("Allow", "Authorize") the user's call."""
+    """Windows from other processes that are on screen but belong to no app being worked in — a permission
+    prompt, a system alert, a notification banner, a floating panel.
+
+    Two kinds, and the second was missing. One covers the app: above its frontmost window and overlapping it.
+    The other is simply *elsewhere on screen* — a banner in a corner overlaps nothing, so a notification
+    arriving mid-task was invisible to the engine and to the decider both, which is how a task carries on
+    into a dialog it was never told about.
+
+    No process is named here. What makes these different from an ordinary app's window is that the system
+    says so: no Dock presence, and something readable in them. That is the same test for an alert nobody has
+    heard of as for one that ships with macOS. Their controls are options like any other, so a prompt can be
+    answered; the policy floor makes granting anything ("Allow", "Authorize") the user's call.
+    """
     if not ctx.app:
         return
+    oc = ctx.cfg.section("observe.overlays")
     wins = ctx.helper.call("screen.windows")
     mine = [i for i, w in enumerate(wins) if w.get("pid") == ctx.app["pid"]]
-    if not mine:
-        return
+    # An app with no window on screen used to end this provider here, which also took away everything the
+    # second pass is for: a prompt or a banner somewhere else does not stop being relevant because the app
+    # being worked in happens to be minimised — that is when one is *most* likely to be what wants answering.
     frames = [wins[i]["frame"] for i in mine]
+    front = mine[0] if mine else len(wins)
     found: list[dict[str, Any]] = []
-    for w in wins[: mine[0]]:   # front to back: only what is in front of the app's frontmost window
-        if w.get("regular") or not w.get("alpha") or not any(_overlap(w["frame"], f) for f in frames):
+    elsewhere_left = int(oc.get("max_elsewhere", 4)) if oc.get("elsewhere", True) else 0
+    if not mine and not elsewhere_left:
+        return
+    for i, w in enumerate(wins):
+        if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] \
+           or any(o["pid"] == w["pid"] for o in found):
             continue
-        if any(o["pid"] == w["pid"] for o in found):
-            continue
+        over = i < front and any(_overlap(w["frame"], f) for f in frames)
+        if not over:
+            if elsewhere_left <= 0:
+                continue
+            elsewhere_left -= 1
         try:
             nodes = ctx.helper.call("ax.snapshot", pid=w["pid"], scope="windows", max_nodes=300, max_depth=15).get("nodes", [])
         except HelperError:
             nodes = []
         text = " / ".join(dict.fromkeys(str(n.get(k)) for n in nodes for k in ("title", "value", "desc") if n.get(k)))[:400]
         if not text:   # nothing readable (the Dock's transparent layer, effects): nothing to tell the decider
+            if not over:
+                elsewhere_left += 1     # it cost a snapshot but it is not one of them: do not spend the slot
             continue
-        found.append({"pid": w["pid"], "from": w.get("owner", ""), "text": text})
+        where = "in front of the app" if over else "elsewhere on screen"
+        found.append({"pid": w["pid"], "from": w.get("owner", ""), "text": text, "where": where})
         # its controls: pressed through Accessibility like the app's own; the effect is watched on the app
         sub = Ctx(ctx.cfg, ctx.helper, ctx.goal, ctx.inputs, {"pid": w["pid"], "name": w.get("owner", "")}, ctx.running, ctx.cache)
         n0 = len(obs.affordances)
-        element_affordances(sub, obs, nodes, "c", where=f"a prompt from {w.get('owner', '')} in front of the app")
+        element_affordances(sub, obs, nodes, "c", where=f"a prompt from {w.get('owner', '')} {where}")
         for a in obs.affordances[n0:]:
             a.target["watch"] = ctx.app["pid"]
+        if not over and not oc.get("elsewhere_actions", True):
+            del obs.affordances[n0:]    # read it, but do not offer its controls
     if found:
-        obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"]} for o in found]
-        lines = [f"[in front of the app, from {o['from']}: {o['text']}]" for o in found]
+        obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"], "where": o["where"]} for o in found]
+        lines = [f"[{o['where']}, from {o['from']}: {o['text']}]" for o in found]
         obs.screen_text = "\n".join(lines + ([obs.screen_text] if obs.screen_text else []))
 
 

@@ -57,6 +57,11 @@ observe:
     # place to decide this.
     skip_first_menu: false
     include_disabled: false
+  overlays:                      # windows from other processes: prompts, alerts, notification banners
+    elsewhere: true              # also the ones that overlap nothing — a banner in a corner never does, and
+                                 # a task that is not told one arrived carries on into a dialog it cannot see
+    max_elsewhere: 4             # each costs one Accessibility snapshot (~4 ms here); unreadable ones are free
+    elsewhere_actions: true      # false: read what they say but do not offer their buttons as options
   window:
     # What can be done with an element is asked of the element (is this attribute settable? what does the app
     # call this action?), not decided by the role lists below. Those are kept as a second source, not dropped:
