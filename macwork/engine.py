@@ -102,6 +102,19 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                     cache.pop(k, None)
         return [cache[t] for t in texts]
 
+    def _detect(self, texts: list[str]) -> list[list[dict[str, Any]]]:
+        """Phone numbers and addresses, from the system's own detector, memoized like the name tagging."""
+        cache: dict[str, list[dict[str, Any]]] = self.cache.setdefault("detected", {})
+        todo = [t for t in dict.fromkeys(texts) if t not in cache]
+        if todo:
+            kinds = list(self.cfg.get("redact.detect", doc="privacy") or [])
+            for t, found in zip(todo, self.helper.call("nl.detect", texts=todo, kinds=kinds)):
+                cache[t] = found
+            if len(cache) > int(self.cfg.get("privacy.entity_cache", 20000)):
+                for k in list(cache)[: len(cache) // 2]:
+                    cache.pop(k, None)
+        return [cache[t] for t in texts]
+
     def _mac_vocabulary(self) -> list[str]:
         """App names on this Mac: the tagger likes to call them people or companies; they are not personal data."""
         if "privacy.vocab" not in self.cache:
@@ -111,9 +124,20 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             self.cache["privacy.vocab"] = [n for n in names if n]
         return self.cache["privacy.vocab"]
 
+    def system(self) -> dict[str, Any]:
+        """What this Mac is set to — asked once, and of the Mac. Everything that used to be a fixed locale or
+        a fixed pair of OCR languages reads it from here."""
+        if "system.locale" not in self.cache:
+            try:
+                self.cache["system.locale"] = self.helper.call("system.locale")
+            except HelperError:
+                self.cache["system.locale"] = {}
+        return self.cache["system.locale"]
+
     def redactor(self, key: str) -> Redactor:
         if key not in self._redactors:
-            self._redactors[key] = Redactor(self.cfg, entities=self._entities, protect=self._mac_vocabulary)
+            self._redactors[key] = Redactor(self.cfg, entities=self._entities, protect=self._mac_vocabulary,
+                                            detect=self._detect)
         return self._redactors[key]
 
     @property

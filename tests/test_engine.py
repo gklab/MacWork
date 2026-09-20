@@ -70,6 +70,8 @@ class FakeHelper:
             return [{"name": "计算器", "file": "Calculator", "path": "/System/Applications/Calculator.app", "bundle_id": "com.apple.calculator"}]
         if method == "session.state":
             return {"screen_locked": self.locked}
+        if method == "system.locale":
+            return {"locale": "zh_CN", "languages": ["zh-Hans-CN"], "ocr_languages": ["zh-Hans"], "region": "CN"}
         if method == "screen.windows":
             return list(getattr(self, "screen", []))
         if method == "ax.snapshot":

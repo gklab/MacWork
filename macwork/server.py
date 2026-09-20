@@ -82,6 +82,7 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         from .web import research
 
         def run() -> dict[str, Any]:
+            eng.system()          # so the browser opens with this Mac's locale, not one written into the code
             return research(cfg, eng.gate, eng.redactor("web"), goal=goal, query=query, url=url, cache=eng.cache)
         return await anyio.to_thread.run_sync(run)
 

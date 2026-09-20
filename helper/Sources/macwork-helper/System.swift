@@ -353,6 +353,40 @@ func clipboardWrite(_ p: Params) throws -> Any {
     return ["ok": true, "change_count": pb.changeCount]
 }
 
+/// Phone numbers, addresses, dates and links, found the way the system finds them.
+///
+/// The hand-written patterns this replaces knew mainland-Chinese mobile numbers and North American ones, and
+/// street names in English and Chinese — so a German, Japanese or Brazilian address went to the decider in
+/// the clear. NSDataDetector is the same machinery the OS uses to underline a phone number in an email, and
+/// it knows the formats of everywhere.
+func nlDetect(_ p: Params) throws -> Any {
+    guard let texts = p["texts"] as? [String] else { throw RPCError("bad_params", "texts required") }
+    let wanted = Set(p["kinds"] as? [String] ?? ["PHONE", "ADDRESS"])
+    var types: NSTextCheckingResult.CheckingType = []
+    if wanted.contains("PHONE") { types.insert(.phoneNumber) }
+    if wanted.contains("ADDRESS") { types.insert(.address) }
+    if wanted.contains("LINK") { types.insert(.link) }
+    if wanted.contains("DATE") { types.insert(.date) }
+    guard !types.isEmpty, let detector = try? NSDataDetector(types: types.rawValue) else {
+        return texts.map { _ in [Any]() }
+    }
+    return texts.map { text -> [[String: Any]] in
+        let range = NSRange(text.startIndex..., in: text)
+        return detector.matches(in: text, range: range).compactMap { m in
+            guard let r = Range(m.range, in: text) else { return nil }
+            let kind: String
+            switch m.resultType {
+            case .phoneNumber: kind = "PHONE"
+            case .address: kind = "ADDRESS"
+            case .link: kind = "LINK"
+            case .date: kind = "DATE"
+            default: return nil
+            }
+            return ["type": kind, "text": String(text[r])]
+        }
+    }
+}
+
 /// The text of a file.
 ///
 /// A task may only write what it saw, and until now "saw" meant a screen: a file the goal is about had to be
@@ -451,6 +485,12 @@ private func tagNames(_ text: String) -> [[String: Any]] {
     return out
 }
 
+/// Names the on-device tagger can find.
+///
+/// Its coverage is uneven and it does not report its own limits usefully: `availableTagSchemes` says it
+/// cannot do names in Chinese, and yet it finds them. So there is no flag here to build a policy on — what
+/// there is instead is `macwork privacy-check`, which measures the coverage against a corpus of eight
+/// scripts and says plainly which languages come back untouched.
 func nlEntities(_ p: Params) throws -> Any {
     if let texts = p["texts"] as? [String] { return texts.map(tagNames) }
     guard let text = p["text"] as? String else { throw RPCError("bad_params", "text or texts required") }

@@ -168,6 +168,7 @@ def cmd_web(cfg: Config, args: argparse.Namespace) -> int:
     from .web import research
 
     eng = Engine(cfg)
+    eng.system()
     _print(research(cfg, eng.gate, eng.redactor("web"), goal=args.goal, query=args.query or "", url=args.url or "", cache=eng.cache))
     return 0
 
@@ -299,7 +300,7 @@ def cmd_privacy_check(cfg: Config, args: argparse.Namespace) -> int:
     from .privacycheck import run
 
     eng = Engine(cfg)
-    _print(run(cfg, eng._entities, eng._mac_vocabulary()))
+    _print(run(cfg, eng._entities, eng._mac_vocabulary(), detect=eng._detect))
     return 0
 
 

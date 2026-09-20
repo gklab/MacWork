@@ -64,7 +64,13 @@ dispatcher.register("clipboard.read", clipboardRead)
 dispatcher.register("clipboard.write", clipboardWrite)
 dispatcher.register("script.applescript", scriptRun)
 dispatcher.register("nl.entities", nlEntities)
+dispatcher.register("nl.detect", nlDetect)
 dispatcher.register("screen.ocr", screenOCR)
+dispatcher.register("system.locale") { _ in
+    ["locale": Locale.current.identifier, "languages": Array(Locale.preferredLanguages.prefix(8)),
+     "ocr_languages": ocrLanguages(),
+     "region": Locale.current.region?.identifier as Any? ?? NSNull()]
+}
 dispatcher.register("screen.capture", screenCapture)
 dispatcher.register("llm.available", llmAvailable)
 dispatcher.register("llm.generate", llmGenerate)

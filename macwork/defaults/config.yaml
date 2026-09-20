@@ -78,7 +78,9 @@ observe:
   vision:
     mode: auto                   # auto: only when the AX tree is sparse or has unlabeled controls | always | never
     sparse_below: 8              # fewer actionable AX elements than this = "sparse"
-    languages: [zh-Hans, en-US]
+    languages: auto              # auto = this Mac's languages, kept to the ones the recogniser supports
+    language_correction: false   # it "corrects" towards those languages, and what is read is UI labels,
+                                 # file names and code identifiers — where correction is most often wrong
     fast: false
     min_conf: 0.3
     near_radius: 60              # points: nearest text that may name an unlabeled control
@@ -253,6 +255,8 @@ input:
   focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
 
 web:
+  locale: auto                   # auto = this Mac's locale. Pinned (it was zh-CN) every page comes back in
+                                 # that language, with its prices, cookie walls and geo-redirects
   search: [duckduckgo, bing]     # plain-HTTP search (engines block headless browsers)
   results: 8
   max_steps: 12

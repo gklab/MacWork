@@ -23,6 +23,32 @@ private func frameParam(_ p: Params, _ key: String) -> CGRect? {
     return CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
 }
 
+/// Which languages to read a screen in: the ones this Mac is set to, kept to those the recogniser supports.
+/// A fixed pair (zh-Hans, en-US, as it was) reads a Korean, Thai or Greek interface as noise.
+func ocrLanguages() -> [String] {
+    let probe = VNRecognizeTextRequest()
+    probe.recognitionLevel = .accurate
+    let supported = Set((try? probe.supportedRecognitionLanguages()) ?? [])
+    var out: [String] = []
+    for want in Locale.preferredLanguages {
+        // "zh-Hans-CN" -> "zh-Hans-CN", "zh-Hans", "zh": the recogniser lists "zh-Hans", the Mac says the
+        // longer thing. Failing all of those, any variant of the same language will do ("en-CN" -> "en-US").
+        var parts = want.split(separator: "-").map(String.init)
+        var hit: String?
+        while hit == nil && !parts.isEmpty {
+            let tag = parts.joined(separator: "-")
+            hit = supported.contains(tag) ? tag : nil
+            if hit == nil { parts.removeLast() }
+        }
+        if hit == nil, let language = want.split(separator: "-").first {
+            hit = supported.sorted().first { $0.hasPrefix(language + "-") }
+        }
+        if let hit, !out.contains(hit) { out.append(hit) }
+    }
+    if !out.contains("en-US"), supported.contains("en-US") { out.append("en-US") }   // the fallback of last resort
+    return out.isEmpty ? ["en-US"] : out
+}
+
 /// The on-screen window of ``pid`` closest to ``near`` (the AX frame), or its largest one.
 private func captureWindow(pid: pid_t, near: CGRect?) throws -> (CGImage, CGRect) {
     try runAsync(timeout: 8) {
@@ -67,8 +93,10 @@ func screenOCR(_ p: Params) throws -> Any {
     let (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"))
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = (p["fast"] as? Bool ?? false) ? .fast : .accurate
-    req.recognitionLanguages = p["languages"] as? [String] ?? ["zh-Hans", "en-US"]
-    req.usesLanguageCorrection = true
+    req.recognitionLanguages = (p["languages"] as? [String]).flatMap { $0.isEmpty ? nil : $0 } ?? ocrLanguages()
+    // off: it "corrects" towards the chosen languages, and what is being read is interface labels, file
+    // names and code identifiers — the things a language model is most confident about and most wrong about
+    req.usesLanguageCorrection = p["correct"] as? Bool ?? false
     try VNImageRequestHandler(cgImage: img).perform([req])
     let minConf = (p["min_conf"] as? NSNumber)?.floatValue ?? 0.3
     var boxes: [[String: Any]] = []

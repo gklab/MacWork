@@ -581,7 +581,12 @@ def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any]) -> dict[str, Any] | Non
         obs.notes["vision_cached"] = True
         return hit
     try:
-        res = ctx.helper.call("screen.ocr", pid=ctx.app["pid"], near=obs.notes.get("window_frame"), languages=vc.get("languages") or ["en-US"],
+        # no list here: "auto" lets the helper intersect this Mac's languages with what the recogniser
+        # supports. The old default was a fixed [zh-Hans, en-US], written out in three places that disagreed.
+        wanted = vc.get("languages")
+        res = ctx.helper.call("screen.ocr", pid=ctx.app["pid"], near=obs.notes.get("window_frame"),
+                              languages=[] if wanted in (None, "auto") else list(wanted),
+                              correct=bool(vc.get("language_correction", False)),
                               fast=bool(vc.get("fast", False)), min_conf=float(vc.get("min_conf", 0.3)), timeout=15)
     except HelperError as exc:
         obs.notes["vision_error"] = str(exc)[:200]

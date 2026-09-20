@@ -275,6 +275,11 @@ def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 
 @channel("web")
 def web_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    if "system.locale" not in ctx.cache:      # the browser opens with this Mac's locale, not a fixed one
+        try:
+            ctx.cache["system.locale"] = ctx.helper.call("system.locale")
+        except HelperError:
+            ctx.cache["system.locale"] = {}
     from .web import research
 
     res = research(ctx.cfg, ctx.gate, ctx.redactor, goal=ctx.goal,

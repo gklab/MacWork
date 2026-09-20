@@ -23,22 +23,74 @@ from .config import Config, expand
 log = logging.getLogger(__name__)
 
 Entities = Callable[[list[str]], list[list[dict[str, Any]]]]   # many texts -> entities per text (one round trip)
-_NAMEISH = re.compile(r"[\u3400-\u9fff]|\b[A-Z][a-z]")   # something a name could be made of
-_CLAUSE = re.compile(r"[，。；;、,.!?！？:：()（）\[\]\n\t]+|⟦[^⟧]*⟧")
-_RUNS = re.compile(r"[\u3400-\u9fff]{2,}|[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*)*")   # runs of one script
+Detect = Callable[[list[str]], list[list[dict[str, Any]]]]     # the same shape, for phone numbers and addresses
+# Script-agnostic. These used to be written for CJK and Latin only, which did not merely miss names in other
+# scripts — it stopped the text from ever reaching the tagger: a Russian, Korean, Greek or Arabic clause was
+# judged to contain nothing name-like and skipped.
+_CLAUSE = re.compile(r"[^\w\s'’\-]+|[\n\t]+|⟦[^⟧]*⟧")     # any punctuation, in any script
+
+
+def _caseless(c: str) -> bool:
+    """A letter from a script with no upper/lower distinction — Chinese, Japanese, Korean, Arabic, Hebrew,
+    Thai, Devanagari. `isupper` says nothing about those, so a capital-letter test cannot see them."""
+    return c.isalpha() and c.lower() == c.upper()
+
+
+def _nameish(s: str) -> bool:
+    """Could a name be in here? A capital in any script, or any letter from a script without capitals."""
+    return any(c.isupper() or _caseless(c) for c in s)
+
+
+def _runs(text: str) -> list[str]:
+    """Stretches of one kind of writing: letters that have capitals, and letters that do not.
+
+    The tagger reads a clause as one language, so in "Meeting with 王芳 at 3pm" it sees English and misses
+    the Chinese name. Each stretch is offered on its own as well. Written out rather than as a pattern
+    because "is this script caseless" is not something a character class can ask.
+    """
+    out: list[str] = []
+    cur: list[str] = []
+    kind: str | None = None
+    for ch in text:
+        this = "caseless" if _caseless(ch) else ("cased" if ch.isalpha() else None)
+        if this is None:
+            if ch in " '’.-" and cur:          # keeps "Grace Lee" and "de la Cruz" in one piece
+                cur.append(ch)
+            elif cur:
+                out.append("".join(cur).strip())
+                cur, kind = [], None
+            continue
+        if kind and this != kind:
+            out.append("".join(cur).strip())
+            cur = []
+        cur.append(ch)
+        kind = this
+    if cur:
+        out.append("".join(cur).strip())
+    return [r for r in out if len(r) >= 2]
 
 
 _CARRIERS = {"cjk": "我和{}开会。", "latin": "I met {} yesterday."}   # a name alone is often not recognized as one
 
 
 def _carrier(run: str) -> str:
-    """A run of one script inside a neutral sentence of that script: the tagger needs a little context to see a
-    name in it. Only entities found inside the run count (the carrier's own words are never redacted)."""
-    return _CARRIERS["cjk" if re.search(r"[\u3400-\u9fff]", run) else "latin"].format(run)
+    """A run inside a neutral sentence: the tagger needs a little context to see a name in a bare fragment.
+
+    Only two carriers, and a run in a script neither covers gets the Latin one. That is a real limit — but a
+    carrier only helps where the on-device tagger knows the language at all, and writing one sentence per
+    script would be inventing coverage that NaturalLanguage does not have. What the fixes around this do buy
+    is that such text now *reaches* the tagger instead of being skipped before it.
+    """
+    return _CARRIERS["cjk" if any(_caseless(c) for c in run) else "latin"].format(run)
 
 
 def _short_name_like(c: str) -> bool:
-    return bool(re.fullmatch(r"[\u3400-\u9fff]{2,4}", c) or re.fullmatch(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}", c))
+    """A fragment short enough to be just a name — in a script with capitals, or one without."""
+    caseless = c.strip()
+    if 2 <= len(caseless) <= 5 and caseless and all(_caseless(ch) for ch in caseless):
+        return True
+    words = c.split()
+    return 1 <= len(words) <= 3 and all(w[:1].isupper() and len(w) > 1 for w in words)
 
 
 class RedactionError(RuntimeError):
@@ -52,14 +104,18 @@ class RedactionError(RuntimeError):
 
 
 class Redactor:
-    def __init__(self, cfg: Config, entities: Entities | None = None, protect: Callable[[], Any] | None = None) -> None:
+    def __init__(self, cfg: Config, entities: Entities | None = None, protect: Callable[[], Any] | None = None,
+                 detect: Detect | None = None) -> None:
         r = cfg.privacy.get("redact", {}) or {}
+        self.detect = detect
+        self.detect_kinds = set(r.get("detect") or [])
         self.max_clauses = int(r.get("max_clauses", 600))
         self.failed = False               # tagging broke: nothing may leave until the task is over
         self._lock = threading.RLock()    # the floor classification runs beside the step's own request, on one table
         self.protect = protect            # names from this Mac itself (installed apps…) that are never personal data
         self._protected: list[str] | None = None
         self._tagged: set[str] = set()   # clauses already tagged in this task (labels repeat every step)
+        self._detected: set[str] = set()
         self.enabled = bool(r.get("enabled", True))
         self.kinds = set(r.get("entities") or [])
         self.patterns = [(name, re.compile(rx)) for name, rx in (r.get("patterns") or {}).items()]
@@ -99,11 +155,12 @@ class Redactor:
         """Skip clauses made only of this Mac's own vocabulary: nothing name-like is left once app names are removed."""
         self._load_protected()
         rest = self._protected_rx.sub(" ", clause) if self._protected_rx else clause
-        return bool(_NAMEISH.search(rest))
+        return _nameish(rest)
 
     def _learn(self, strings: list[str]) -> None:
         """Tag names clause by clause (the tagger misses names in long mixed text) in one batch; found names join
         the pseudonym table unless they belong to this Mac's own vocabulary (app names)."""
+        self._detect(strings)
         if not (self.enabled and self.entities and self.kinds):
             return
         clauses: list[str] = []
@@ -115,8 +172,9 @@ class Redactor:
                 c = c.strip()
                 # the tagger reads a clause in one language: in mixed text ("Meeting with 张伟 at 3pm") the other
                 # script's names are missed, so each run of one script is tagged on its own as well
-                mixed = bool(re.search(r"[\u3400-\u9fff]", c)) and bool(re.search(r"[A-Za-z]{2}", c))
-                runs = [r.strip() for r in _RUNS.findall(c)] if mixed else ([c] if _short_name_like(c) else [])
+                # mixed scripts: the tagger reads a clause as one language, so each run is offered separately
+                mixed = any(_caseless(ch) for ch in c) and any(ch.isalpha() and not _caseless(ch) for ch in c)
+                runs = _runs(c) if mixed else ([c] if _short_name_like(c) else [])
                 for piece in [c] + [_carrier(r) for r in runs if len(r) >= 2]:
                     if len(piece) >= 2 and piece not in seen and piece not in self._tagged and self._worth_tagging(piece):
                         seen.add(piece)
@@ -141,6 +199,30 @@ class Redactor:
                 t = str(e.get("text", "")).strip()
                 if e.get("type") in self.kinds and len(t) >= 2 and t in carriers[clause] and not self._is_protected(t):
                     self._token(str(e["type"]), t)
+
+    def _detect(self, strings: list[str]) -> None:
+        """Phone numbers and addresses, found the way the system finds them.
+
+        The patterns in privacy.yaml stay as a second source — they catch a German street the detector misses
+        — but they cannot be the only one: written out by hand they knew mainland-Chinese mobile numbers and
+        North American ones, so a German, Japanese or Brazilian number reached the decider in the clear.
+        """
+        if not (self.enabled and self.detect and self.detect_kinds):
+            return
+        todo = [s for s in dict.fromkeys(strings) if s and s not in self._detected]
+        if not todo:
+            return
+        try:
+            found = self.detect(todo)
+        except Exception as exc:  # noqa: BLE001  (the patterns still stand; a failure here is not a leak)
+            log.info("data detection unavailable (%s)", exc)
+            return
+        self._detected.update(todo)
+        for per_text in found:
+            for hit in per_text:
+                text = str(hit.get("text", "")).strip()
+                if hit.get("type") in self.detect_kinds and len(text) >= 4 and not self._is_protected(text):
+                    self._token(str(hit["type"]), text)
 
     def _redact(self, s: str) -> str:
         if self.failed:

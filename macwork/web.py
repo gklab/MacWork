@@ -185,8 +185,11 @@ def parse_key(key: str) -> tuple[str, str | None, int]:
 class Browser:
     """One warm headless Chromium on its own thread."""
 
-    def __init__(self, headed: bool) -> None:
+    locale: str | None = None
+
+    def __init__(self, headed: bool, locale: str | None = None) -> None:
         self.headed = headed
+        self.locale = locale
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="macwork-web")
         self._pw: Any = None
         self.ctx: Any = None
@@ -197,7 +200,13 @@ class Browser:
 
             self._pw = sync_playwright().start()
             browser = self._pw.chromium.launch(headless=not self.headed, args=["--disable-blink-features=AutomationControlled"])
-            self.ctx = browser.new_context(locale="zh-CN", viewport={"width": 1280, "height": 900}, user_agent=UA)
+            # no locale and no user agent of our own: Playwright's are right for the Chromium it ships, and
+            # the locale is this Mac's. Pinned to zh-CN as it was, every page came back in Chinese — prices,
+            # cookie walls, geo-redirects and all — whoever the user happened to be.
+            kind = {"viewport": {"width": 1280, "height": 900}}
+            if self.locale:
+                kind["locale"] = self.locale
+            self.ctx = browser.new_context(**kind)
             if not self.headed:
                 self.ctx.route(re.compile(r"\.(png|jpe?g|gif|webp|svg|woff2?|ttf|mp4|webm|mp3)(\?|$)", re.I), lambda r: r.abort())
         return self.ctx
@@ -220,7 +229,11 @@ def research(cfg: Config, gate: Any, redactor: Any, goal: str, query: str = "", 
     cache = cache if cache is not None else {}
     browser = cache.get("web.browser")
     if browser is None and page_factory is None:
-        browser = cache["web.browser"] = Browser(bool(cfg.get("web.headed", False)))
+        want = str(cfg.get("web.locale", "auto"))
+        # the Mac's own locale, put there by the engine; "auto" with nothing known leaves it to Chromium
+        here = (cache.get("system.locale") or {}).get("locale") or ""
+        locale = (here.replace("_", "-") or None) if want == "auto" else (want or None)
+        browser = cache["web.browser"] = Browser(bool(cfg.get("web.headed", False)), locale=locale)
     budget = float(cfg.get("web.budget_s", 30))
     if page_factory is not None:  # tests: no browser, no thread
         return _task(cfg, gate, redactor, goal, query, url, search_fn or (lambda q: search(cfg, q)), page_factory)

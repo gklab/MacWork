@@ -1,7 +1,20 @@
 # Everything the decider sees passes through here first, on this Mac.
+#
+# What this actually catches, measured (`macwork privacy-check`, a synthetic corpus in eight scripts):
+# phone numbers, emails, ID numbers, card numbers and IPs — all of them; names in Chinese, English, German,
+# Japanese and Portuguese — nearly all; names in Russian, Korean, Greek, Arabic and Vietnamese — NONE. The
+# on-device tagger does not do those languages, and no amount of pattern writing here fixes that. If your
+# work involves them, list the names under `names:` below, or withhold the fields with `never_send:`, and
+# re-run privacy-check to see where you stand.
 redact:
   enabled: true
   entities: [PERSON, PLACE, ORG]       # on-device NaturalLanguage (via the helper)
+  # Phone numbers and addresses come from the system's own detector (the machinery that underlines a number
+  # in an email); it knows the formats of everywhere. The patterns below stay as a second source — a German
+  # street the detector misses is still caught — but they are no longer the only one: written by hand they
+  # knew mainland-Chinese mobile numbers, North American ones and English/Chinese street names, and nothing
+  # else reached the decider redacted.
+  detect: [PHONE, ADDRESS]
   patterns:                            # name -> regex; matches become ⟦NAME_n⟧, stable within a task
     EMAIL: '[\w.+-]+@[\w-]+(?:\.[\w-]+)+'
     PHONE: '(?<![\d])(?:\+?\d{1,3}[ -]?)?1[3-9]\d{9}(?![\d])|(?<![\d])\(?\d{3}\)?[ -]\d{3,4}[ -]\d{4}(?![\d])'

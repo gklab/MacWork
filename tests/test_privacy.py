@@ -79,3 +79,40 @@ def test_one_pseudonym_table_survives_two_threads(tmp_path):
         t.join()
     assert not errors, errors[0]
     assert redactor.text("张伟") == redactor.text("张伟"), "the same person keeps the same token"
+
+
+# --- what is redacted, in languages the patterns were never written for --------------------------------
+
+def test_phone_numbers_are_found_wherever_they_are_from(tmp_path):
+    """The hand-written pattern knew mainland-Chinese mobiles and North American numbers, and nothing else."""
+    from macwork.privacy import Redactor
+
+    numbers = {"+49 30 901820": "德国", "03-1234-5678": "日本", "+55 11 91234-5678": "巴西"}
+
+    def detector(texts):   # what NSDataDetector returns for these, checked against the real one
+        return [[{"type": "PHONE", "text": n} for n in numbers if n in t] for t in texts]
+
+    redactor = Redactor(cfg(tmp_path), entities=names_in, detect=detector)
+    for number, where in numbers.items():
+        sent = redactor.text(f"Call {number} about it")
+        assert number not in sent, f"{where} 的号码泄漏了: {sent}"
+
+
+def test_the_patterns_still_catch_what_the_detector_misses(tmp_path):
+    """Both sources, not one: NSDataDetector does not find a German street, the pattern finds a Chinese one."""
+    from macwork.privacy import Redactor
+
+    redactor = Redactor(cfg(tmp_path), entities=names_in, detect=lambda texts: [[] for _ in texts])
+    assert "北京市朝阳区建国路88号" not in redactor.text("寄送地址：北京市朝阳区建国路88号")
+
+
+def test_text_in_any_script_reaches_the_tagger(tmp_path):
+    """Not that the tagger knows every language — it does not — but that nothing is skipped before it."""
+    from macwork.privacy import _nameish, _runs
+
+    for text in ("Иван Петров", "김민준", "Σοφία", "محمد العلي", "山田太郎", "Emily"):
+        assert _nameish(text), text
+    assert not _nameish("3 + 4 = 7")
+
+    assert _runs("Meeting with 王芳 at 3pm") == ["Meeting with", "王芳", "at", "pm"]
+    assert _runs("发送给 Grace Lee") == ["发送给", "Grace Lee"]
