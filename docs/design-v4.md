@@ -1,273 +1,273 @@
-# macwork v4 — 从"能操作一个 app"到"接管一台 Mac"
+# macwork v4 — from "can drive one app" to "can take over a Mac"
 
-v3 给了引擎三个缺失的概念：谁握着这台 Mac（hands）、一个值从哪来（facts）、一步承诺了什么（contract）。
-它们让引擎在**一个 app 里**变得可靠。v4 要回答的是下一个问题：为什么它还接管不了**整台 Mac**。
+v3 gave the engine three concepts it was missing: who is holding this Mac (hands), where a value came from (facts), what a step promised (contract).
+They made the engine reliable **inside one app**. The question v4 has to answer is the next one: why it still can't take over **a whole Mac**.
 
-症状还是各自被打过补丁：安全底线在德语界面上形同虚设；菜单栏右侧、别的桌面、装在子目录里的 app、
-app 自己声明的能力，引擎统统看不见；一次 helper 超时之后，它读到的每一帧屏幕都错开一位而毫不知情。
+The symptoms had each been patched on their own: the safety floor is inert on a German interface; the right-hand side of the menu bar, other desktops, apps installed in subdirectories,
+and the capabilities an app declares about itself are all invisible to the engine; after one helper timeout, every frame of screen it reads is off by one and it never notices.
 
-这又是同一件事的三个面：**引擎在三个地方用自己写的东西，代替了系统本来能告诉它的事实。**
-用词表代替判断，用固定清单代替系统枚举，用"发出去了就假设收到对的"代替应答校验。
+These are three faces of the same thing again: **in three places the engine uses something it wrote itself in place of a fact the system could have told it.**
+A word list in place of judgement, a fixed list in place of system enumeration, "it went out, so assume the right thing came back" in place of checking the reply.
 
 ---
 
-## 四个概念
+## Four concepts
 
-### 1. 底线是判断，不是词表
+### 1. The floor is a judgement, not a word list
 
-`policy.yaml` 的 `confirm.categories` 设计本身是对的：正则只找候选，判定交给 decider，且判定时不给屏幕文本，
-所以页面内容说不动它。问题在于**前提是正则先命中**。11 个类别 × 中英两套，约 100 个词。
-德语 `Löschen`、日语 `削除`、法语 `Supprimer`、俄语 `Удалить` 一个都不命中 →
-`_floor_hits` 返回 `[]` → `_needs_confirm` 直接放行 → 不可逆动作**不问用户就执行**。
+The design of `confirm.categories` in `policy.yaml` is right in itself: the regexes only find candidates, the verdict goes to the decider, and the decider is not given screen text,
+so page content can't talk it into anything. The problem is that **a regex has to match first**. 11 categories × two languages, Chinese and English, roughly 100 words.
+German `Löschen`, Japanese `削除`, French `Supprimer`, Russian `Удалить` match none of them →
+`_floor_hits` returns `[]` → `_needs_confirm` lets it straight through → an irreversible action **runs without asking the user**.
 
-更糟的是 `_risky()`（`policy.py:76`）—— 纯词表、不经 decider —— 被用在四条**完全没有 decider 参与**的路径上：
-`mac_act` 步级调用（`engine.py:163`）、routine 重放（`loop.py:523`）、`learn` 探索（`learn.py:63,101`）、
-tidy 回退（`tidy.py:211`）。在非中英界面上，这四条路径的安全保护等于零。
+Worse, `_risky()` (`policy.py:76`) — pure word list, no decider — is used on four paths where **the decider is not involved at all**:
+step-level `mac_act` calls (`engine.py:163`), routine replay (`loop.py:523`), `learn` exploration (`learn.py:63,101`),
+tidy fallback (`tidy.py:211`). On an interface that is neither Chinese nor English, those four paths have zero safety protection.
 
-**改法**：floor 不再以"正则命中"为前提。每个将要执行的动作都经 decider 分类一次，
-按 `bundle|label|context` 缓存（机制已存在，`cache["floor.verdicts"]`）。
-正则降级为**预热召回**——命中的在 `_floor_questions` 批量随行分类，省掉延迟，但不再是唯一入口。
-没有分类结果时保守要求确认，而不是放行。
+**The fix**: the floor no longer depends on a regex matching first. Every action about to run is classified once by the decider,
+cached by `bundle|label|context` (the machinery already exists, `cache["floor.verdicts"]`).
+The regexes drop to **pre-warm recall** — what they hit is classified in the batch that rides along with `_floor_questions`, which saves the latency, but they are no longer the only way in.
+With no verdict available, require confirmation rather than let it through.
 
-### 2. 能力来自系统，不来自仓库
+### 2. Capabilities come from the system, not from the repo
 
-凡是 Mac 自己能列出来的东西——它装了哪些 app、一个元素支持哪些动作、一个 app 声明了什么能力、
-屏幕上有几个窗口、键盘上有哪些键——都必须问系统，不能写在这个仓库里。
+Anything the Mac can list for itself — which apps are installed, which actions an element supports, what capabilities an app declares,
+how many windows are on screen, which keys the keyboard has — has to be asked of the system, not written down in this repo.
 
-现状与之相反的地方，以及代价：
+Where the code does the opposite today, and what it costs:
 
-| 写死的东西 | 代价 |
+| Hardcoded | Cost |
 |---|---|
-| `observe.apps.dirs` 四个目录（`config.yaml:58`，`System.swift:331` 又写了一遍） | 这台机器上目录扫描见 147 个 app，Spotlight 见 461 个。**`/System/Library/CoreServices/Finder.app` 都不在范围内。** |
-| `action_labels` 九个 AX 动作，表外的丢弃（`observe.py:269`） | `AXRaise`/`AXCancel`/`AXDelete`/`AXZoomWindow` 和**所有 app 自定义 AX 动作**对引擎不存在 |
-| `text_roles`/`select_roles`/`submit_roles`/`range_roles` 角色白名单 | 角色不在表里就不能输入、不能选中。`contenteditable` 组、非标准角色的 Web 输入框全部失效 |
-| `keyCodes` 70 条 US-ANSI **位置**表（`System.swift:56`） | 德/法/JIS 键盘上 `cmd+[` 按的是另一个物理键；F13–F20、小键盘、媒体键缺失 |
-| `url_schemes`/`document_types` 采集了但只当文字喂 planner（`appmodel.py:82`） | app 主动声明的 API 完全浪费；planner 的回复 schema（`planner.py:33`）连"打开 things:///add"都表达不了 |
-| App Intents / NSServices / 菜单栏状态项 / 跨 Space 窗口 / 剪贴板 | 五片能力面**一行代码都没有** |
-| `skip_first_menu: true` 按位置删掉 Apple 菜单 | 这就是"手写的 macOS 操作知识"，顺手删掉了"关于本机""系统设置""最近使用" |
+| `observe.apps.dirs`, four directories (`config.yaml:58`, written out again in `System.swift:331`) | On this machine the directory scan sees 147 apps; Spotlight sees 461. **Even `/System/Library/CoreServices/Finder.app` is out of range.** |
+| `action_labels`, nine AX actions, anything outside the table discarded (`observe.py:269`) | `AXRaise`/`AXCancel`/`AXDelete`/`AXZoomWindow` and **every app-defined AX action** do not exist for the engine |
+| `text_roles`/`select_roles`/`submit_roles`/`range_roles` role allowlists | A role that isn't in the table can't be typed into and can't be selected. `contenteditable` groups and web inputs with non-standard roles all fail |
+| `keyCodes`, a 70-entry US-ANSI **position** table (`System.swift:56`) | On a German, French or JIS keyboard `cmd+[` presses a different physical key; F13–F20, the keypad and media keys are missing |
+| `url_schemes`/`document_types` are collected but only fed to the planner as text (`appmodel.py:82`) | The API an app declares of its own accord is wasted entirely; the planner's reply schema (`planner.py:33`) can't even express "open things:///add" |
+| App Intents / NSServices / menu bar status items / windows on other Spaces / the clipboard | Five capability surfaces with **not one line of code** |
+| `skip_first_menu: true` drops the Apple menu by position | This is "hand-written knowledge about macOS", and it takes out "About This Mac", "System Settings" and "Recent Items" along with it |
 
-### 3. 每个回答对得上它的问题
+### 3. Every answer matches its question
 
-好几个地方，两样东西被**假设**是对应的，而没有任何校验：
+In several places, two things are **assumed** to correspond with nothing checking it:
 
-| 地方 | 假设 | 出错时 |
+| Place | Assumption | When it's wrong |
 |---|---|---|
-| `Helper.call`（`helper.py:133-154`） | 读回来的这行就是刚发出去那个请求的响应 | 超时后连接不重置、迟到响应留在 buffer、**从不校验 `reply["id"]`** → 此后每次调用都错开一位，静默 |
-| `Engine._last`（`engine.py:67`） | `act` 拿到的 id 出自最近那次 `observe` | MCP 是最多 40 个 worker 线程并发；两个 caller 交错 observe 后，A 的 `act` 作用在 B 的观察上 |
-| `task.started`（`model.py:145`） | 恢复的任务和原任务共用一个预算时钟 | 用户回答 `need_confirm` 超过 90 秒，恢复后第一轮直接判超预算失败 |
-| floor 侧线程（`loop.py:217`） | 侧线程和主线程可以共用一个 `Redactor` | 伪名表无锁并发写，可能 `RuntimeError: dictionary changed size during iteration`；join 超时后线程泄漏到下一步 |
-| `input.idle`（`System.swift:264`） | HID 空闲时间 = 用户没在操作 | helper 自己注入的键鼠同样进 HID 流 → 引擎分不清"用户回来了"和"我刚打完字"，v3 的 hands 概念实际没落地 |
-| `contract.kept`（`contract.py:52`） | 读不回字段 = 无法核验 | Secure Input 下 CGEvent 被静默丢弃，记成 "unverified" 而非失败 → 容易误报 done |
-| `facts.source_of`（`facts.py:14`） | 文本能被切成 `[数字\|拉丁字母\|CJK]` | 纯西里尔/阿拉伯/韩文文本切出空列表 → 返回 `"no value"`（真值）→ **反幻觉护栏被绕过** |
+| `Helper.call` (`helper.py:133-154`) | the line read back is the response to the request just sent | after a timeout the connection isn't reset, the late response stays in the buffer, and **`reply["id"]` is never checked** → every call from then on is off by one, silently |
+| `Engine._last` (`engine.py:67`) | the id `act` was handed came from the most recent `observe` | MCP runs up to 40 worker threads concurrently; once two callers interleave their observes, A's `act` operates on B's observation |
+| `task.started` (`model.py:145`) | a resumed task shares one budget clock with the original | the user takes more than 90 seconds to answer a `need_confirm`, and the first round after resuming fails as over budget |
+| floor side thread (`loop.py:217`) | the side thread and the main thread can share one `Redactor` | the pseudonym table is written concurrently with no lock, which can raise `RuntimeError: dictionary changed size during iteration`; after a join timeout the thread leaks into the next step |
+| `input.idle` (`System.swift:264`) | HID idle time = the user isn't touching anything | the keystrokes and clicks the helper injects go into the same HID stream → the engine can't tell "the user is back" from "I just finished typing", and v3's hands concept never actually landed |
+| `contract.kept` (`contract.py:52`) | can't read the field back = can't verify | under Secure Input the CGEvent is dropped silently and recorded as "unverified" rather than a failure → easy to report done when it isn't |
+| `facts.source_of` (`facts.py:14`) | text can be split on `[digits\|Latin\|CJK]` | pure Cyrillic, Arabic or Korean text splits to an empty list → returns `"no value"` (a true value) → **the anti-hallucination guard is bypassed** |
 
-### 4. 任务要能活过一次重启
+### 4. A task has to survive a restart
 
-`Engine.tasks` 是内存 dict，30 分钟 TTL，且 `_gc` 只在 `do()` 里调用。进程一重启，
-所有 pending 任务、所有 `task.desktop` 记录（tidy 靠它知道该关什么）全部消失。
-`_run` 全程持有一把 RLock，所以同时只能跑一个任务，而且 `mac_observe` 会被阻塞整个任务时长。
-`_replay` 完全绕过步数预算、时间预算和取消检查。没有任何货币成本上限——一"步"可能发出七次决策往返。
+`Engine.tasks` is an in-memory dict with a 30-minute TTL, and `_gc` only runs inside `do()`. Restart the process and
+every pending task and every `task.desktop` record (how tidy knows what to close) is gone.
+`_run` holds one RLock for its whole duration, so only one task can run at a time, and `mac_observe` is blocked for as long as the task lasts.
+`_replay` bypasses the step budget, the time budget and the cancellation check entirely. There is no monetary ceiling of any kind — one "step" can make seven decision round trips.
 
 ---
 
-## 工作流
+## Workflow
 
-五个批次，每批一组可独立评审的提交。**不跑评测**（见"验证"一节）。
+Five batches, each a set of commits that can be reviewed on its own. **No evals** (see "Validation").
 
-### 批次 1 — 对账（概念 3）
+### Batch 1 — Reconciliation (concept 3)
 
-不修这些，后面所有开发都建立在可能错位的反馈上。
+Without these fixed, all later work is built on feedback that may be misaligned.
 
-| # | 改动 | 位置 |
+| # | Change | Where |
 |---|---|---|
-| 0.1 | JSON-RPC 请求/响应 id 校验；超时也走 `_reset()` 重连，不再保留错位的流 | `helper.py:133-154` |
-| 0.2 | helper 记录自身注入时刻，`input.idle` 返回 `{idle_s, since_synthetic_s}`；`take_hands` 用真实用户 idle | `System.swift:83-267`，`engine.py:243-260` |
-| 0.3 | `IsSecureEventInputEnabled()` 前置检查，输入前明确拒绝；`contract.kept` 对 secure 目标返回 False 而非 None | `System.swift`，`act.py:180-211`，`contract.py:52` |
-| 0.4 | `pieces()` 改用 Unicode 类别；`source_of` 空切分返回 `None` 而非 `"no value"` | `facts.py:14,60` |
-| 0.5 | `Redactor` 加锁；floor 侧线程 join 超时后丢弃结果，不读半成品 | `privacy.py`，`loop.py:217-232` |
-| 0.6 | `_replay` 纳入步数/时间预算与取消检查 | `loop.py:514-540` |
-| 0.7 | `resume` 重置本轮预算窗口（改为"每轮预算"而非从 `task.started` 起算） | `model.py:145`，`loop.py:71` |
-| 0.8 | `_last` 换成带 observation id 的句柄；`act` 校验 id 并重建 `Ctx`，不再用陈旧的 app/running/ref | `engine.py:67,145-172` |
-| 0.9 | 脱敏失败终止任务，不再静默把全部文本变 `[withheld]` 继续跑 | `privacy.py:_learn` |
-| 0.10 | audit 文件 0600 + 按大小轮转 | `privacy.py:197-202` |
-| 0.11 | `_cancelled` 随任务 GC 清理；`_gc` 不再只在 `do()` 里触发 | `engine.py:225-237` |
-| 0.12 | helper 重连后清空所有依赖 AX ref 的缓存（`menu.snap`/`ambient`/`vision.ocr`） | `helper.py:_reset` → engine 回调 |
-| 0.13 | 每步决策调用数上限 + 单任务成本熔断（目前一步最多七次往返，无任何货币上限） | `engine.py`，`decider.py` |
-| 0.14 | 清死代码：`Outcome.final`（无生产者）、`Affordance.score`（声明为"相关性排序"却从未使用，与项目原则相悖）、`ax.focused`/`Observation.focused`、`permissions.request`（接进 doctor） | 多处 |
-| 0.15 | 三处 code/YAML 默认值不一致：`planner.context_chars` 800/600、`context_actions` 150/120、`settle_ms` 250/150 | `consult.py:44,47`，`effects.py:59` |
+| 0.1 | JSON-RPC request/response id check; a timeout also goes through `_reset()` and reconnects instead of keeping a misaligned stream | `helper.py:133-154` |
+| 0.2 | the helper records when it injects; `input.idle` returns `{idle_s, since_synthetic_s}`; `take_hands` uses the real user idle | `System.swift:83-267`, `engine.py:243-260` |
+| 0.3 | `IsSecureEventInputEnabled()` checked up front, input refused explicitly; `contract.kept` returns False rather than None for a secure target | `System.swift`, `act.py:180-211`, `contract.py:52` |
+| 0.4 | `pieces()` switches to Unicode categories; `source_of` returns `None` rather than `"no value"` on an empty split | `facts.py:14,60` |
+| 0.5 | lock the `Redactor`; after a join timeout the floor side thread's result is discarded rather than read half-built | `privacy.py`, `loop.py:217-232` |
+| 0.6 | bring `_replay` under the step and time budgets and the cancellation check | `loop.py:514-540` |
+| 0.7 | `resume` resets the budget window for the round (a per-round budget instead of counting from `task.started`) | `model.py:145`, `loop.py:71` |
+| 0.8 | replace `_last` with a handle carrying an observation id; `act` checks the id and rebuilds `Ctx` instead of using a stale app/running/ref | `engine.py:67,145-172` |
+| 0.9 | a redaction failure aborts the task instead of silently turning all text into `[withheld]` and carrying on | `privacy.py:_learn` |
+| 0.10 | audit file 0600 + rotation by size | `privacy.py:197-202` |
+| 0.11 | `_cancelled` is cleaned up along with task GC; `_gc` no longer fires only inside `do()` | `engine.py:225-237` |
+| 0.12 | after a helper reconnect, clear every cache that depends on AX refs (`menu.snap`/`ambient`/`vision.ocr`) | `helper.py:_reset` → engine callback |
+| 0.13 | cap on decision calls per step + per-task cost breaker (today a step makes up to seven round trips with no monetary ceiling at all) | `engine.py`, `decider.py` |
+| 0.14 | dead code: `Outcome.final` (no producer), `Affordance.score` (declared as "relevance ranking" and never used, against the project's own principles), `ax.focused`/`Observation.focused`, `permissions.request` (wire it into doctor) | several places |
+| 0.15 | three code/YAML defaults that disagree: `planner.context_chars` 800/600, `context_actions` 150/120, `settle_ms` 250/150 | `consult.py:44,47`, `effects.py:59` |
 
-### 批次 2 — 安全底线去语言化（概念 1）
+### Batch 2 — Take the language out of the safety floor (concept 1)
 
-| # | 改动 | 位置 |
+| # | Change | Where |
 |---|---|---|
-| 1.1 | `_floor` 去掉"正则未命中即 return []"短路；所有将要执行的动作都分类 | `policy.py:130-158` |
-| 1.2 | `_floor_questions` 的批量预热覆盖决策器排名靠前的候选，使 `_pick` 时通常已命中缓存（延迟不变） | `policy.py:96-125` |
-| 1.3 | `_risky()` 四条无 decider 路径：无分类结果时保守要求确认 | `policy.py:76-78` |
-| 1.4 | fail 方向统一 fail-closed：`_goal_calls_for`/`_serves_goal` 的 `except DeciderError: return True` 改为要求确认；`_floor` 的失败判定不再永久缓存 | `policy.py:151,192,207` |
-| 1.5 | `_nondescript` 不再匹配英文字面量 `"(no label)"` / `"in front of the app"`，改为结构判断 | `policy.py:84` |
-| 1.6 | floor 判定缓存加 TTL 与 app 版本键 | `policy.py:87` |
+| 1.1 | drop the "no regex hit, return []" short circuit in `_floor`; classify every action about to run | `policy.py:130-158` |
+| 1.2 | the batch pre-warm in `_floor_questions` covers the decider's top-ranked candidates, so `_pick` usually finds a cache hit (latency unchanged) | `policy.py:96-125` |
+| 1.3 | the four `_risky()` paths with no decider: require confirmation when there is no verdict | `policy.py:76-78` |
+| 1.4 | make the failure direction uniformly fail-closed: `_goal_calls_for`/`_serves_goal`'s `except DeciderError: return True` becomes a request for confirmation; `_floor`'s failure verdict is no longer cached forever | `policy.py:151,192,207` |
+| 1.5 | `_nondescript` stops matching the English literals `"(no label)"` / `"in front of the app"` and judges by structure instead | `policy.py:84` |
+| 1.6 | add a TTL and an app version key to the floor verdict cache | `policy.py:87` |
 
-### 批次 3 — 能力来自系统：新增能力面（概念 2，纯增量）
+### Batch 3 — Capabilities from the system: new capability surfaces (concept 2, purely additive)
 
-| # | 能力面 | 做法 |
+| # | Surface | Approach |
 |---|---|---|
-| 2.1 | **App Intents 目录** | 解析 `Contents/Resources/Metadata.appintents/extract.actionsdata`（纯 JSON，本机 47 个 app 有）进 `appmodel.static_model`；经 `AppModels.brief` 喂 planner，作为 sdef 之外的第二套"app 自述能力"。**本批只做目录，不做调用** |
-| 2.2 | **URL schemes 成为真动作** | 新 provider `schemes`，产出"用 ⟨app⟩ 打开一个 ⟨scheme⟩:// URL"带 url slot；planner 的 `TRY_ITEM` 增加 `open_url`；走 floor |
-| 2.3 | **Services（NSServices）** | helper 新增 `services.list`（扫各 app bundle 的 `NSServices`）与 `services.perform`（`NSPerformService`，公开 AppKit API）；配套 provider + channel。这是 app 之间系统级的"把内容送过去"总线 |
-| 2.4 | **菜单栏状态项** | `AX.swift` 增加 scope `extras_menubar`（`kAXExtrasMenuBarAttribute`）。解锁 WiFi/蓝牙/音量/输入法/所有第三方菜单栏 app |
-| 2.5 | **跨 Space / 全窗口** | `screen.windows` 增加 `all` 参数（`.optionAll`）并标注是否在当前屏；windows provider 提供"切到另一个桌面的窗口" |
-| 2.6 | **多显示器缩放** | 取窗口中心点所在屏幕，而非"第一个相交的屏幕" | `Vision.swift:35` |
-| 2.7 | **剪贴板一等通道** | helper `clipboard.read`/`clipboard.write`；provider 报告当前剪贴板类型与摘要（脱敏后作 evidence），channel 可写入。目前剪贴板只在 `pasteRestoring` 内部用 |
-| 2.8 | **系统 UI 可操作** | 把目标从"前台 app"放宽到任意可 AX 进程（Dock、控制中心、通知中心） |
-| 2.9 | **文件内容进 facts** | `file` channel 增加 `read`；文本/PDF 文本层成为 `Facts` 的来源。目前 facts 只来自屏幕 |
-| 2.10 | **拖放成为一等 affordance** | 基于 AX frame 产出"把 X 拖到 Y"。`input.drag` 早已实现，但只有 planner 猜标签名这一条路 |
-| 2.11 | **AX 属性扩展** | `batchAttrs` 增加 `AXURL`/`AXSelectedText`/`AXExpanded`/`AXDisclosing`/`AXNumberOfCharacters` | `AX.swift:7` |
+| 2.1 | **App Intents catalog** | parse `Contents/Resources/Metadata.appintents/extract.actionsdata` (plain JSON; 47 apps on this machine have one) into `appmodel.static_model`; fed to the planner through `AppModels.brief` as a second set of "what the app says it can do" alongside sdef. **This batch builds the catalog only, no calling** |
+| 2.2 | **URL schemes become real actions** | a new `schemes` provider producing "open a ⟨scheme⟩:// URL with ⟨app⟩" with a url slot; the planner's `TRY_ITEM` gains `open_url`; goes through the floor |
+| 2.3 | **Services (NSServices)** | the helper gains `services.list` (scan each app bundle's `NSServices`) and `services.perform` (`NSPerformService`, public AppKit API); plus a provider and a channel. This is the system-level bus for handing content from one app to another |
+| 2.4 | **Menu bar status items** | `AX.swift` gains the scope `extras_menubar` (`kAXExtrasMenuBarAttribute`). Unlocks WiFi/Bluetooth/volume/input source and every third-party menu bar app |
+| 2.5 | **Across Spaces / all windows** | `screen.windows` gains an `all` parameter (`.optionAll`) and marks whether a window is on the current screen; the windows provider offers "switch to a window on another desktop" |
+| 2.6 | **Multi-display scaling** | take the screen containing the window's center point, not "the first screen it intersects" | `Vision.swift:35` |
+| 2.7 | **The clipboard as a first-class channel** | helper `clipboard.read`/`clipboard.write`; the provider reports the current clipboard's types and a summary (redacted, as evidence), and the channel can write. Today the clipboard is only used inside `pasteRestoring` |
+| 2.8 | **System UI becomes operable** | widen the target from "the frontmost app" to any AX-reachable process (Dock, Control Center, Notification Center) |
+| 2.9 | **File contents become facts** | the `file` channel gains `read`; text files and the text layer of PDFs become a source for `Facts`. Today facts only come from the screen |
+| 2.10 | **Drag and drop as a first-class affordance** | produce "drag X onto Y" from AX frames. `input.drag` has been implemented all along, but the only way to reach it is the planner guessing a label |
+| 2.11 | **More AX attributes** | `batchAttrs` gains `AXURL`/`AXSelectedText`/`AXExpanded`/`AXDisclosing`/`AXNumberOfCharacters` | `AX.swift:7` |
 
-### 批次 4 — 去硬编码（概念 2，会改变行为）
+### Batch 4 — Remove the hardcoding (concept 2, changes behavior)
 
-**落地策略：新行为默认开启，每项在 config 留一个回退开关。**
+**Rollout: the new behavior is on by default, and each item keeps a fallback switch in config.**
 
-| # | 改动 | 开关 |
+| # | Change | Switch |
 |---|---|---|
-| 3.1 | `apps.installed` 改走 LaunchServices：Spotlight 枚举 app bundle + `NSWorkspace.urlForApplication(withBundleIdentifier:)` 回环校验"LaunchServices 确实会启动这个路径"。不用任何路径词表 | `observe.apps.source: launchservices\|dirs` |
-| 3.2 | AX 动作不再白名单：用 `AXUIElementCopyActionDescription`（系统返回本地化描述）给任意动作命名 | `observe.window.unknown_actions: offer\|skip` |
-| 3.3 | 角色白名单 → 能力探测：`AXUIElementIsAttributeSettable(AXValue)` 判可输入、`AXSelected` 可设判可选 | `observe.window.by_capability` |
-| 3.4 | 键盘：复用已有的 `asciiKeyMap()` 按当前布局反查，替掉 US-ANSI 位置表；删掉 `engine.key_pattern` 白名单，改为 helper 能解析即接受 | `input.keymap: layout\|ansi` |
-| 3.5 | locale 全部取自系统：OCR 语言从 `AppleLanguages` + 屏幕文本脚本检测；web `locale`/UA 从系统与真实 Chromium 版本；`usesLanguageCorrection = false`（它会把 UI 标签"纠正"成配置语言）。统一现在**三处互相矛盾**的 OCR 语言默认值 | `observe.vision.languages: auto` |
-| 3.6 | 隐私：`NSDataDetector`（系统自带，多语言多地区）替代手写电话/地址正则；`_NAMEISH`/`_RUNS`/`_CLAUSE`/`_short_name_like`/`_CARRIERS` 改用 Unicode script 属性 | `privacy.detector: system\|regex` |
-| 3.7 | Apple 菜单不再按位置跳过；"关机"这类由 floor 分类拦截 | `observe.menu.skip_first_menu` |
-| 3.8 | sdef 放开：枚举参数变成 choice slot（固定取值正是 Jev 的理想输入）；list/record 参数至少可选提供 | `observe.sdef.strict_types` |
-| 3.9 | OCR 阅读顺序支持 RTL 与竖排 | `observe.py:514` |
-| 3.10 | `arrange` 不再按组大小排序；改为 provider 顺序 + 明确告知 decider "这里被截断了" | `observe.py:684` |
-| 3.11 | `observe.keys` 扩到 helper 支持的全部物理键（方向键、空格、delete、home/end） | `config.yaml:77` |
-| 3.12 | 阈值收敛：10 个只存在于 Python 字面量的 config key 补进 YAML；标注 `safety`（不可自动标定）/ `performance`（可标定）两类 | 多处 |
-| 3.13 | `group_of` 未知 channel 用 channel 名，不再叫 `"general"` | `observe.py:661` |
-| 3.14 | 去掉 selftest 的中文 app 名硬编码、planner probe 的 `"Calculator"` | `selftest.py:64,76`，`planner.py:297` |
+| 3.1 | `apps.installed` moves to LaunchServices: enumerate app bundles with Spotlight + `NSWorkspace.urlForApplication(withBundleIdentifier:)` as a round-trip check that "LaunchServices really will launch this path". No path word list of any kind | `observe.apps.source: launchservices\|dirs` |
+| 3.2 | AX actions are no longer allowlisted: name any action with `AXUIElementCopyActionDescription` (the system returns a localized description) | `observe.window.unknown_actions: offer\|skip` |
+| 3.3 | role allowlist → capability probe: `AXUIElementIsAttributeSettable(AXValue)` decides typable, `AXSelected` being settable decides selectable | `observe.window.by_capability` |
+| 3.4 | keyboard: reuse the existing `asciiKeyMap()` to look keys up in the current layout, replacing the US-ANSI position table; drop the `engine.key_pattern` allowlist and accept whatever the helper can parse | `input.keymap: layout\|ansi` |
+| 3.5 | locale comes entirely from the system: OCR languages from `AppleLanguages` + script detection on the screen text; web `locale`/UA from the system and the real Chromium version; `usesLanguageCorrection = false` (it "corrects" UI labels into the configured language). Unify the OCR language defaults, which **contradict each other in three places** today | `observe.vision.languages: auto` |
+| 3.6 | privacy: `NSDataDetector` (built into the system, many languages and regions) replaces the hand-written phone and address regexes; `_NAMEISH`/`_RUNS`/`_CLAUSE`/`_short_name_like`/`_CARRIERS` move to Unicode script properties | `privacy.detector: system\|regex` |
+| 3.7 | the Apple menu is no longer skipped by position; things like "Shut Down" are caught by floor classification | `observe.menu.skip_first_menu` |
+| 3.8 | loosen sdef: enum parameters become choice slots (a fixed set of values is exactly Jev's ideal input); list and record parameters can at least be supplied optionally | `observe.sdef.strict_types` |
+| 3.9 | OCR reading order handles RTL and vertical text | `observe.py:514` |
+| 3.10 | `arrange` no longer sorts by group size; provider order instead, plus telling the decider explicitly that "this was truncated" | `observe.py:684` |
+| 3.11 | `observe.keys` widens to every physical key the helper supports (arrow keys, space, delete, home/end) | `config.yaml:77` |
+| 3.12 | threshold convergence: 10 config keys that exist only as Python literals get added to the YAML, tagged `safety` (not auto-tunable) or `performance` (tunable) | several places |
+| 3.13 | `group_of` uses the channel name for an unknown channel instead of calling it `"general"` | `observe.py:661` |
+| 3.14 | remove the hardcoded Chinese app names in selftest and the planner probe's `"Calculator"` | `selftest.py:64,76`, `planner.py:297` |
 
-> 注意一个连带后果：`appmodel.signature()` 与 `Skills.find()` 都以标签文本为键，而标签是"英文脚手架 + 本地化 app 标题"。
-> 所以**改一次 macOS 界面语言，所有学到的 app 模型和 routine 全部失效**。3.2/3.3 会让标签更依赖系统自述（本地化），
-> 这个问题会更明显，需要在 signature 里把语言无关的部分（角色、动作名、层级位置）与标签文本分开。
+> One knock-on effect to note: `appmodel.signature()` and `Skills.find()` both key on label text, and a label is "English scaffolding + localized app title".
+> So **change the macOS interface language once and every learned app model and every routine is invalidated**. 3.2/3.3 make labels depend more on what the system says about itself (localized),
+> which makes this worse; signature needs to separate the language-independent parts (role, action name, position in the hierarchy) from the label text.
 
-### 批次 5 — 持久与常驻（概念 4）
+### Batch 5 — Persistence and staying resident (concept 4)
 
-| # | 改动 |
+| # | Change |
 |---|---|
-| 4.1 | 任务持久化：`sqlite3`（stdlib，无新依赖）落到 `~/Library/Application Support/macwork/tasks.db`；`Task` 可序列化；重启后能 resume，tidy 也能补做 |
-| 4.2 | 状态分层：`self.cache` 拆成真全局（appmodels/skills/host.bundles/installed/privacy.vocab/floor.verdicts）与 per-task（vision.wanted/ambient/menu.snap/actions_done）。目前"某个任务要求 OCR 这个窗口"会永久影响之后所有任务 |
-| 4.3 | 解开单锁：`_run` 不再全程持锁；helper 的串行由 `Helper._lock` 保证即可。`mac_observe` 不再被任务阻塞整个时长 |
-| 4.4 | 预算分层：step / sub-goal / task 三层，长任务靠 checkpoint 续跑，而不是把 `max_steps` 调大 |
-| 4.5 | 常驻：Developer ID 签名 + 稳定 bundle id + `SMAppService` 注册 LaunchAgent + 崩溃拉起。TCC 授权一次到位，不再每次 rebuild 失效 |
-| 4.6 | 生命周期收尾：`atexit`/信号处理关闭 helper 子进程与 Playwright；`observe`/`web`/`learn` 三个永久 redactor 的伪名表加上限（目前进程存活期内无限增长） |
+| 4.1 | task persistence: `sqlite3` (stdlib, no new dependency) written to `~/Library/Application Support/macwork/tasks.db`; `Task` becomes serializable; a task can resume after a restart, and tidy can catch up too |
+| 4.2 | layer the state: split `self.cache` into truly global (appmodels/skills/host.bundles/installed/privacy.vocab/floor.verdicts) and per-task (vision.wanted/ambient/menu.snap/actions_done). Today "one task asked for OCR on this window" affects every later task, permanently |
+| 4.3 | undo the single lock: `_run` no longer holds the lock throughout; serializing the helper through `Helper._lock` is enough. `mac_observe` is no longer blocked for the full length of a task |
+| 4.4 | layer the budget: step / sub-goal / task, with long tasks continuing from a checkpoint rather than raising `max_steps` |
+| 4.5 | stay resident: Developer ID signature + a stable bundle id + registering a LaunchAgent with `SMAppService` + restart after a crash. TCC is granted once and stops being invalidated by every rebuild |
+| 4.6 | lifecycle cleanup: `atexit`/signal handlers shut down the helper subprocess and Playwright; cap the pseudonym tables of the three permanent redactors (`observe`/`web`/`learn`), which today grow without limit for the life of the process |
 
 ---
 
-## 验证（不跑评测）
+## Validation (no evals)
 
-现在不占用这台机器跑 eval suite。替代手段：
+Not taking this machine over to run the eval suite right now. Instead:
 
-1. **现有 85 个单测保持绿**，每个工作流补单测。`tests/conftest.py` 已有的 fake-helper 模式覆盖得到批次 1、2、4 的绝大部分。
-2. **Swift 侧从零建测试 target**（现在一个测试都没有，CI 只 `swift build`）：`helper/Tests/` 覆盖 id 对账、Secure Input 检测、键盘布局反查、fingerprint、多屏缩放。CI 加 `swift test`。
-3. **新增 `macwork surfaces` 只读命令**：不执行任何动作，打印当前前台 app 下每个 provider 看到了什么，以及新增能力面（App Intents / Services / 菜单栏状态项 / 跨 Space 窗口 / 剪贴板）各枚举到多少条。这是在不跑评测的前提下，肉眼确认"深度集成"收益的方式，也是批次 3、4 的验收口径。
-4. **`macwork privacy-check` 语料扩到 8 种语言**。现在它只测中英——而 redactor 也只为中英写——所以它报的低泄漏率是自证的。
-5. **`macwork doctor` 扩展**：逐项报告能力面可用性（AX / 屏幕录制 / 当前 Secure Input 状态 / LaunchServices / Spotlight / 检测到多少个带 App Intents 的 app）。
-6. 修掉 `tests/test_engine.py::test_mcp_server_exposes_three_levels`——当前环境 `mcp` 版本没有 `mcp.server.mcpserver`，`server.py:13` 需要兼容或在 pyproject 里收紧下限。
+1. **Keep the existing 85 unit tests green**, and add unit tests for each workflow. The fake-helper pattern already in `tests/conftest.py` covers most of batches 1, 2 and 4.
+2. **Build a Swift test target from scratch** (there is not a single test today; CI only runs `swift build`): `helper/Tests/` covering id reconciliation, Secure Input detection, keyboard layout lookup, fingerprint, multi-display scaling. Add `swift test` to CI.
+3. **A new read-only `macwork surfaces` command**: performs no action, prints what each provider sees under the current frontmost app and how many items each new capability surface (App Intents / Services / menu bar status items / windows on other Spaces / clipboard) enumerates. Without running evals, this is how to confirm by eye what the deeper integration buys, and it is the acceptance criterion for batches 3 and 4.
+4. **Widen the `macwork privacy-check` corpus to 8 languages**. Today it only tests Chinese and English — and the redactor was only written for Chinese and English — so the low leak rate it reports proves itself.
+5. **Extend `macwork doctor`**: report the availability of each capability surface item by item (AX / screen recording / the current Secure Input state / LaunchServices / Spotlight / how many apps with App Intents were found).
+6. Fix `tests/test_engine.py::test_mcp_server_exposes_three_levels` — the `mcp` version in the current environment has no `mcp.server.mcpserver`, so `server.py:13` needs a compatibility path or pyproject needs a tighter lower bound.
 
-评测留到机器空下来时再跑，那时批次 4 的每个开关都能直接做 A/B 对比。
-
----
-
-## 顺序
-
-批次 1 → 2 → 3 → 4 → 5。
-
-1 和 2 是地基（对账 + 安全），必须先做完：在反馈可能错位、安全底线可能失效的情况下开发新能力，是在给自己造噪声。
-3 是纯增量，风险最低、收益最直观。4 会改变行为，放在 `surfaces` 命令能给出对比之后。5 依赖 Developer ID，独立于前面四批。
+Evals wait until the machine is free; by then each switch in batch 4 can be A/B compared directly.
 
 ---
 
-## 进度
+## Order
 
-五批全部完成。
+Batch 1 → 2 → 3 → 4 → 5.
 
-| 批次 | 状态 | 与计划不同的地方 |
+1 and 2 are the foundation (reconciliation + safety) and have to be finished first: building new capabilities while feedback may be misaligned and the safety floor may be inert is manufacturing your own noise.
+3 is purely additive — lowest risk, most visible payoff. 4 changes behavior, so it comes after `surfaces` can show a before/after. 5 depends on a Developer ID and is independent of the other four.
+
+---
+
+## Progress
+
+All five batches are done.
+
+| Batch | Status | Where it differed from the plan |
 |---|---|---|
-| 1 — 对账 | 完成 | 0.14 只清了 `Affordance.score`；`Outcome.final` 保留（第三方 channel 契约）。总预算的语义改成累计**工作时间**——原计划从 `task.started` 算，等于又把用户思考时间算进任务 |
-| 2 — 安全底线去语言化 | 完成 | 1.2 做了又撤回（预热非命中动作每步 +1 次请求，命中率约 4%）；1.4 大部分是误判——`_goal_calls_for`/`_backs_out` 出错时本就走安全方向 |
-| 3 — 新增能力面 | 完成 | 2.10 改设计：macOS 没有"可拖"属性，按元素提供就得靠猜，改为一个按名字取两端的动作 |
-| 4 — 去硬编码 | 完成 | 新增前置项 3.0（学习层语言无关）。3.3 改为**并集**而非替换：AX 说"不可设"≠"不能用"，引擎有点击/击键兜底。3.8 判断错了——`simple_types` 是安全边界不是词表，specifier 是代码 |
-| 5 — 持久与常驻 | 完成 | 4.4 增加 `need_continue`：run 预算用完但任务还在前进就交还续跑，而不是把 `max_steps` 调大 |
+| 1 — Reconciliation | Done | 0.14 only removed `Affordance.score`; `Outcome.final` stays (third-party channel contract). The total budget now means cumulative **working time** — counting from `task.started`, as planned, would have put the user's thinking time back into the task |
+| 2 — Take the language out of the safety floor | Done | 1.2 was built and then reverted (pre-warming actions the regexes didn't hit costs +1 request per step for a hit rate around 4%); most of 1.4 was a misreading — `_goal_calls_for`/`_backs_out` already fail in the safe direction |
+| 3 — New capability surfaces | Done | 2.10 was redesigned: macOS has no "draggable" attribute, so offering it per element would mean guessing; it became one action that takes both ends by name |
+| 4 — Remove the hardcoding | Done | Added a prerequisite 3.0 (make the learning layer language-independent). 3.3 became a **union** rather than a replacement: AX saying "not settable" ≠ "can't be used", and the engine has clicking and keystrokes to fall back on. 3.8 was judged wrong — `simple_types` is a safety boundary, not a word list, and a specifier is code |
+| 5 — Persistence and staying resident | Done | 4.4 gained `need_continue`: when the run budget is spent but the task is still making progress, it hands back for continuation instead of raising `max_steps` |
 
-### 真机核对过的数字
+### Numbers checked on a real machine
 
-| | 之前 | 之后 |
+| | Before | After |
 |---|---|---|
-| 装了哪些 app | 146（扫四个目录，Finder/Safari 不在内） | 405（LaunchServices） |
-| 可输入元素 | 3 / 2（角色白名单） | 18 / 9（能力探测，编辑器 / 聊天 app） |
-| 菜单栏状态项 | 0（完全不可见） | 20（9 个进程） |
-| 窗口 | 34（仅当前 Space） | 183（全部） |
-| OCR 语言 | 固定 `[zh-Hans, en-US]`，三处写法互相矛盾 | 取自系统：`[en-US, zh-Hans]` |
-| 个人数据泄漏率（八种脚本语料） | 40.1% | 27.0%（电话 15/24 → 0/24） |
-| 菜单动作带语言无关身份 | 0 | 58/58（Finder），跨 app 重启 141/141 不变 |
-| 合成事件后的"用户空闲" | 25.97s → 0.15s（引擎自己打回的） | 与用户输入分离 |
-| 测试 | 85 Python / 0 Swift | 417 Python / 13 Swift |
-| 冷启动一次观察 | 1917 ms | 332 ms |
+| installed apps | 146 (scan of four directories; Finder and Safari not among them) | 405 (LaunchServices) |
+| typable elements | 3 / 2 (role allowlist) | 18 / 9 (capability probe; editor / chat app) |
+| menu bar status items | 0 (entirely invisible) | 20 (across 9 processes) |
+| windows | 34 (current Space only) | 183 (all) |
+| OCR languages | fixed `[zh-Hans, en-US]`, written three ways that contradict each other | from the system: `[en-US, zh-Hans]` |
+| personal data leak rate (corpus in eight scripts) | 40.1% | 27.0% (phone numbers 15/24 → 0/24) |
+| menu actions with a language-independent identity | 0 | 58/58 (Finder); unchanged across an app restart, 141/141 |
+| "user idle" after a synthetic event | 25.97s → 0.15s (knocked back down by the engine itself) | separated from user input |
+| tests | 85 Python / 0 Swift | 417 Python / 13 Swift |
+| one cold-start observation | 1917 ms | 332 ms |
 
 ---
 
-## 批次 6 —— 计划之外，按"能开发的都开发完"补的
+## Batch 6 — unplanned, added under "develop everything that can be developed"
 
-计划里的五批做完之后，剩下的是我自己列出来"没有实现"的那张清单。逐项做掉，只有一项
-做不了，它为什么做不了也写清楚了。
+Once the five planned batches were done, what was left was the list I had written myself of things that were "not implemented". Each one is done, except one, and
+why that one can't be done is written out too.
 
-| 做了什么 | 起因 | 量出来的 |
+| What was done | Why | What was measured |
 |---|---|---|
-| `ax.focused` 接上：焦点告诉决策者，打完字读回核对 | 35 个 RPC 里它 0 调用方 | 「在光标处输入」此前**完全无法核实**，打进别的窗口只记成"未核实" |
-| `permissions.request` 接上：`doctor --ask` | 同上，0 调用方 | 两项实测 granted |
-| **后台刷新其实在挡路** | 上一条量出 focus 1743ms | 冷启动观察 1917ms → **332ms**，focus 1717ms → 1ms |
-| `decider.kind: auto` + 运行期回退链 | 唯一没有退路的一环；写好的 LocalDecider 要手动改配置才用得上 | 清掉 key 后落到 `local:deepseek` |
-| 画布窗口：滚轮、按名字右键、树够不着的文字作为目标 | 不实现 `AXScrollDownByPage` 的窗口没有任何办法翻页 | TextEdit line-1 → line-7 → 滚回 |
-| `revert`：把任务改过的东西放回去 | `tidy` 只关它开的，不撤它改的 | — |
-| 通知和屏幕别处的提示 | `overlays` 要求重叠，横幅永远在角落 | 一条真通知：8 个 AX 节点全文可读，此前观察结果里一个字都没有 |
-| 任务队列：`submit`、位置、取消 | 第二个 `do()` 死等一把锁，没 id 没位置没顺序 | — |
-| `macwork watch`：事件触发 | daemon 在跑，但没有东西唤醒它 | 12 种系统事件，端到端实测 |
-| 快捷指令的返回值 | 写在 `--output-path`，此前没要，结果全丢 | — |
+| `ax.focused` wired up: focus is told to the decider, and what was typed is read back and checked | 0 callers among the 35 RPCs | "type at the cursor" was **impossible to verify** before; typing into the wrong window was only recorded as "unverified" |
+| `permissions.request` wired up: `doctor --ask` | same, 0 callers | two items measured as granted |
+| **Background refresh was in the way** | the previous item measured focus at 1743ms | cold-start observation 1917ms → **332ms**, focus 1717ms → 1ms |
+| `decider.kind: auto` + a runtime fallback chain | the one link with no fallback; the LocalDecider that was already written needed a manual config change to be used at all | with the key removed it falls through to `local:deepseek` |
+| Canvas windows: scroll wheel, right-click by name, text the tree can't reach as a target | a window that doesn't implement `AXScrollDownByPage` had no way at all to page | TextEdit line-1 → line-7 → scrolled back |
+| `revert`: put back what a task changed | `tidy` only closes what it opened; it doesn't undo what it changed | — |
+| Notifications and prompts elsewhere on screen | `overlays` required an overlap, and a banner is always in a corner | one real notification: all 8 AX nodes readable in full, where before not a word of it appeared in the observation |
+| Task queue: `submit`, position, cancel | a second `do()` waited forever on a lock, with no id, no position and no order | — |
+| `macwork watch`: event triggers | the daemon runs, but nothing wakes it | 12 kinds of system event, measured end to end |
+| Return values from Shortcuts | written to `--output-path`, which was never asked for, so every result was thrown away | — |
 
-### 顺手抓到的、我自己造的错
+### Mistakes of my own, caught along the way
 
-* `_label` 的兜底会把元素**内容**当标签——正是 focus provider 最不该带出来的东西
-* per-call `AXUIElementSetMessagingTimeout` 在 system-wide 元素上设，改的是**全局默认**且永不复原
-* FSEvents 回调不设 `kFSEventStreamCreateFlagUseCFTypes` 时 `paths` 是 `char**`，按 NSArray 读 = 未定义行为，第一个变动的文件就把 helper 干掉；而客户端**静默重启**把崩溃藏了起来（已改成会警告）
-* 判断"这是不是画布"的阈值**错了两次**，见下
+* `_label`'s fallback would use an element's **contents** as its label — exactly what the focus provider must not surface
+* a per-call `AXUIElementSetMessagingTimeout` set on a system-wide element changes the **global default**, and never restores it
+* without `kFSEventStreamCreateFlagUseCFTypes`, the `paths` an FSEvents callback receives is a `char**`; reading it as an NSArray is undefined behavior, and the first file that changed took the helper down — while the client's **silent restart** hid the crash (it now warns)
+* the threshold for "is this a canvas" was **wrong twice**, see below
 
-### 判据不能拍脑袋：一个例子
+### A criterion can't be guessed at: an example
 
-「什么时候该提供指针操作」这件事我判错两次：
+I got "when should pointer actions be offered" wrong twice:
 
-1. "整窗可操作节点 < 8" —— Cursor 外壳 477 个节点、编辑区一个都没有，被判成"描述得很好"
-2. 覆盖率 —— 几何上 Terminal 一个 AXTextArea 罩住整窗，63 个 OCR 框全算"够得着"；文字上
-   `screen_text` 是 1500 字摘要，同样 63 个里 62 个算"对不上"
+1. "fewer than 8 operable nodes in the whole window" — Cursor's shell has 477 nodes and not one of them is in the editing area, so it was judged "well described"
+2. coverage — geometrically, Terminal's single AXTextArea covers the whole window, so all 63 OCR boxes count as "reachable"; textually,
+   `screen_text` is a 1500-character summary, so 62 of those same 63 count as "no match"
 
-任何能让这两个同时正确的阈值，都是我编的"关于窗口的知识"。结论是**不猜**：滚轮就
-2 个选项，只要有窗口就给；滚不动，滚一下就知道——主回路本来就记录"什么都没改变"
-并且不再提供。只有按数量计费的那件事（把每条读到的文字变成点击目标）才保留门槛。
+Any threshold that makes both of these come out right is "knowledge about windows" that I invented. The conclusion is **don't guess**: the scroll wheel has
+only 2 options, so offer it whenever there is a window; if it won't scroll, one scroll finds that out — the main loop already records "nothing changed"
+and stops offering it. Only the thing that is priced per item (turning every piece of text read into a click target) keeps a threshold.
 
-### 唯一没做成的，以及为什么
+### The one thing that didn't get done, and why
 
-**直接调用 App Intents 做不到**，不是没做。没有公开 API 让一个进程去执行另一个 app
-的 intent——执行它们的是系统自己（Shortcuts、Siri、聚焦）。引擎读得到 app 声明的
-intent 并交给规划器；能真正执行的那条路是人自己做的快捷指令，那条已经通了，并且现在
-连返回值一起拿回来。不假装还有别的。
+**Calling App Intents directly is not possible**, not merely undone. There is no public API for one process to execute another
+app's intent — the system is what executes them (Shortcuts, Siri, Spotlight). The engine can read the intents an app declares and hand them to
+the planner; the path that actually executes is a shortcut a person built themselves, and that path works now, and now
+brings the return value back with it. No pretending there is another one.
 
 ---
 
-### 已知的、没有解决的
+### Known, unsolved
 
-* **端上 NLTagger 不支持俄语、韩语、希腊语、阿拉伯语、越南语的人名**——这五种在语料里 9/9 全漏。不是代码问题，`privacy-check` 会如实报出来，补救手段是 `names` / `never_send`。
-* **"回车会不会提交"** Mac 答不了：一行输入框和一篇文档对它是一样的，`submit_roles` 因此仍是角色表。
-* **仍未跑过评测**。上面每一个数字都是单点实测或单元测试，**没有一个是任务成功率**。这是
-  这个项目自己写下的判据（README：decider 在你自己任务上的准确率是要量的，不是假设的），
-  而它至今没有兑现过一次。评测套件本身已经能跑了（app 改用 bundle id，此前在非中文 Mac 上
-  一个都跑不起来），缺的是 `TYPESAFE_API_KEY`。
-* **`evals/*.yaml` 里还有 4 个任务按显示名写** —— Keynote / Numbers / Safari / VLC，这台机器
-  没装，bundle id 问不到，凭记忆写一个正是让任务悄悄失配的做法。
-* **端上模型在这台 Mac 上不可用**（`deviceNotEligible`），所以 `decider.kind: auto` 的本地那条
-  退路走的是网络后端，"完全离线也能决策"没有在这里被验证过。
+* **On-device NLTagger does not support personal names in Russian, Korean, Greek, Arabic or Vietnamese** — all five miss 9/9 in the corpus. This is not a code problem; `privacy-check` reports it honestly, and the remedy is `names` / `never_send`.
+* **"Will Return submit?"** is something the Mac can't answer: a one-line text field and a document look the same to it, so `submit_roles` is still a role table.
+* **Still no eval run.** Every number above is a single measurement or a unit test; **not one of them is a task success rate**. That is
+  the criterion this project wrote for itself (README: the decider's accuracy on your own tasks is something to measure, not assume),
+  and it has never once been met. The eval suite itself runs now (apps switched to bundle ids; before, not one of them would start on a non-Chinese Mac);
+  what's missing is `TYPESAFE_API_KEY`.
+* **4 tasks in `evals/*.yaml` are still written by display name** — Keynote / Numbers / Safari / VLC, none of which are installed on this
+  machine, so their bundle ids can't be looked up, and writing one from memory is exactly how a task quietly mismatches.
+* **The on-device model is unavailable on this Mac** (`deviceNotEligible`), so the local fallback in `decider.kind: auto`
+  goes to a network backend, and "decisions with no network at all" has not been verified here.

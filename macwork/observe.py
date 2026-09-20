@@ -165,16 +165,29 @@ def _tree(nodes: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[
     return by_ref, kids
 
 
+def _screen_mark(ctx: Ctx) -> Any:
+    """What this app's window looked like when the engine last checked — the number it already takes after
+    every step, reused here rather than asked for again. When there is none (no window, or speculation off),
+    the count of actions taken stands in, which is what the menus used to be keyed on all the time."""
+    pid, fp = ctx.cache.get("screen.fp") or (None, None)
+    return fp if fp is not None and pid == (ctx.app or {}).get("pid") else ctx.cache.get("actions_done", 0)
+
+
 @provider("menu")
 def menu(ctx: Ctx, obs: Observation) -> None:
     if not ctx.app:
         return
     ax = ctx.cfg.section("observe.ax")
     front = (ctx.helper.call("apps.frontmost").get("app") or {}) if ctx.cfg.get("observe.menu.cache_s", 0) else {}
-    key = ("menu", ctx.app["pid"], front.get("pid"), front.get("window"), ctx.cache.get("actions_done", 0))
+    # What makes a menu change is the window changing under it — a document opened, a selection made, a mode
+    # toggled. Throwing the menus away after *any* action meant re-reading the whole menu bar every step, and
+    # a menu bar is not cheap: measured on this Mac, 350–870 ms for TextEdit's 340 items against 0–18 ms to
+    # ask what the window now looks like. So the window's own fingerprint decides, and the TTL still bounds
+    # how stale an unchanged-looking window may leave it.
+    key = ("menu", ctx.app["pid"], front.get("pid"), front.get("window"), _screen_mark(ctx))
     hit = ctx.cache.get("menu.snap")
     if hit and hit[0] == key and time.monotonic() - hit[1] < float(ctx.cfg.get("observe.menu.cache_s", 0)):
-        snap = hit[2]   # same app, same window, nothing done since: the menus have not changed
+        snap = hit[2]   # same app, same window, nothing on screen has moved: the menus have not changed
     else:
         snap = ctx.helper.call("ax.snapshot", pid=ctx.app["pid"], scope="menubar", max_nodes=ax.get("max_nodes", 3000),
                                max_depth=12, budget_ms=ax.get("budget_ms", 3000), visible_only=False, actions=False)

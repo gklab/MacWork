@@ -125,6 +125,9 @@ class EffectsMixin:
         if not ctx.app or not self.cfg.get("engine.verify.speculate", True):
             return None
         try:
-            return self.helper.call("ax.fingerprint", pid=ctx.app["pid"], poll_nodes=int(self.cfg.get("engine.verify.poll_nodes", 400))).get("fingerprint")
+            fp = self.helper.call("ax.fingerprint", pid=ctx.app["pid"],
+                                  poll_nodes=int(self.cfg.get("engine.verify.poll_nodes", 400))).get("fingerprint")
         except HelperError:
             return None
+        ctx.cache["screen.fp"] = (ctx.app["pid"], fp)   # the menus are cached against this; taking it again would cost a round trip
+        return fp
