@@ -2,6 +2,13 @@
 # or with MACWORK__SECTION__KEY=value environment variables (e.g. MACWORK__ENGINE__MAX_STEPS=20).
 
 decider:
+  # jev: TypeSafe System One — calibrated probabilities, which is what every threshold in this file is a
+  #   cut-off on. local: any model the planner can reach (a local OpenAI-compatible server, Apple's
+  #   on-device model, a cloud one) — no key, no network needed, and no calibration either, so it is
+  #   trusted less on purpose. Anything else plugs in through the macwork.deciders entry point.
+  local:
+    confidence_ceiling: 0.8      # the most any answer from a text model may claim. release_threshold is
+                                 # 0.9, so with this ceiling nothing it says can release a flagged action
   kind: jev                 # jev | any name registered under the macwork.deciders entry point
   model: jev-latest         # or jev-preview
   timeout_s: 10

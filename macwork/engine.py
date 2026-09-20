@@ -110,7 +110,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
     @property
     def decider(self) -> Decider:
         if self._decider is None:
-            self._decider = make_decider(self.cfg)
+            self._decider = make_decider(self.cfg, self.helper)
         return self._decider
 
     def _entities(self, texts: list[str]) -> list[list[dict[str, Any]]]:

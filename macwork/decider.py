@@ -133,12 +133,16 @@ class DryRunDecider:
         raise DeciderError("dry run: decider not called (see the audit log for the state that would be sent)")
 
 
-def make_decider(cfg: Config) -> Decider:
+def make_decider(cfg: Config, helper: Any = None) -> Decider:
     if cfg.get("audit.dry_run"):
         return DryRunDecider()
     kind = cfg.get("decider.kind", "jev")
     if kind == "jev":
         return JevDecider(cfg)
+    if kind == "local":     # any model the planner can reach; see localdecider.py on what it costs in calibration
+        from .localdecider import LocalDecider
+
+        return LocalDecider(cfg, helper)
     for ep in entry_points(group="macwork.deciders"):
         if ep.name == kind:
             return ep.load()(cfg)
