@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+dist/
+build/
+
+# Swift helper build output
+helper/.build/
+helper/.swiftpm/
+
+# Secrets and local state never belong in the repo
+.env
+.env.*
+*.key
+audit*.jsonl
+
+.DS_Store
+evals/reports/
+.ruff_cache/
+evals/local.yaml

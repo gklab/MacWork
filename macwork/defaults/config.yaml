@@ -1,0 +1,229 @@
+# macwork defaults. Override any key in ~/.config/macwork/config.yaml
+# or with MACWORK__SECTION__KEY=value environment variables (e.g. MACWORK__ENGINE__MAX_STEPS=20).
+
+decider:
+  kind: jev                 # jev | any name registered under the macwork.deciders entry point
+  model: jev-latest         # or jev-preview
+  timeout_s: 10
+  max_retries: 3                 # connection hiccups (a local proxy restarting) are retried with backoff
+  backoff_s: 0.5
+  backoff_max_s: 4.0
+  proxy: system                  # system (follow the Mac's settings) | none (direct) | http://host:port
+  usd_per_mtok: 0.042       # only for the cost log (the API reports tokens, not money)
+  keychain_service: macwork   # key comes from TYPESAFE_API_KEY, else this Keychain item
+
+helper:
+  mode: auto                # auto | socket | stdio
+  socket: ~/Library/Application Support/macwork/helper.sock
+  app: ~/Applications/MacWork Helper.app
+  binary: null              # explicit path to a macwork-helper binary (stdio mode)
+  start_timeout_s: 6
+
+observe:
+  # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
+  providers: [window, overlays, popups, windows, vision, menu, sdef, keys, typing, apps, shortcuts, files, skills, web]
+  ax:
+    max_nodes: 3000
+    max_depth: 40
+    max_children: 300
+    max_text: 200
+    budget_ms: 3000
+    visible_only: true
+    manual_accessibility: auto   # auto | always | never — expose Electron/Chromium trees
+    sparse_tree_below: 8         # "auto": retry with manual accessibility when fewer actionable nodes than this
+    window_skip_roles: [AXApplication, AXMenuBar]   # never descend into these from a window (menus have their own provider)
+  menu:
+    cache_s: 4                   # reuse the menu tree for the same app+window this long; any action invalidates it
+    skip_first_menu: true        # the Apple menu (recent items, shutdown) is never a target by default
+    include_disabled: false
+  window:
+    action_labels:               # AX action -> how it is offered ("" = just the element); anything else is not offered
+      AXPress: ""
+      AXConfirm: ""
+      AXPick: ""
+      AXOpen: open
+      AXShowMenu: open the context menu of
+      AXIncrement: increase
+      AXDecrement: decrease
+      AXScrollDownByPage: scroll down
+      AXScrollUpByPage: scroll up
+    context_menu_roles: [AXRow, AXCell, AXImage, AXStaticText, AXList, AXOutline, AXTable, AXWebArea, AXTextArea, AXLink, AXGroup]   # buttons expose AXShowMenu everywhere; offer it where it means something
+    text_roles: [AXTextField, AXTextArea, AXComboBox, AXSearchField, AXSecureTextField]
+    select_roles: [AXRow]          # rows of lists, tables and outlines: offered as "select …", named by the text they show
+    submit_roles: [AXTextField, AXComboBox, AXSearchField]   # single-line fields also get "type and press Return"
+    range_roles: [AXTextArea]      # documents: select a part of the text, or put the cursor at the end
+    read_roles: [AXStaticText, AXHeading, AXCell, AXLink]
+    screen_text_chars: 1500
+  apps:
+    dirs: [/Applications, /System/Applications, /System/Applications/Utilities, ~/Applications]
+    include_installed: true
+  vision:
+    mode: auto                   # auto: only when the AX tree is sparse or has unlabeled controls | always | never
+    sparse_below: 8              # fewer actionable AX elements than this = "sparse"
+    languages: [zh-Hans, en-US]
+    fast: false
+    min_conf: 0.3
+    near_radius: 60              # points: nearest text that may name an unlabeled control
+    max_unlabeled: 40
+    container_min_texts: 2       # an unlabeled container with this many texts in it offers each text as a click target
+    max_container_targets: 40
+    max_text_targets: 80
+    position_words: [top-left, top, top-right, left, center, right, bottom-left, bottom, bottom-right]
+    describer_cmd: null          # optional local command that prints a short description of an image path (e.g. a local VLM)
+  sdef:
+    skip_suites: [Standard Suite, Text Suite, Type Definitions, Type Names Suite]
+    skip_commands: []            # the standard suites above are the generic ones; risky commands meet the policy floor
+    simple_types: [text, integer, real, number, boolean, file, "text|file"]
+  keys: [return, escape, tab, pageup, pagedown]   # the physical keys only; app commands come from its menus or the planner
+  typing:                        # type the caller's text wherever the cursor is (editors that expose no text field)
+    enabled: true
+    requires_input: text         # offered only when the caller supplied inputs.text
+    label: type the given text at the cursor, into whatever has keyboard focus / 在光标处输入文字
+    submit_label: type the given text at the cursor and press Return / 在光标处输入文字并回车
+  labels:
+    web_research: research this on the web (search, open pages, read the relevant passages) / 上网查资料、搜索、读网页
+  shortcuts:
+    cache_s: 300
+  files:
+    limit: 15
+    roots: ["~"]
+    input_keys: [query, keywords, file]   # inputs that trigger a Spotlight search
+  web:
+    enabled: true
+
+planner:
+  kind: auto                     # auto | none | foundation | anthropic | any name under endpoints (deepseek, local, …)
+  auto_order: [foundation, local, deepseek, anthropic]   # on-device first; the first available one is used
+  when: auto                     # auto: consult when the decider calls for a different route, a second opinion, or text | always: plan first | never
+  warm_on_task_start: true       # wake a local planner in the background when a task starts (weights get paged out when idle)
+  context_chars: 600
+  context_actions: 120           # labels the planner sees (window first, then menus). Each one is prompt it must read
+                                 # before it can answer: 400 labels meant ~5000 tokens and ~40 s of prefill on a dense model
+  context_skip_channels: [app, shortcut, file]   # not worth the planner's attention budget (running apps are listed separately)
+  max_steps: 8                   # sub-goals per plan
+  max_replans: 2
+  fill_inputs: true              # let the planner write text a step needs instead of asking the caller
+  trust_on_device: true          # on-device planners see unredacted text; cloud planners never do
+  endpoints:                     # any OpenAI-compatible chat API
+    deepseek:                    # DeepSeek official API (https://api-docs.deepseek.com)
+      base_url: https://api.deepseek.com
+      model: deepseek-flash      # or deepseek-v4-pro
+      api_key_env: DEEPSEEK_API_KEY
+      keychain_account: deepseek # `macwork key set deepseek`
+      json_mode: true
+      max_tokens: 2000
+      timeout_s: 60
+    local:                       # LM Studio / Ollama / mlx_lm.server on this Mac
+      base_url: http://127.0.0.1:1234/v1
+      model: ""                  # empty: the server's first model
+      local: true
+      timeout_s: 45              # a dense 27B model needs ~15–25 s per plan; a cold one pages back in first
+      max_tokens: 1500
+      extra: {chat_template_kwargs: {enable_thinking: false}}   # plans, not reasoning transcripts (ignored by models without it)
+  anthropic:
+    model: claude-opus-5
+    effort: medium
+    max_tokens: 16000
+
+skills:
+  dir: ~/Library/Application Support/macwork/skills
+  record: true                   # save successful multi-step tasks as replayable routines
+  min_steps: 2
+  max_offered: 20
+
+learn:                           # `macwork learn <app>`: safe exploration ahead of time
+  max_actions: 30
+  budget_s: 180
+  channels: [menu, window]
+  judge_batch: 16                # the decider judges which actions only show/navigate, this many per request
+  max_judged: 160
+  safe_threshold: 0.8
+  max_back_steps: 2              # after each explored action, the decider picks up to this many steps back
+  max_unrestored: 2
+
+appmodel:
+  dir: ~/Library/Application Support/macwork/apps
+  persist: true
+  sample: 12
+  max_edges: 2000
+  max_hints: 8
+
+engine:
+  max_steps: 12
+  budget_s: 90
+  max_options: 200               # Jev accepts at most 255 per choice
+  history: 6
+  locked_channels: [web, shortcut]   # what still works while the screen is locked (no UI needed)
+  evidence:                      # what every question sees about the screen (not only the action's options)
+    controls: 60
+    label_chars: 60
+    checked: 20
+    fields: 12                   # text fields and what they contain
+  verify_done: true              # a "done" judgement is checked with a stricter question (asked in the same request)
+  tidy: auto                     # auto: after a task ends, close apps it opened that are no longer needed | off | defer (caller calls tidy)
+  tidy_background: true         # return the result first, close apps right after (the next task waits for it)
+  quit_wait_ms: 3000             # how long a polite quit may take before the app is assumed to be asking something
+  carry_chars: 600               # what each app showed, carried along so a later step uses real values, not guesses
+  result_chars: 800              # the last screen text kept in the result (so closing an app loses no answer)
+  max_fruitless_rethinks: 2      # "rethink" twice with no new route from the planner: diagnose and stop
+  max_waits: 4                   # times per task the decider may choose to wait for a loading/busy app
+  wait_s: 1.5
+  fold_groups_over: 60           # a group larger than this (every installed app) is always one "look into" away
+  floor_batch: 8                 # floor classifications carried along with a step's own request (Jev answers in parallel)
+  max_looks: 6                   # times per task the decider may open a folded group of options to read it
+  top_k: 3                       # alternatives returned when the user must choose
+  thresholds:                    # probability cut-offs only; which move to make is the decider's own choice
+    done: 0.8                    # "already done" before acting, and "sub-goal done"
+    done_veto: 0.35              # after acting, the stricter done check overrules only below this
+    progress_bad: 0.2            # the last step is recorded as having had no effect
+    risky_screen: 0.6
+    backs_out: 0.8               # on a risky screen, an action judged to only back out goes ahead without asking
+    wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done
+    serves_goal: 0.35            # leaving the app worked in (another app, a Shortcut, the web) must serve the stated goal
+    goal_calls_for: 0.3          # a floor-gated action the goal does not call for is dropped instead of asking the user
+    keep_window: 0.5             # tidy: a window the task opened in an app already running stays when still needed
+    keep_open: 0.5               # tidy: an app the task opened stays open when the decider judges it still needed…
+    stays_running: 0.5           # …or the kind of app that keeps running in the background
+  verify:
+    timeout_ms: 2500             # ceiling; most steps return as soon as an event or a content change is seen
+    settle_ms: 150
+    poll_ms: 80                  # also watch the window's content (many SwiftUI apps post no notifications); 0 = events only
+    quiet_ms: 300                # after something changed, wait until the window stays unchanged this long (settled)
+    poll_nodes: 400
+    speculate: true              # decide on the first calm screen and check it did not move while deciding (else look again)
+    speculate_quiet_ms: 80
+    speculate_timeout_ms: 800    # no change by then: decide anyway; a late change is caught by the same check
+    max_redo: 1                  # per step: after one redo the moving screen is taken as it is
+  mode: yield                    # yield: the Mac is the user's — wait while they type or move (default)
+                                 # exclusive: the engine owns the Mac (eval runs, unattended use). "background"
+                                 # and "foreground" are the old names for these two.
+  yield_idle_s: 1.5              # the user counts as busy until their keyboard and mouse have been quiet this long
+  yield_max_s: 60                # how long one step waits for them before the task gives up its turn
+  tasks_ttl_s: 1800
+  activate_wait_s: 1.5           # how long to wait for an app to come to the front before refusing to type
+
+input:
+  non_ascii: paste               # paste (clipboard, restored after) | unicode (synthetic unicode key events)
+  set_value_first: false         # true: set a field's value through Accessibility first (background-friendly, but many fields ignore it)
+  focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
+
+web:
+  search: [duckduckgo, bing]     # plain-HTTP search (engines block headless browsers)
+  results: 8
+  max_steps: 12
+  budget_s: 30
+  headed: false
+  note_chars: 2500
+  max_notes: 3
+  thresholds: {useful: 0.6, enough: 0.8, stuck: 0.85}
+
+audit:
+  enabled: true
+  path: ~/Library/Logs/macwork/audit.jsonl
+  dry_run: false                 # true: never call the decider, only log what would be sent
+
+server:
+  name: macwork
+  transport: stdio               # stdio | streamable-http
+  host: 127.0.0.1
+  port: 8977

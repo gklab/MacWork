@@ -1,0 +1,50 @@
+# Held out: apps never used while the engine was built or tuned. Report these numbers, not unseen.yaml's
+# (that suite was run after every change and is no longer unseen). Every task is harmless: nothing is saved,
+# sent, bought, installed or deleted, and no personal data is on screen.
+settle_s: 0.8
+fresh: true
+tasks:
+  - id: clock-stopwatch
+    app: 时钟
+    goal: 在时钟里打开秒表
+    setup: [{activate: true, key: "cmd+q"}]
+    check: {screen_contains: ["分段", "单段", "计次", "Lap"]}   # corrected after run 1: this macOS labels the stopwatch 分段/单段
+  - id: midi-studio
+    app: 音频MIDI设置
+    goal: 在音频 MIDI 设置里打开 MIDI 工作室
+    setup: [{close_untitled: ["MIDI"], dont_save: []}]   # the app restores the studio window on launch
+    check: {window_contains: ["MIDI工作室", "MIDI 工作室", "MIDI Studio"]}   # corrected after run 1: no space in the title
+    cleanup: [{activate: true, key: "cmd+w"}]
+  - id: disk-all-devices
+    app: 磁盘工具
+    goal: 在磁盘工具里显示所有设备，而不只是宗卷
+    setup: [{activate: true, key: "cmd+1"}]
+    check: {screen_contains: ["APPLE SSD", "Apple SSD"]}
+    cleanup: [{activate: true, key: "cmd+1"}]
+  - id: sysinfo-memory
+    app: 系统信息
+    goal: 在系统信息里查看内存的信息
+    setup: [{activate: true, key: "cmd+q"}]
+    check: {screen_contains: ["LPDDR"]}
+  - id: script-editor-dictionary
+    app: 脚本编辑器
+    goal: 在脚本编辑器里查看 Safari 的脚本字典
+    setup: [{activate: true, key: "escape"}, {key: "escape"}]
+    check: {window_contains: ["Safari"]}
+    cleanup: [{activate: true, key: "cmd+w"}]
+  - id: safari-open-url
+    app: Safari浏览器
+    goal: 在 Safari 里打开 example.org
+    inputs: {url: example.org}
+    check: {window_contains: ["Example Domain"]}
+    cleanup: [{activate: true, key: "cmd+w"}]
+  - id: maps-search
+    app: 地图
+    goal: 在地图里搜索天安门
+    inputs: {text: 天安门}
+    check: {screen_contains: ["天安门广场", "Tiananmen Square"]}
+  - id: colorsync-calculator
+    app: 色彩同步实用工具
+    goal: 在色彩同步实用工具里打开颜色计算器
+    setup: [{activate: true, key: "cmd+w"}]
+    check: {screen_contains: ["RGB", "CMYK"], window_contains: ["计算器", "Calculator"]}

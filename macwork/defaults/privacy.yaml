@@ -1,0 +1,17 @@
+# Everything the decider sees passes through here first, on this Mac.
+redact:
+  enabled: true
+  entities: [PERSON, PLACE, ORG]       # on-device NaturalLanguage (via the helper)
+  patterns:                            # name -> regex; matches become ⟦NAME_n⟧, stable within a task
+    EMAIL: '[\w.+-]+@[\w-]+(?:\.[\w-]+)+'
+    PHONE: '(?<![\d])(?:\+?\d{1,3}[ -]?)?1[3-9]\d{9}(?![\d])|(?<![\d])\(?\d{3}\)?[ -]\d{3,4}[ -]\d{4}(?![\d])'
+    IDNUM: '(?<![\dA-Za-z])\d{17}[\dXx](?![\dA-Za-z])'
+    CARD: '(?<![\d])(?:\d{4}[ -]?){3}\d{1,7}(?![\d])'
+    IP: '(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])'
+    ADDRESS: '\d{1,6}\s+(?:[A-Z][A-Za-z]+\s+){1,4}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Parkway|Pkwy|Lane|Ln|Drive|Dr|Way|Court|Ct|Place|Pl)\b\.?|[\u4e00-\u9fff]{1,12}(?:路|街|大道|道|巷|弄|胡同)\d+(?:号|號)(?:[\u4e00-\u9fff\d]{0,12}(?:室|楼|栋|单元))?'
+  replace:                             # regex -> fixed text
+    '/Users/[^/\s]+': '~'
+  names: []                            # names always hidden (backs up the tagger, which misses some)
+  max_clauses: 600                     # clauses tagged per request
+  never_send: []                       # regexes; a field matching one is withheld entirely
+  keep: []                             # exact strings never redacted (e.g. app names NaturalLanguage mistakes for people)

@@ -1,0 +1,63 @@
+# What the engine may do on its own. Matching is on "<verb> <label> <context>" of an affordance.
+#
+# confirm.categories is the safety floor. Its words only *find candidates* (they are ambiguous: 下载 is both
+# "download" and the Downloads folder, 替换 both "replace the file" and a text replacement setting); a candidate
+# is then classified by the decider from what the action is and where it sits — never from screen text, so
+# content on a page cannot talk it out of the floor. Only "it just opens, shows or navigates" at
+# >= release_threshold releases it; anything else asks the user, or is dropped when the goal never called for it.
+# Every release is written to the audit log. Direct step-level use (mac_act) and routine replay use the words alone.
+confirm:
+  mode: caller              # caller: return need_confirm | never: act without asking (not recommended)
+  release_threshold: 0.9
+  classify_nondescript_over: 0.3   # screen risk above which unlabeled clicks and prompt buttons are classified too
+  navigate: >-
+    it only opens, shows, selects, plays or navigates to something (a folder, a page, a view, a setting, a list
+    item, a song); nothing is deleted, sent, paid, installed, granted, agreed to, saved, run, quit or changed
+  enter: >-
+    it only enters text into a field or a document (a name, a search, a note); the text is not run as a command and
+    nothing is sent or saved by typing it
+  categories:
+    delete:
+      what: it deletes, erases, removes, trashes or discards something
+      patterns: ['(?i)\b(delete|remove|erase|trash|discard)\b', '删除|移除|抹掉|废纸篓|丢弃|不存储|不保存']
+    send:
+      what: it sends, posts, publishes, shares or submits something to other people or a service
+      patterns: ['(?i)\b(send|submit|post|publish|share)\b', '发送|提交|发布|分享']
+    pay:
+      what: it pays, buys, orders or transfers money
+      patterns: ['(?i)\b(pay|purchase|buy|order|transfer)\b', '付款|支付|购买|下单|转账']
+    account:
+      what: it signs in, signs out, registers, creates an account or authorizes an app
+      patterns: ['(?i)\b(log ?in|log ?out|sign ?in|sign ?out|sign ?up|register|create account|authorize|continue with (google|apple|microsoft|github))\b',
+                 '登录|登入|退出登录|注销|注册|授权|创建账户']
+    grant:
+      what: it grants a permission or access to something
+      patterns: ['(?i)(?<!don.t )(?<!not )\ballow\b', '(?<!不)允许']
+    agree:
+      what: it agrees to terms or accepts a licence or conditions
+      patterns: ['(?i)\b(agree|accept)\b', '同意|接受']
+    software:
+      what: it installs, updates, upgrades or uninstalls software
+      patterns: ['(?i)\b(install|update|upgrade|uninstall)\b', '安装|更新|升级|卸载']
+    system:
+      what: it quits an app, restarts, shuts down, logs out of the Mac or formats a disk
+      patterns: ['(?i)\b(quit|shut ?down|restart|format)\b', '退出|关机|重新启动|重启|格式化']
+    write:
+      what: it saves, overwrites, replaces or exports a file
+      patterns: ['(?i)\b(save|save as|overwrite|replace|replace all|export)\b', '保存|存储|存为|覆盖|替换|全部替换|导出']
+    clipboard:
+      what: it pastes whatever is on the clipboard
+      patterns: ['(?i)\bpaste\b', '粘贴']
+    execute:
+      what: it runs a command, a script or program code (in a terminal, a console or through an app's scripting)
+      patterns: ['(?i)\b(shell|script|scripting|terminal|command line|execute|eval|sudo)\b', '脚本|终端|命令行|执行']
+  patterns: []              # extra floor patterns without a category ("irreversible or outward-facing")
+  screen_gate_exempt: [web]   # channels that never touch the screen; every other one obeys a risky screen
+deny:
+  host_app: true            # never touch the app the caller runs in (the terminal or client this engine lives under)
+  bundle_ids: []            # apps the engine must never touch
+  patterns: []              # affordances it must never use (regex)
+allow:
+  bundle_ids: []            # empty = every app
+  raw_applescript: false    # act(channel=script) with caller-supplied AppleScript
+  sdef_commands: true       # commands an app declares in its scripting dictionary (values are passed as typed literals)

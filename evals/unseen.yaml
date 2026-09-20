@@ -1,0 +1,75 @@
+# Tasks on apps the engine was never tuned for. Every task is harmless: nothing is saved, sent, bought or
+# deleted; documents opened for typing are closed without saving in `cleanup`.
+settle_s: 0.8
+fresh: true      # no learned routines, empty app models: measure reasoning on unseen apps, not recall
+dont_save: &dont_save ["删除", "不存储", "不保存", "Delete", "Don't Save", "Don’t Save", "否"]
+untitled: &untitled ["未命名", "Untitled", "untitled"]
+tasks:
+  - id: calc-multiply
+    app: 计算器
+    goal: 用计算器算 23×47
+    setup: [{activate: true, key: "escape"}, {key: "escape"}]
+    check: {screen_contains: ["1,081", "1081"]}
+  - id: calc-scientific
+    app: 计算器
+    goal: 把计算器切换到科学计算模式
+    setup: [{activate: true, key: "cmd+1"}]
+    check: {screen_contains: ["sin", "正弦", "cos", "余弦"]}
+    cleanup: [{key: "cmd+1"}]
+  - id: textedit-type
+    app: 文本编辑
+    goal: 新建一个空白文稿，在里面输入 hello jev
+    inputs: {text: hello jev}
+    check: {screen_contains: ["hello jev"]}
+    setup: [{close_untitled: *untitled, dont_save: *dont_save}]
+    cleanup: [{close_untitled: *untitled, dont_save: *dont_save}]
+  - id: finder-downloads
+    app: 访达
+    goal: 在访达里打开“下载”文件夹
+    setup: [{activate: true, key: "cmd+w"}, {key: "cmd+w"}, {key: "cmd+w"}]
+    check: {window_contains: ["下载", "Downloads"]}
+    cleanup: [{key: "cmd+w"}]
+  - id: settings-displays
+    app: 系统设置
+    goal: 打开系统设置里的“显示器”设置
+    setup: [{activate: true, key: "cmd+q", wait: 1.5}]   # no documents: quitting leaves nothing behind
+    check: {window_contains: ["显示器", "Displays"]}
+  - id: dictionary-lookup
+    app: 词典
+    goal: 在词典里查 serendipity 这个词
+    setup: [{activate: true, key: "cmd+w"}, {key: "cmd+n"}]
+    inputs: {text: serendipity}
+    check: {screen_contains: ["serendipity"]}
+  - id: activity-memory
+    app: 活动监视器
+    goal: 在活动监视器里切换到“内存”页面
+    setup: [{activate: true, key: "cmd+q", wait: 1.5}]   # no documents: quitting leaves nothing behind
+    check: {screen_contains: ["内存压力", "Memory Pressure"]}
+  - id: fontbook-search
+    app: 字体册
+    goal: 在字体册里搜索 Helvetica 字体
+    setup: [{activate: true, key: "cmd+q", wait: 1.5}]   # no documents: quitting leaves nothing behind
+    inputs: {text: Helvetica}
+    check: {screen_contains: ["Helvetica"]}
+  - id: chrome-open-url
+    app: Google Chrome
+    goal: 在 Chrome 里打开 example.com
+    inputs: {text: example.com, url: "https://example.com"}
+    check: {window_contains: ["Example Domain"]}
+    cleanup: [{key: "cmd+w"}]
+  - id: vlc-about
+    app: VLC
+    goal: 打开 VLC 的“关于”窗口
+    setup: [{activate: true, key: "cmd+q", wait: 1.5}]   # no documents: quitting leaves nothing behind
+    check: {window_contains: ["VLC", "关于", "About"]}
+    cleanup: [{key: "cmd+w"}]
+  - id: numbers-blank
+    app: Numbers表格
+    goal: 用 Numbers 新建一个空白表格
+    check: {window_contains: ["未命名", "Untitled"]}
+    setup: [{close_untitled: *untitled, dont_save: *dont_save}]
+    cleanup: [{close_untitled: *untitled, dont_save: *dont_save}]
+  - id: web-release-date
+    goal: 查一下 Python 3.14 的正式发布日期
+    inputs: {query: Python 3.14 release date}
+    check: {output_contains: ["2025"]}

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macwork"
+version = "0.1.0"
+description = "Take over a Mac through native interfaces (menus, Accessibility, apps, files, web) with TypeSafe Jev making the fast decisions."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "typesafe-sdk>=0.7",
+    "mcp>=2.0",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+web = ["playwright>=1.40", "requests>=2.28"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+macwork = "macwork.cli:main"
+
+# Third-party providers/channels/deciders plug in here without touching this package.
+[project.entry-points."macwork.providers"]
+[project.entry-points."macwork.channels"]
+[project.entry-points."macwork.deciders"]
+
+[tool.setuptools.packages.find]
+include = ["macwork*"]
+
+[tool.setuptools.package-data]
+macwork = ["defaults/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

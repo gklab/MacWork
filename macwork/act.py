@@ -1,0 +1,329 @@
+"""Channels execute affordances. Each is ``(ctx, affordance, params) -> Outcome``; register more with
+``@channel("name")`` or the ``macwork.channels`` entry point. Executors report which app to watch for
+the effect; the engine does the waiting and the judging.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import tempfile
+import time
+from dataclasses import dataclass, field
+from importlib.metadata import entry_points
+from typing import Any, Callable
+
+from .helper import HelperError
+from .model import Affordance
+from .observe import Ctx
+
+
+@dataclass
+class Outcome:
+    ok: bool
+    watch_pid: int | None = None         # app whose UI events show the effect
+    target: dict[str, Any] | None = None # new app to work in (after switching/opening)
+    output: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    wait: bool = True                    # False: the effect is not a UI change worth waiting for
+    final: bool = False                  # the result itself answers the goal (e.g. web research)
+
+
+Channel = Callable[[Ctx, Affordance, dict[str, Any]], Outcome]
+CHANNELS: dict[str, Channel] = {}
+
+
+def channel(name: str) -> Callable[[Channel], Channel]:
+    def reg(fn: Channel) -> Channel:
+        CHANNELS[name] = fn
+        return fn
+    return reg
+
+
+def get_channel(name: str) -> Channel | None:
+    if name in CHANNELS:
+        return CHANNELS[name]
+    for ep in entry_points(group="macwork.channels"):
+        if ep.name == name:
+            CHANNELS[name] = ep.load()
+            return CHANNELS[name]
+    return None
+
+
+def _frontmost(ctx: Ctx) -> dict[str, Any] | None:
+    return (ctx.helper.call("apps.frontmost") or {}).get("app")
+
+
+class NotInFront(RuntimeError):
+    pass
+
+
+def _bring_forward(ctx: Ctx, pid: int) -> None:
+    """Keystrokes go to whatever app is frontmost, so before typing the target MUST be in front — verified, not
+    assumed. Accessibility activation first, LaunchServices second; if neither works, nothing is typed.
+    Taking the front app away is only allowed while the user is not using the Mac (see Engine.take_hands)."""
+    if ctx.hands is not None and not ctx.hands():
+        raise NotInFront("the Mac is in use: the front app was left alone")
+    def front_pid() -> int | None:
+        return (_frontmost(ctx) or {}).get("pid")
+
+    if front_pid() == pid:
+        return
+    wait = float(ctx.cfg.get("engine.activate_wait_s", 1.5))
+    ctx.helper.call("apps.activate", pid=pid)
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if front_pid() == pid:
+            return
+        time.sleep(0.1)
+    app = next((a for a in ctx.running or ctx.helper.call("apps.running") if a.get("pid") == pid), None)
+    if app and (app.get("path") or app.get("bundle_id")):   # LaunchServices may activate where a background process cannot
+        subprocess.run(["open", "-a", app["path"]] if app.get("path") else ["open", "-b", app["bundle_id"]], capture_output=True, timeout=10, check=False)
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if front_pid() == pid:
+                time.sleep(float(ctx.cfg.get("engine.activate_settle_s", 0.3)))   # let its key window take focus
+                return
+            time.sleep(0.1)
+    raise NotInFront(f"could not bring {(app or {}).get('name', pid)} to the front; nothing was typed")
+
+
+def _utf16(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _type(ctx: Ctx, text: str) -> None:
+    ctx.helper.call("input.type", text=text, non_ascii=str(ctx.cfg.get("input.non_ascii", "paste")), timeout=60)
+
+
+def _focus_field(ctx: Ctx, t: dict[str, Any]) -> None:
+    """Give a field keyboard focus: click it like a person where its frame is known (some apps ignore AX focus)."""
+    f = t.get("frame")
+    if ctx.cfg.get("input.focus_by_click", True) and f and f[2] > 2 and f[3] > 2:
+        ctx.helper.call("input.click", x=f[0] + f[2] / 2, y=f[1] + f[3] / 2)
+        time.sleep(0.15)
+        return
+    try:
+        ctx.helper.call("ax.set", ref=t["ref"], attribute="AXFocused", value=True)
+    except HelperError:
+        ctx.helper.call("ax.perform", ref=t["ref"], action="AXPress")
+
+
+@channel("app")
+def app_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    t = a.target
+    if a.verb == "activate":
+        ctx.helper.call("apps.activate", pid=t["pid"])
+        return Outcome(True, watch_pid=t["pid"], target={"pid": t["pid"], "name": t.get("name"), "bundle_id": t.get("bundle_id")})
+    if a.verb == "reopen":          # like clicking its Dock icon: LaunchServices sends the app a reopen event
+        r = subprocess.run(["open", "-a", t["path"]], capture_output=True, text=True, timeout=15, check=False)
+        return Outcome(r.returncode == 0, watch_pid=t["pid"], error=(r.stderr or "").strip()[:200] or None)
+    r = subprocess.run(["open", "-a", t["path"]], capture_output=True, text=True, timeout=15, check=False)
+    if r.returncode != 0:
+        return Outcome(False, error=r.stderr.strip()[:200] or "open failed")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:   # wait for the process so later steps can talk to it
+        for app in ctx.helper.call("apps.running"):
+            if app.get("path") == t["path"] or (t.get("bundle_id") and app.get("bundle_id") == t["bundle_id"]):
+                return Outcome(True, watch_pid=app["pid"], target={"pid": app["pid"], "name": app.get("name"), "bundle_id": app.get("bundle_id")})
+        time.sleep(0.2)
+    return Outcome(False, error="app did not start")
+
+
+@channel("menu")
+def menu_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    ctx.helper.call("ax.perform", ref=a.target["ref"], action="AXPress")
+    return Outcome(True, watch_pid=a.target["pid"])
+
+
+@channel("window")
+def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    t = a.target
+    if a.verb == "raise":           # bring another window of the app to the front
+        ctx.helper.call("ax.perform", ref=t["ref"], action="AXRaise")
+        _bring_forward(ctx, t["pid"])
+        return Outcome(True, watch_pid=t["pid"])
+    if a.verb in ("select_text", "cursor_end"):   # a range of a document's text (AX counts UTF-16 units)
+        value = str(ctx.helper.call("ax.get", ref=t["ref"], attribute="AXValue").get("value") or "")
+        if a.verb == "cursor_end":
+            loc, length = _utf16(value), 0
+        else:
+            want = str(params.get("selection", ""))
+            i = value.find(want) if want else -1
+            if i < 0:
+                i = value.casefold().find(want.casefold()) if want else -1
+            if i < 0:
+                return Outcome(False, error=f"「{want[:40]}」 is not in that text", wait=False)
+            loc, length = _utf16(value[:i]), _utf16(value[i:i + len(want)])
+        _bring_forward(ctx, t["pid"])
+        try:
+            ctx.helper.call("ax.set", ref=t["ref"], attribute="AXFocused", value=True)
+        except HelperError:
+            pass
+        ctx.helper.call("ax.set_range", ref=t["ref"], location=loc, length=length)
+        return Outcome(True, watch_pid=t["pid"])
+    if a.verb == "select":          # a row in a list/table/outline: select it; click it where selecting is refused
+        try:
+            ctx.helper.call("ax.set", ref=t["ref"], attribute="AXSelected", value=True)
+        except HelperError:
+            f = t.get("frame")
+            if not f:
+                raise
+            _bring_forward(ctx, t["pid"])
+            ctx.helper.call("input.click", x=f[0] + min(f[2] / 2, 60), y=f[1] + f[3] / 2)
+        return Outcome(True, watch_pid=t["pid"])
+    if a.verb not in ("type", "type_submit"):
+        ctx.helper.call("ax.perform", ref=t["ref"], action=t.get("action") or "AXPress")
+        return Outcome(True, watch_pid=t.get("watch") or t["pid"])   # a prompt over the app: watch the app
+    text = str(params.get("text", ""))
+    if a.verb == "type_submit":   # real keystrokes: apps like browsers ignore a value set behind their back
+        _bring_forward(ctx, t["pid"])
+        _focus_field(ctx, t)
+        ctx.helper.call("input.key", combo="cmd+a")
+        _type(ctx, text)
+        time.sleep(0.1)
+        ctx.helper.call("input.key", combo="return")
+        return Outcome(True, watch_pid=t["pid"])
+    # like a person: focus the field, select what is in it, type. Setting the value behind the app's back looks
+    # right in the Accessibility tree but many fields never hear of it (Finder's "Go to Folder", browser address
+    # bars): the app keeps using its old text. The direct set is only the fallback when the app cannot be brought
+    # to the front (it also never touches the clipboard).
+    if not ctx.cfg.get("input.set_value_first", False):
+        try:
+            _bring_forward(ctx, t["pid"])
+            _focus_field(ctx, t)
+            ctx.helper.call("input.key", combo="cmd+a")
+            _type(ctx, text)
+            return Outcome(True, watch_pid=t["pid"])
+        except NotInFront:
+            pass
+    try:
+        ctx.helper.call("ax.set", ref=t["ref"], attribute="AXValue", value=text)
+        if t.get("secure") or ctx.helper.call("ax.get", ref=t["ref"], attribute="AXValue").get("value") == text:
+            ctx.helper.call("ax.set", ref=t["ref"], attribute="AXFocused", value=True)
+            return Outcome(True, watch_pid=t["pid"])
+    except HelperError:
+        pass
+    _bring_forward(ctx, t["pid"])
+    _focus_field(ctx, t)
+    ctx.helper.call("input.key", combo="cmd+a")
+    _type(ctx, text)
+    return Outcome(True, watch_pid=t["pid"])
+
+
+@channel("keys")
+def keys_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    if ctx.app:
+        _bring_forward(ctx, ctx.app["pid"])
+    if a.verb in ("type", "type_submit"):
+        _type(ctx, str(params.get("text", "")))
+        if a.verb == "type_submit":
+            ctx.helper.call("input.key", combo="return")
+        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+    ctx.helper.call("input.key", combo=a.target["combo"])
+    return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+
+
+@channel("shortcut")
+def shortcut_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    cmd = ["shortcuts", "run", a.target["name"]]
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=True) as f:
+        if params.get("input"):
+            f.write(str(params["input"]))
+            f.flush()
+            cmd += ["--input-path", f.name]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    return Outcome(r.returncode == 0, output={"stdout": r.stdout[:2000]} if r.stdout else {},
+                   error=r.stderr.strip()[:200] or None, wait=False)
+
+
+@channel("file")
+def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    args = ["open", "-R", a.target["path"]] if a.verb == "reveal" else ["open", a.target["path"]]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=15, check=False)
+    time.sleep(0.4)
+    front = _frontmost(ctx) or {}
+    return Outcome(r.returncode == 0, watch_pid=front.get("pid"), error=r.stderr.strip()[:200] or None,
+                   target={"pid": front["pid"], "name": front.get("name"), "bundle_id": front.get("bundle_id")} if front.get("pid") else None)
+
+
+@channel("web")
+def web_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    from .web import research
+
+    res = research(ctx.cfg, ctx.gate, ctx.redactor, goal=ctx.goal,
+                   query=str(ctx.inputs.get("query") or ""), url=str(ctx.inputs.get("url") or ""), cache=ctx.cache)
+    # what was found goes back to the decider as evidence; whether it answers the goal is its judgement, not ours
+    return Outcome(res.get("status") in ("found", "done"), output={"web": res}, error=res.get("error"), wait=False)
+
+
+@channel("script")
+def script_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    if not ctx.cfg.policy.get("allow", {}).get("raw_applescript"):
+        return Outcome(False, error="raw AppleScript is disabled by policy (allow.raw_applescript)", wait=False)
+    res = ctx.helper.call("script.applescript", source=str(params.get("source", "")), timeout=60)
+    return Outcome(True, output={"result": res.get("result")}, watch_pid=(ctx.app or {}).get("pid"))
+
+
+def _as_literal(value: Any, typ: str) -> str:
+    """A caller-supplied value as an AppleScript literal of the declared type (never raw code)."""
+    t = (typ or "text").split("|")[0]
+    s = str(value)
+    if t in ("integer", "real", "number"):
+        float(s)                       # raises on anything that is not a number
+        return s
+    if t == "boolean":
+        return "true" if s.strip().lower() in ("1", "true", "yes", "on") else "false"
+    esc = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'POSIX file "{esc}"' if t == "file" else f'"{esc}"'
+
+
+@channel("script_cmd")
+def script_cmd_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    """A command from the app's own scripting dictionary, e.g. `playpause` or `open location "…"`."""
+    if not ctx.cfg.policy.get("allow", {}).get("sdef_commands", True):
+        return Outcome(False, error="scripting commands are disabled by policy (allow.sdef_commands)", wait=False)
+    t = a.target
+    parts = [t["command"]]
+    try:
+        if t.get("direct") and "direct" in params:
+            parts.append(_as_literal(params["direct"], t["direct"]["type"]))
+        for p in t.get("params", []):
+            key = re.sub(r"\W+", "_", p["name"])
+            if key in params:
+                parts.append(f"{p['name']} {_as_literal(params[key], p['type'])}")
+    except ValueError as exc:
+        return Outcome(False, error=f"bad parameter: {exc}", wait=False)
+    source = f'tell application id "{t["bundle_id"]}"\n{" ".join(parts)}\nend tell'
+    try:
+        res = ctx.helper.call("script.applescript", source=source, timeout=60)
+    except HelperError as exc:
+        return Outcome(False, error=str(exc)[:300], wait=False)
+    return Outcome(True, output={"result": res.get("result")} if res.get("result") else {}, watch_pid=(ctx.app or {}).get("pid"))
+
+
+@channel("menusearch")
+def menusearch_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    """Open the menu that holds the search field and type the words; matches appear as menu items to pick next."""
+    t = a.target
+    _bring_forward(ctx, t["pid"])
+    ctx.helper.call("ax.perform", ref=t["menu_ref"], action="AXPress")
+    time.sleep(0.2)
+    try:
+        ctx.helper.call("ax.set", ref=t["field_ref"], attribute="AXValue", value=str(params.get("text", "")))
+    except HelperError:
+        ctx.helper.call("input.type", text=str(params.get("text", "")))
+    return Outcome(True, watch_pid=t["pid"])
+
+
+@channel("pointer")
+def pointer_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    """Click a point found by vision (only used where the Accessibility tree had nothing better)."""
+    t = a.target
+    if ctx.app:
+        _bring_forward(ctx, ctx.app["pid"])
+    if a.verb == "drag":            # from one element to another (a planner suggestion, resolved on the live screen)
+        ctx.helper.call("input.drag", x1=float(t["x1"]), y1=float(t["y1"]), x2=float(t["x2"]), y2=float(t["y2"]))
+        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+    ctx.helper.call("input.click", x=float(t["x"]), y=float(t["y"]), count=int(t.get("count", 1)))
+    return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
