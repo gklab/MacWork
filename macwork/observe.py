@@ -580,13 +580,20 @@ def _where_in(f: list[int], win: list[int] | None, words: list[str]) -> str:
     return words[row * 3 + col]
 
 
-def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any]) -> dict[str, Any] | None:
-    """Read the window on-device; the same window content is read once (keyed by its Accessibility fingerprint)."""
+def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False) -> dict[str, Any] | None:
+    """Read the window on-device; the same window content is read once (keyed by its Accessibility fingerprint).
+
+    Except on a canvas, where that key is worthless: an app that draws its own content changes everything on
+    screen without one Accessibility node changing, so scrolling a canvas and reading it again would have
+    returned the text from before the scroll. There, anything the engine did counts as a change.
+    """
     cache: dict[Any, Any] = ctx.cache.setdefault("vision.ocr", {})
     try:
         fp = ctx.helper.call("ax.fingerprint", pid=ctx.app["pid"], poll_nodes=int(vc.get("fingerprint_nodes", 400))).get("fingerprint")
     except HelperError:
         fp = None
+    if sparse:
+        fp = (fp, ctx.cache.get("actions_done", 0))
     hit = cache.get((ctx.app["pid"], fp)) if fp is not None else None
     if hit is not None:
         obs.notes["vision_cached"] = True
@@ -609,10 +616,68 @@ def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any]) -> dict[str, Any] | Non
     return res
 
 
+def _right_click_by_name(ctx: Ctx, obs: Observation, vc: dict[str, Any], boxes: list[dict[str, Any]]) -> None:
+    """The secondary button, aimed by naming something that was read off the screen.
+
+    One option, not one per spot: which text to aim at is a slot, the way dragging already works. Offering
+    it per spot would double a canvas window's options against the budget that is already the scarce thing.
+    Where the tree does describe an element, it offers `AXShowMenu` itself and this is not needed.
+    """
+    if not boxes or not vc.get("offer_right_click", True):
+        return
+    spots = {b["text"]: b["frame"] for b in boxes if b.get("text") and b.get("frame")}
+    if not spots:
+        return
+    obs.affordances.append(Affordance(
+        f"pc{len(obs.affordances)}", "pointer", "click_named",
+        str(vc.get("right_click_label") or "open the context menu on something read from the screen"),
+        {"spots": spots, "button": "right"},
+        slots={"what": Slot("text", "the text on screen to aim at")}, context=(ctx.app or {}).get("name", "")))
+
+
+@provider("wheel")
+def wheel(ctx: Ctx, obs: Observation) -> None:
+    """The scroll wheel, over whichever window is being worked in.
+
+    This deliberately asks nothing about the window first. Deciding "is this a canvas, so does it need the
+    wheel?" was tried and both ways of deciding it were wrong when measured: by geometry, one text area
+    covering a terminal swallowed all 63 things read from it and the window looked fully described; by text,
+    `screen_text` is a capped summary, so 62 of those 63 looked missing from it. A threshold picked to make
+    those two come out right would be a guess about windows, which is the kind of knowledge that does not
+    belong here.
+
+    There is nothing to decide. The wheel is two options, not one per anything, and whether a given window
+    scrolls is answered by scrolling it: the loop already records an action that changed nothing and never
+    offers it again. `AXScrollDownByPage` is still offered wherever an app implements it — this is for the
+    windows that do not, which is every app that draws its own content.
+    """
+    wc = ctx.cfg.section("observe.wheel")
+    frame = obs.notes.get("window_frame")
+    if not ctx.app or not wc.get("enabled", True) or not frame:
+        return
+    lines = int(wc.get("lines", 5))
+    name = ctx.app.get("name", "")
+    for how, dy in (("down", -lines), ("up", lines)):
+        obs.affordances.append(Affordance(
+            f"w{how}", "pointer", "scroll", f"scroll {how} in this window with the wheel",
+            {"window_frame": list(frame), "dy": dy}, context=name))
+
+
 @provider("vision")
 def vision(ctx: Ctx, obs: Observation) -> None:
     """For what the Accessibility tree cannot say: read the window on-device (OCR) to name unlabeled controls,
-    and, when the tree is sparse (canvas/custom-drawn UIs), offer the text on screen as click targets."""
+    and, where the tree describes nothing, offer what is on the screen as targets.
+
+    How "the tree describes nothing" is decided used to be a count: fewer than eight actionable nodes in the
+    window. That is a number somebody picked, and measuring it against real windows showed what it costs —
+    an editor that draws its own text had 477 actionable nodes in its surrounding chrome and none at all in
+    the part the task is about, so it counted as well described and the pointer was never offered for the
+    one region that needed it.
+
+    What is actually being asked is whether anything can be read that the tree cannot reach, and that is not
+    a guess: OCR gives boxes, the tree gives frames, and the boxes inside no frame are the answer. Both
+    signals are kept — a window with no tree at all is still a canvas even before anything is read.
+    """
     vc = ctx.cfg.section("observe.vision")
     mode = vc.get("mode", "auto")
     if not ctx.app or mode == "never":
@@ -622,19 +687,22 @@ def vision(ctx: Ctx, obs: Observation) -> None:
     if obs.notes.get("open_windows") == [] or obs.notes.get("window_not_answering"):
         return
     unlabeled = obs.notes.get("unlabeled", [])
-    sparse = int(obs.notes.get("window_actionable", 0)) < int(vc.get("sparse_below", 8))
-    if mode == "auto" and not sparse and not unlabeled:
-        return
+    empty = int(obs.notes.get("window_actionable", 0)) < int(vc.get("sparse_below", 8))
     key = f"{ctx.app['pid']}|{obs.window}"
+    # what reading this window last told us about it: a window whose content the tree cannot describe stays
+    # that way while the app does, and finding that out costs a read
+    known_canvas = key in ctx.cache.setdefault("vision.canvas", set())
+    if mode == "auto" and not empty and not unlabeled and not known_canvas:
+        return
     # "this task asked to read that window" is that task's business; kept globally, one task's choice made
     # every later task OCR the same window for the life of the process
     wanted = ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set())
-    if mode == "auto" and not sparse and vc.get("on_demand", True) and key not in wanted:
+    if mode == "auto" and not empty and not known_canvas and vc.get("on_demand", True) and key not in wanted:
         # the tree names most things: reading the screen for the rest costs ~0.3 s, so it happens when asked for
         obs.affordances.append(Affordance("vr", "vision", "reveal", f"read the {len(unlabeled)} controls without a label in this window "
                                           "from the screen (to see what they are)", {"key": key}, context=ctx.app.get("name", "")))
         return
-    res = _ocr(ctx, obs, vc)
+    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas)
     if res is None:
         return
     boxes = res.get("boxes", [])
@@ -679,19 +747,29 @@ def vision(ctx: Ctx, obs: Observation) -> None:
                 obs.notes["describer_error"] = str(exc)[:120]
         obs.affordances.append(Affordance(f"v{len(obs.affordances)}", "window", "press", label,
                                           {"ref": u["ref"], "pid": u["pid"], "action": u.get("action"), "frame": f}, context=u.get("context", "")))
-    if sparse:
-        taken = [a.target["frame"] for a in obs.affordances if a.channel == "window" and a.target.get("frame")]
-        for b in boxes[: int(vc.get("max_text_targets", 80))]:
-            if any(_inside(b["frame"], t) for t in taken):
-                continue   # already reachable through the Accessibility tree
+    # Which of what was read is out of the tree's reach. `taken` is every frame the tree did reach, including
+    # the unlabeled controls just named above — naming one does not make its text a separate target.
+    taken = [a.target["frame"] for a in obs.affordances if a.channel == "window" and a.target.get("frame")]
+    uncovered = [b for b in boxes if b.get("frame") and not any(_inside(b["frame"], t) for t in taken)]
+    canvas = len(uncovered) >= int(vc.get("canvas_min_texts", 6))
+    obs.notes["vision_uncovered"] = len(uncovered)
+    if canvas:
+        ctx.cache["vision.canvas"].add(key)
+    elif known_canvas:
+        ctx.cache["vision.canvas"].discard(key)     # the app grew a tree (or the window changed): stop paying
+    if empty or canvas:
+        for b in uncovered[: int(vc.get("max_text_targets", 80))]:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
                                               {"x": x, "y": y, "frame": b["frame"]}))
+        _right_click_by_name(ctx, obs, vc, boxes)
         # right-to-left text read left-to-right comes back as a different sentence, so which way a line runs
         # is asked of the system (Locale.characterDirection for the languages actually recognised)
         rtl = res.get("direction") == "rtl"
-        lines = [b["text"] for b in sorted(boxes, key=lambda b: (b["frame"][1] // 12,
-                                                                 -b["frame"][0] if rtl else b["frame"][0]))]
+        # only the part the tree could not say: what it could say is already in screen_text, and putting it
+        # in twice spends the budget on repeating itself
+        lines = [b["text"] for b in sorted(uncovered, key=lambda b: (b["frame"][1] // 12,
+                                                                     -b["frame"][0] if rtl else b["frame"][0]))]
         obs.screen_text = "\n".join(filter(None, [obs.screen_text] + lines))[: int(ctx.cfg.get("observe.window.screen_text_chars", 1500))]
     obs.notes.pop("_vision_spots", None)   # internal: notes go back to MCP clients as JSON
     obs.notes["vision_ms"] = res.get("ms")
@@ -954,7 +1032,10 @@ def files(ctx: Ctx, obs: Observation) -> None:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
         pp = Path(p)
         obs.affordances.append(Affordance(f"f{i}", "file", "open", f"open file 「{pp.name}」 in {pp.parent} (modified {when})", {"path": p}))
-        obs.affordances.append(Affordance(f"F{i}", "file", "reveal", f"show 「{pp.name}」 in Finder", {"path": p}))
+        # "in Finder" was the one app name written into this repo, and it is 访达 on this Mac. The action is
+        # `open -R`, which asks the system to reveal the file — the system picks who does that. Say what it
+        # does, not who it opens.
+        obs.affordances.append(Affordance(f"F{i}", "file", "reveal", f"show where 「{pp.name}」 is on disk", {"path": p}))
         # what a file says can be read without opening it in anything, and becomes a fact of the task
         obs.affordances.append(Affordance(f"R{i}", "file", "read", f"read the text of 「{pp.name}」", {"path": p}))
 

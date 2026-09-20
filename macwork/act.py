@@ -351,7 +351,13 @@ def menusearch_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outco
 
 @channel("pointer")
 def pointer_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
-    """Click a point found by vision (only used where the Accessibility tree had nothing better)."""
+    """Act on a point rather than on an element: for windows the Accessibility tree cannot describe.
+
+    A canvas app — an editor that draws its own text, a design tool, a game — publishes a window and nothing
+    inside it. What is there can still be read (on-device OCR), and what can be read can be pointed at. This
+    is the channel for that, and it is deliberately the last resort: a point is not an element, so nothing
+    here can be verified by reading a value back, and the window moving invalidates every coordinate.
+    """
     t = a.target
     if ctx.app:
         _bring_forward(ctx, ctx.app["pid"])
@@ -370,5 +376,19 @@ def pointer_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
             return Outcome(False, error=f"「{params.get(missing)}」 is not on screen", wait=False)
         ctx.helper.call("input.drag", x1=start[0], y1=start[1], x2=end[0], y2=end[1])
         return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
-    ctx.helper.call("input.click", x=float(t["x"]), y=float(t["y"]), count=int(t.get("count", 1)))
+    if a.verb == "scroll":          # a canvas has no scroll area to perform an action on; the wheel still works
+        win = t.get("window_frame") or t.get("frame") or [0, 0, 0, 0]
+        ctx.helper.call("input.scroll", x=win[0] + win[2] / 2, y=win[1] + win[3] / 2, dy=int(t.get("dy", 0)))
+        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+    if a.verb == "click_named":     # the target is named by the caller and looked up among what was read
+        spots = t.get("spots") or {}
+        want = str(params.get("what", ""))
+        frame = spots.get(want) or next((f for label, f in spots.items() if want and want in label), None)
+        if frame is None:
+            return Outcome(False, error=f"「{want}」 is not on screen", wait=False)
+        ctx.helper.call("input.click", x=frame[0] + frame[2] / 2, y=frame[1] + frame[3] / 2,
+                        button=t.get("button", "left"), count=int(t.get("count", 1)))
+        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+    ctx.helper.call("input.click", x=float(t["x"]), y=float(t["y"]),
+                    button=t.get("button", "left"), count=int(t.get("count", 1)))
     return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))

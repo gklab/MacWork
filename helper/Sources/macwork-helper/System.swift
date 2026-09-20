@@ -329,6 +329,35 @@ func inputClick(_ p: Params) throws -> Any {
     return ["ok": true]
 }
 
+/// Scroll where the pointer is put.
+///
+/// A canvas app draws its own content and exposes no Accessibility tree to scroll: `AXScrollDownByPage` is
+/// not there to be performed, and whether Page Down does anything depends on what has keyboard focus. The
+/// wheel is the one way in that does not assume the app implements something — it goes to whatever view is
+/// under the pointer, which is how a mouse works.
+///
+/// Units are lines, the same as a real wheel reports, so "3" means what it means to the app rather than
+/// some pixel count that scrolls a different distance in every app.
+func inputScroll(_ p: Params) throws -> Any {
+    func num(_ k: String) -> Double? { p[k] as? Double ?? (p[k] as? Int).map(Double.init) }
+    guard let x = num("x"), let y = num("y") else { throw RPCError("bad_params", "x, y required") }
+    let dy = Int32(num("dy") ?? 0), dx = Int32(num("dx") ?? 0)
+    guard dy != 0 || dx != 0 else { throw RPCError("bad_params", "dy or dx required") }
+    input.before()
+    defer { input.after() }
+    CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+            mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left)?.post(tap: .cghidEventTap)
+    // in steps: a single large wheel event is treated as a flick by some views and overshoots
+    let steps = max(1, min(abs(Int(dy)) + abs(Int(dx)), p["steps"] as? Int ?? 3))
+    for i in 1...steps {
+        let part: (Int32) -> Int32 = { Int32(round(Double($0) * Double(i) / Double(steps))) - Int32(round(Double($0) * Double(i - 1) / Double(steps))) }
+        CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2,
+                wheel1: part(dy), wheel2: part(dx), wheel3: 0)?.post(tap: .cghidEventTap)
+        usleep(30_000)
+    }
+    return ["ok": true]
+}
+
 /// Drag with the left button from one point to another, in small steps (apps track the movement, not just the ends).
 func inputDrag(_ p: Params) throws -> Any {
     func num(_ k: String) -> Double? { p[k] as? Double ?? (p[k] as? Int).map(Double.init) }

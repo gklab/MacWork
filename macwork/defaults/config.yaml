@@ -31,7 +31,7 @@ helper:
 observe:
   # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
   providers: [window, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
-              focus, typing, apps, shortcuts, files, clipboard, skills, readall, drag]
+              focus, typing, apps, shortcuts, files, clipboard, skills, readall, wheel, drag]
               # focus before typing: "type at the cursor" is labelled with where the cursor turned out to be
               # drag last: it needs the frames
   ax:
@@ -98,7 +98,12 @@ observe:
     include_installed: true
   vision:
     mode: auto                   # auto: only when the AX tree is sparse or has unlabeled controls | always | never
-    sparse_below: 8              # fewer actionable AX elements than this = "sparse"
+    # Two ways a window can be out of the tree's reach, both needed. sparse_below: the tree is empty, known
+    # before anything is read. canvas_min_texts: this many things were read that fall inside no element the
+    # tree offered — the measured version, and the one that matters, because an editor with 477 actionable
+    # nodes in its chrome and none in its editing area counted as "well described" under the count alone.
+    sparse_below: 8              # fewer actionable AX elements than this = nothing to work with
+    canvas_min_texts: 6
     languages: auto              # auto = this Mac's languages, kept to the ones the recogniser supports
     language_correction: false   # it "corrects" towards those languages, and what is read is UI labels,
                                  # file names and code identifiers — where correction is most often wrong
@@ -109,6 +114,10 @@ observe:
     container_min_texts: 2       # an unlabeled container with this many texts in it offers each text as a click target
     max_container_targets: 40
     max_text_targets: 80
+    # A window with no tree in it can still be pointed at. Clicking a particular text is one option per spot
+    # (which one is the decision); these two are the same action wherever aimed, so they are one option each
+    # with a slot — a canvas window's options would otherwise double against the budget that is already scarce.
+    offer_right_click: true
     position_words: [top-left, top, top-right, left, center, right, bottom-left, bottom, bottom-right]
     describer_cmd: null          # optional local command that prints a short description of an image path (e.g. a local VLM)
   sdef:
@@ -118,6 +127,9 @@ observe:
   # The physical keys — the one fixed list this engine is allowed, because these are not knowledge about any
   # app. App commands come from the app's own menus, or from the planner.
   keys: [return, escape, tab, space, delete, up, down, left, right, home, end, pageup, pagedown]
+  wheel:                         # the scroll wheel over the window being worked in: two options, no threshold
+    enabled: true                # not gated on "is this a canvas" — see the provider on why that cannot be judged
+    lines: 5                     # wheel lines, the unit a real wheel reports, so apps scroll their own distance
   focus:                         # where the keyboard goes: a system-wide question, not one app's tree
     enabled: true                # what the focused element *is*, never what it holds
     # the app holding the focus is the one that answers. Measured: 1 ms with Terminal in front, 1585 ms with
