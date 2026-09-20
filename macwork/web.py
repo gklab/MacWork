@@ -14,10 +14,11 @@ import re
 import subprocess
 import time
 import urllib.parse
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Callable
 
-from .config import Config
+from .config import Config, expand
 from .decider import MAX_OPTIONS, DeciderError, choice, noul
 
 log = logging.getLogger(__name__)
@@ -183,13 +184,23 @@ def parse_key(key: str) -> tuple[str, str | None, int]:
 
 
 class Browser:
-    """One warm headless Chromium on its own thread."""
+    """One warm Chromium on its own thread, with a profile that outlives the run.
+
+    Every look-up used to start from nothing: no cookies, nobody signed in. Anything behind a login — a
+    company wiki, a ticket tracker, a paywalled page the user subscribes to — came back as a sign-in form,
+    and the engine correctly reported `blocked` forever, because there was no way to ever get past it.
+
+    The profile is macwork's own, never the user's Chrome: taking that one would lock it while Chrome is
+    running and put the engine inside their whole browsing identity. Signing in happens once, by hand,
+    with `macwork web --login <url>`; after that the session is there. Delete the folder to forget it.
+    """
 
     locale: str | None = None
 
-    def __init__(self, headed: bool, locale: str | None = None) -> None:
+    def __init__(self, headed: bool, locale: str | None = None, profile: Path | None = None) -> None:
         self.headed = headed
         self.locale = locale
+        self.profile = profile
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="macwork-web")
         self._pw: Any = None
         self.ctx: Any = None
@@ -199,17 +210,39 @@ class Browser:
             from playwright.sync_api import sync_playwright
 
             self._pw = sync_playwright().start()
-            browser = self._pw.chromium.launch(headless=not self.headed, args=["--disable-blink-features=AutomationControlled"])
             # no locale and no user agent of our own: Playwright's are right for the Chromium it ships, and
             # the locale is this Mac's. Pinned to zh-CN as it was, every page came back in Chinese — prices,
             # cookie walls, geo-redirects and all — whoever the user happened to be.
-            kind = {"viewport": {"width": 1280, "height": 900}}
+            kind: dict[str, Any] = {"viewport": {"width": 1280, "height": 900}}
             if self.locale:
                 kind["locale"] = self.locale
-            self.ctx = browser.new_context(**kind)
+            args = ["--disable-blink-features=AutomationControlled"]
+            if self.profile:
+                self.profile.mkdir(parents=True, exist_ok=True)
+                self.profile.chmod(0o700)      # it holds session cookies
+                self.ctx = self._pw.chromium.launch_persistent_context(
+                    str(self.profile), headless=not self.headed, args=args, **kind)
+            else:
+                browser = self._pw.chromium.launch(headless=not self.headed, args=args)
+                self.ctx = browser.new_context(**kind)
             if not self.headed:
                 self.ctx.route(re.compile(r"\.(png|jpe?g|gif|webp|svg|woff2?|ttf|mp4|webm|mp3)(\?|$)", re.I), lambda r: r.abort())
         return self.ctx
+
+    def sign_in(self, url: str, wait_s: float) -> dict[str, Any]:
+        """Open a visible window and wait while the user signs in. Nothing is typed for them, ever."""
+        def run() -> dict[str, Any]:
+            page = self.context().new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            deadline = time.monotonic() + wait_s
+            while time.monotonic() < deadline and not page.is_closed():
+                time.sleep(0.5)
+            here = "" if page.is_closed() else page.url
+            if not page.is_closed():
+                page.close()
+            return {"profile": str(self.profile), "ended_at": here,
+                    "cookies": len(self.context().cookies())}
+        return self.pool.submit(run).result(timeout=wait_s + 30)
 
     def reset(self) -> None:
         try:
@@ -229,11 +262,12 @@ def research(cfg: Config, gate: Any, redactor: Any, goal: str, query: str = "", 
     cache = cache if cache is not None else {}
     browser = cache.get("web.browser")
     if browser is None and page_factory is None:
+        profile = expand(cfg.get("web.profile")) if cfg.get("web.keep_session", True) else None
         want = str(cfg.get("web.locale", "auto"))
         # the Mac's own locale, put there by the engine; "auto" with nothing known leaves it to Chromium
         here = (cache.get("system.locale") or {}).get("locale") or ""
         locale = (here.replace("_", "-") or None) if want == "auto" else (want or None)
-        browser = cache["web.browser"] = Browser(bool(cfg.get("web.headed", False)), locale=locale)
+        browser = cache["web.browser"] = Browser(bool(cfg.get("web.headed", False)), locale=locale, profile=profile)
     budget = float(cfg.get("web.budget_s", 30))
     if page_factory is not None:  # tests: no browser, no thread
         return _task(cfg, gate, redactor, goal, query, url, search_fn or (lambda q: search(cfg, q)), page_factory)

@@ -792,6 +792,27 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
             slots={"url": Slot("text", f"the whole link, starting with {scheme}:")}, context=name))
 
 
+@provider("readall")
+def readall(ctx: Ctx, obs: Observation) -> None:
+    """Read everything this window says, not just what fits on screen.
+
+    `screen_text` is a summary — capped, and only of what the window shows now. A long document, a chat
+    backlog, an article: the thing the goal is actually about is mostly below the fold. This reads the
+    window's text in full and it becomes a fact of the task, so the answer can be written from it.
+
+    Nothing here is about the web. A browser is an app with a lot of text in it, like any other.
+    """
+    rc = ctx.cfg.section("observe.readall")
+    if not ctx.app or not rc.get("enabled", True):
+        return
+    if len(obs.screen_text) < int(rc.get("offer_over", 200)):
+        return   # the whole of it is already in front of the decider
+    obs.affordances.append(Affordance(
+        f"t{len(obs.affordances)}", "window", "read_all",
+        str(rc.get("label", "read all the text in this window, including what is scrolled out of sight")),
+        {"pid": ctx.app["pid"]}, context=ctx.app.get("name", "")))
+
+
 @provider("services")
 def services(ctx: Ctx, obs: Observation) -> None:
     """Services other apps publish: "hand me this kind of content and I will do something with it".
@@ -813,13 +834,18 @@ def services(ctx: Ctx, obs: Observation) -> None:
         return out
 
     found = _refresh_in_background(ctx, "services.all", float(sc.get("cache_s", 900)), scan) or []
-    file_types = set(sc.get("file_types") or [])
     for s in found[: int(sc.get("limit", 80))]:
-        wants_file = bool(set(s.get("sends") or []) & file_types)
-        slot = ("file", "the path of the file to hand over") if wants_file else ("text", "the text to hand over")
+        # What the service accepts is quoted from its own declaration rather than interpreted for it. The
+        # names below are Apple's pasteboard vocabulary (the same kind of thing as kAXPressAction), not
+        # knowledge about anybody's app; where they say "a file", the slot asks for a path.
+        sends = [str(x) for x in s.get("sends") or []]
+        wants_file = any("file" in x.lower() or "url" in x.lower() for x in sends)
+        slot = "file" if wants_file else "text"
+        asks = f"{'the path of the file' if wants_file else 'the text'} to hand over"
         obs.affordances.append(Affordance(
             f"v{len(obs.affordances)}", "service", "perform", f"hand content to {s['app']}: 「{s['name']}」",
-            {"name": s["name"]}, slots={slot[0]: Slot("text", slot[1])}, context=f"{s['app']} (a system service)"))
+            {"name": s["name"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
+            context=f"{s['app']} (a system service)"))
 
 
 @provider("drag")

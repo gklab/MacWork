@@ -126,3 +126,39 @@ def test_an_app_that_does_not_answer_says_so_to_the_decider(tmp_path):
     obs = Observation(app={"pid": 42}, window=None, affordances=[])
     window(Ctx(cfg(tmp_path), Silent(), app={"pid": 42, "name": "app"}), obs)
     assert obs.notes["window_not_answering"] is True
+
+
+def test_the_whole_window_can_be_read_into_facts(tmp_path):
+    """`screen_text` is a capped summary of what is visible. The thing a goal is about is usually below the
+    fold — and this is not about the web: a browser is an app with a lot of text in it, like any other."""
+    from macwork.act import get_channel
+    from macwork.model import Affordance
+
+    long_page = [{"ref": "w.0", "role": "AXWindow", "depth": 0}] + [
+        {"ref": f"w.{i}", "role": "AXStaticText", "value": f"段落 {i} 的内容", "parent": "w.0"} for i in range(1, 40)]
+
+    class Paged(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("visible_only") is False:
+                self.calls.append((method, p))
+                return {"nodes": long_page}
+            return super().call(method, timeout, **p)
+
+    ctx = Ctx(cfg(tmp_path), Paged(), app={"pid": 42, "name": "读书"})
+    out = get_channel("window")(ctx, Affordance("t0", "window", "read_all", "read all", {"pid": 42}), {})
+
+    assert out.ok and "段落 39 的内容" in out.output["read_window"]["text"]
+    asked = ctx.helper.did("ax.snapshot")[0]
+    assert asked["visible_only"] is False, "what is scrolled away is the point"
+    assert asked["actions"] is False, "it is being read, not operated"
+
+
+def test_acting_step_by_step_needs_no_decider_when_classification_is_off(tmp_path):
+    """The step level is documented as "the caller drives". Building the gate unconditionally meant the
+    switch did nothing and this level could not be used without an API key at all."""
+    from macwork.engine import Engine
+
+    engine = Engine(cfg(tmp_path, policy={"confirm": {"classify_step_level": False}}), helper=FakeHelper())
+    seen = engine.observe()
+    pressable = next(a for a in seen["affordances"] if a["verb"] == "press" and not a.get("slots"))
+    assert engine.act(pressable["id"])["ok"] is True      # would have raised DeciderError

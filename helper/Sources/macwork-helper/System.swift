@@ -422,7 +422,13 @@ func fileReadText(_ p: Params) throws -> Any {
     // this the readers below happily return an icon or a binary as mojibake, and the task would record that as
     // something it had read.
     let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
-    let readable: [UTType] = [.text, .pdf, .rtf, .html, .xml, .compositeContent, .sourceCode, .json]
+    // Three mechanisms, not a list of formats anyone thought of: .rtf, .html, .xml, .source-code and
+    // .json all conform to .text already, so naming them was redundant — and naming formats is how a list
+    // ends up excluding whatever the user installs next.
+    //   .text             the system says it is text
+    //   .pdf              PDFKit reads it
+    //   .compositeContent documents AppKit reads (.docx, .rtfd) that are not "text"
+    let readable: [UTType] = [.text, .pdf, .compositeContent]
     let declared = type.map { t in readable.contains(where: { t.conforms(to: $0) }) } ?? false
     // an extension nobody registered gets a made-up type that conforms to nothing (a .toml, say), so an
     // unknown type is not a "no" — it is a "find out", and finding out means the bytes really decoding

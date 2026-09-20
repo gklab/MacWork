@@ -139,6 +139,23 @@ def menu_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 @channel("window")
 def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     t = a.target
+    if a.verb == "read_all":        # everything the window says, not only what is on screen
+        rc = ctx.cfg.section("observe.readall")
+        snap = ctx.helper.call("ax.snapshot", pid=t["pid"], scope="focused_window", visible_only=False,
+                               max_nodes=int(rc.get("max_nodes", 12000)), max_depth=int(rc.get("max_depth", 60)),
+                               max_children=int(rc.get("max_children", 2000)), max_text=int(rc.get("max_text", 4000)),
+                               budget_ms=int(rc.get("budget_ms", 8000)), actions=False, timeout=30)
+        seen: list[str] = []
+        for n in snap.get("nodes", []):
+            for value in (n.get("value"), n.get("title"), n.get("desc")):
+                text = str(value or "").strip()
+                if text and text not in seen:
+                    seen.append(text)
+        whole = "\n".join(seen)[: int(rc.get("chars", 40000))]
+        if not whole:
+            return Outcome(False, error="there is no readable text in this window", wait=False)
+        return Outcome(True, output={"read_window": {"app": (ctx.app or {}).get("name") or "", "text": whole,
+                                                     "truncated": bool(snap.get("truncated"))}}, wait=False)
     if a.verb == "raise":           # bring another window of the app to the front
         ctx.helper.call("ax.perform", ref=t["ref"], action="AXRaise")
         _bring_forward(ctx, t["pid"])

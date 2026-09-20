@@ -29,7 +29,7 @@ helper:
 observe:
   # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
   providers: [window, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
-              typing, apps, shortcuts, files, clipboard, skills, drag, web]   # drag last: it needs the frames
+              typing, apps, shortcuts, files, clipboard, skills, readall, drag]   # drag last: it needs the frames
   ax:
     max_nodes: 3000
     max_depth: 40
@@ -135,11 +135,20 @@ observe:
     preview_chars: 0             # 0 = report only the types and the size, never the contents
     requires_input: text         # "put it on the clipboard" is offered only when the caller supplied text
     label: put the given text on the clipboard
+  readall:                       # "read everything this window says", for what does not fit on screen
+    enabled: true
+    offer_over: 200              # only offered when the screen text is long enough to be a summary
+    chars: 40000
+    max_nodes: 12000
+    max_depth: 60
+    max_children: 2000
+    max_text: 4000
+    budget_ms: 8000
+    label: read all the text in this window, including what is scrolled out of sight
   services:                      # what other apps publish as Services (from their own Info.plist)
     enabled: true
     cache_s: 900                 # reading every bundle takes a moment; it runs behind the look
     limit: 80
-    file_types: [NSFilenamesPboardType, public.file-url, NSURLPboardType]   # system type names, not app knowledge
   drag:
     enabled: true
     max_spots: 300
@@ -293,6 +302,11 @@ input:
 web:
   locale: auto                   # auto = this Mac's locale. Pinned (it was zh-CN) every page comes back in
                                  # that language, with its prices, cookie walls and geo-redirects
+  # A profile of macwork's own, so a sign-in lasts: without one every look-up started with no cookies and
+  # anything behind a login was a sign-in form for ever. Never the user's own Chrome profile — that would
+  # lock it while Chrome runs and put the engine inside their whole browsing identity.
+  keep_session: true
+  profile: ~/Library/Application Support/macwork/browser
   search: [duckduckgo, bing]     # plain-HTTP search (engines block headless browsers)
   results: 8
   max_steps: 12

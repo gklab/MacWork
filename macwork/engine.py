@@ -241,8 +241,12 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             # the observation's goal and inputs still apply (the web channel reads them), but which app is in
             # front and what is running may have changed since it was taken
             ctx = self._ctx(seen.goal, seen.inputs, obs.app, "observe")
-            ctx.gate = self.gate      # for the floor classification, and for the web channel below
+            # The gate is built only where a decision is actually needed. Building it unconditionally meant
+            # `classify_step_level: false` still constructed a decider — so the switch did nothing, and the
+            # step level, which is documented as "the caller drives", could not be used without an API key.
             classify = (self.cfg.policy.get("confirm") or {}).get("classify_step_level", True)
+            if classify or a.channel == "web":
+                ctx.gate = self.gate
             floor = self._floor("step", ctx, a, obs.window) if classify else None
             if self._needs_confirm(a, 0.0, set(), floor=floor) and not confirm:
                 return {"ok": False, "needs_confirm": True, "affordance": a.public(), "because": floor,

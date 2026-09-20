@@ -532,6 +532,9 @@ class LoopMixin:
         read = (out.output or {}).get("file_read")
         if read and read.get("text"):     # what a file said is as much a fact as what a screen showed
             task.memory.facts.record(read["path"].rsplit("/", 1)[-1], read.get("kind") or "", read["text"], len(task.steps))
+        page = (out.output or {}).get("read_window")
+        if page and page.get("text"):     # and so is everything a window said, not only the part on screen
+            task.memory.facts.record(page.get("app") or "a window", "read in full", page["text"], len(task.steps))
         if out.target:
             task.target = out.target
         if out.final:
