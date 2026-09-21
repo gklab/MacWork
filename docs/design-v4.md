@@ -208,7 +208,8 @@ All five batches are done.
 | personal data leak rate (corpus in eight scripts) | 40.1% | 27.0% (phone numbers 15/24 → 0/24) |
 | menu actions with a language-independent identity | 0 | 58/58 (Finder); unchanged across an app restart, 141/141 |
 | "user idle" after a synthetic event | 25.97s → 0.15s (knocked back down by the engine itself) | separated from user input |
-| tests | 85 Python / 0 Swift | 417 Python / 13 Swift |
+| tests | 85 Python / 0 Swift | **431 Python functions** / 31 Swift |
+| | | (999 collected cases, but 552 of those are four parametrized static checks — `pytest` prints the split at the end of every run, because the count was being quoted as evidence and overstates what it measures) |
 | one cold-start observation | 1917 ms | 332 ms |
 
 ---

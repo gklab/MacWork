@@ -25,3 +25,48 @@ def _no_real_processes(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake)   # every module's subprocess.run is this one
     monkeypatch.setattr(subprocess, "Popen", _NoPopen)
     return calls
+
+
+# --------------------------------------------------------------------------------------------------
+# What the count means.
+#
+# The collected number is quoted as evidence of soundness in this project's own commit messages, and it
+# overstates what it measures: most of it comes from a handful of parametrized static checks. One of them,
+# `test_settings.py`, is four functions producing three hundred cases — one per shipped setting, which is
+# the right shape for naming a dead key and the wrong shape for counting. Printing the breakdown at the end
+# of every run means nobody has to be told twice.
+_STATIC = {"test_settings.py", "test_wiring.py", "test_readme.py", "test_evals.py"}
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    import ast
+    import pathlib
+
+    items = getattr(terminalreporter, "_macwork_items", None)
+    if not items:
+        return
+    cases = {}
+    for item in items:
+        cases[pathlib.Path(str(item.fspath)).name] = cases.get(pathlib.Path(str(item.fspath)).name, 0) + 1
+    functions = {}
+    for f in pathlib.Path(str(config.rootpath) if hasattr(config, "rootpath") else ".").glob("tests/test_*.py"):
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        functions[f.name] = sum(1 for n in ast.walk(tree)
+                                if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"))
+    total_cases = sum(cases.values())
+    total_funcs = sum(functions.get(name, 0) for name in cases)
+    static_cases = sum(v for k, v in cases.items() if k in _STATIC)
+    if not total_cases:
+        return
+    terminalreporter.write_line("")
+    terminalreporter.write_line(
+        f"{total_cases} cases from {total_funcs} test functions — "
+        f"{total_cases - static_cases} behaviour, {static_cases} static checks "
+        f"({', '.join(sorted(_STATIC & set(cases)))}). Quote the functions, not the cases.")
+
+
+def pytest_collection_modifyitems(session, config, items):
+    session.config.pluginmanager.get_plugin("terminalreporter")._macwork_items = list(items)
