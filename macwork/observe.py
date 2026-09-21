@@ -676,6 +676,22 @@ def _right_click_by_name(ctx: Ctx, obs: Observation, vc: dict[str, Any], boxes: 
         slots={"what": Slot("text", "the text on screen to aim at")}, context=(ctx.app or {}).get("name", "")))
 
 
+@provider("sight")
+def sight(ctx: Ctx, obs: Observation) -> None:
+    """One coarse look at the window, kept with the observation (see sight.py). It offers nothing: it is what
+    lets the next look say whether the picture changed."""
+    sc = ctx.cfg.section("observe.sight")
+    if not ctx.app or not sc.get("enabled", True):
+        return
+    try:
+        obs.notes["glance"] = ctx.helper.call("screen.glance", pid=ctx.app["pid"], near=obs.notes.get("window_frame"),
+                                              grid=int(sc.get("grid", 32)), timeout=float(sc.get("timeout_s", 3)))
+    except HelperError as exc:
+        # no Screen Recording permission, no window on screen, an older helper: the engine is then as blind
+        # in a self-drawn window as it was, and says so rather than failing the look
+        obs.notes["glance_unavailable"] = exc.code
+
+
 def parse_controls(declared: Any, max_ms: int) -> tuple[list[dict[str, Any]], list[str]]:
     """Controls as someone declared them -> (what can be offered, what was wrong with the rest).
 

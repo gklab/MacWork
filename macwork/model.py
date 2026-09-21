@@ -93,6 +93,8 @@ class Step:
                                                  # full, what a Shortcut returned. Such a step raises no
                                                  # Accessibility event, and "did anything happen" used to
                                                  # be a count of those alone
+    picture: float | None = None                 # share of the window's picture that changed across this step
+                                                 # (sight.py); None when it could not be measured
     unseen: bool = False                         # what it does may not show in anything the engine observes (a
                                                  # key held in a view that draws itself). "The screen looks the
                                                  # same" is then not evidence of anything, and nothing that

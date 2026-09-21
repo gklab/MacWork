@@ -36,7 +36,7 @@ helper:
 
 observe:
   # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
-  providers: [window, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
+  providers: [window, sight, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
               focus, typing, apps, shortcuts, files, clipboard, skills, readall, wheel, controls, drag]
               # focus before typing: "type at the cursor" is labelled with where the cursor turned out to be
               # drag last: it needs the frames
@@ -138,6 +138,14 @@ observe:
   # The physical keys — the one fixed list this engine is allowed, because these are not knowledge about any
   # app. App commands come from the app's own menus, or from the planner.
   keys: [return, escape, tab, space, delete, up, down, left, right, home, end, pageup, pagedown]
+  sight:                         # one coarse look at the window with every observation (~30 ms, on-device, never sent):
+                                 # before and after an action it says how much of the picture changed. It is the
+                                 # only evidence there is in a window that draws itself (a game, a map, a canvas)
+    enabled: true
+    grid: 32                     # cells a side
+    tolerance: 2                 # brightness levels (of 255) a cell may differ by and still be the same: the capture's
+                                 # own noise floor, measured on an idle window — not a judgement about what matters
+    timeout_s: 3
   controls:                      # input that lasts — keys and buttons held, the pointer moved by an amount — for
                                  # what is steered rather than operated (a game, a map, a 3D view). Nothing is
                                  # offered unless somebody declared it: the caller in `inputs.controls`, or you here
@@ -279,6 +287,7 @@ engine:
   max_retractions: 2        # a choice the task took back this many times from one exact screen is no longer
                             # offered from that screen. Once is told to the decider and still offered; twice is
                             # enough, because a System-1 model answers an unchanged state the same way again
+  max_pictures: 200         # how many distinct screens a task remembers the look of (about 1.4 KB each). A budget
   queue_wait_s: 900         # how long `do` waits its turn before giving up and saying so, rather than hanging
   revert:                   # putting back what a task changed (`macwork revert <task>`), newest first
     max_steps: 8            # how far back to go in one call

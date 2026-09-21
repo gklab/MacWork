@@ -22,6 +22,7 @@ from .contract import kept
 from .decider import DeciderError, choice, noul
 from .privacy import RedactionError
 from .act import Outcome
+from . import sight
 from .model import Affordance, Observation, Step, Task
 from .observe import Ctx, arrange, group_of, observe
 from .skills import Skills
@@ -40,7 +41,8 @@ def _visible(line: str) -> str:
 
 
 def what_changed(before_text: str, after_text: str, before_window: str | None = None, after_window: str | None = None,
-                 before_app: str | None = None, after_app: str | None = None, limit: int = 200) -> str:
+                 before_app: str | None = None, after_app: str | None = None, limit: int = 200,
+                 picture: dict[str, Any] | None = None) -> str:
     """What the last action did to the screen, as a fact the decider can read.
 
     The history said `button 「2」 -> ok`, and ok means the button went down — not that the display went
@@ -72,6 +74,9 @@ def what_changed(before_text: str, after_text: str, before_window: str | None = 
             if items:
                 shown = "; ".join(cut(x) for x in items[:3])
                 parts.append(f"{name}: {shown}" + (f" (+{len(items) - 3} more)" if len(items) > 3 else ""))
+    if not parts and picture and picture["cells"]:
+        # no text the engine can read changed, and something did: what a person would have seen
+        return f"{sight.describe(picture)}; no text on screen did"
     out = ", ".join(parts) or NOTHING_CHANGED
     return out if len(out) <= limit else out[: limit - 1] + "…"
 
@@ -197,7 +202,7 @@ class LoopMixin:
         return ""
 
     # ------------------------------------------------------------------ choices the task took back
-    def _note_return(self, task: Task, here: str) -> None:
+    def _note_return(self, task: Task, here: str, glance: dict[str, Any] | None = None) -> None:
         """The task is on a screen it has acted from before: what it chose there led back here.
 
         From a real run of "12×12": on `12×` the decider chose 「2」, saw `12×2`, pressed Clear, was back on
@@ -217,8 +222,16 @@ class LoopMixin:
         left = [s for s in task.steps if s.before == here and s.ok]
         if not left or left[-1] is task.steps[-1]:
             return
-        if any(s.unseen for s in task.steps[task.steps.index(left[-1]):]):
+        since = task.steps[task.steps.index(left[-1]):]
+        if any(s.unseen and s.picture is None for s in since):
             return      # "back in the same state" is a claim about the screen, and these steps do not show on it
+        # Same structure and same text, and a different picture, is a different state: in a window that draws
+        # itself the text never changes and the picture is the only thing that does. (A calculator back on
+        # `12×` looks the same as it did, so this does not get in the way of what the rule was made for.)
+        pictures = self.cache.setdefault("pictures", {}).setdefault(task.id, {})
+        looks = sight.compare(pictures.get(here), glance, int(self.cfg.get("observe.sight.tolerance", 2)))
+        if looks and looks["cells"]:
+            return
         task.memory.retracted.setdefault(here, []).append(left[-1].action)
         log.info("back on a screen already acted from: %r was chosen here and did not hold", left[-1].action[:48])
 
@@ -279,7 +292,11 @@ class LoopMixin:
         dead_before = set(task.memory.no_effect)
         self._learn_from_prev(task, ctx.app, sig, obs)
         here = exact_state(sig, obs.screen_text)
-        self._note_return(task, here)
+        self._note_return(task, here, obs.notes.get("glance"))
+        if obs.notes.get("glance"):        # what this state looked like the first time it was seen
+            seen_as = self.cache.setdefault("pictures", {}).setdefault(task.id, {})
+            if len(seen_as) < int(self.cfg.get("engine.max_pictures", 200)):
+                seen_as.setdefault(here, obs.notes["glance"])
         window_key = f"{(ctx.app or {}).get('pid')}|{obs.window}"
         fp_seen = self._fingerprint(ctx) if (task.steps and task.pace.redo < int(self.cfg.get("engine.verify.max_redo", 1))
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
@@ -416,7 +433,11 @@ class LoopMixin:
         for st in task.steps:
             # a step whose effect cannot be seen leaves "the same screen" behind every time: walking forward
             # four times is not being stuck
-            if st.before and st.before.split(":")[0] == sig and not st.unseen:
+            # — unless it *was* seen, by the picture, and the picture did not move: that one counts.
+            # (Only for such steps. An ordinary step that changes the picture still counts as before: the
+            # stuck shape this rule exists for — open a dialog, escape, open it again — changes the picture
+            # every time.)
+            if st.before and st.before.split(":")[0] == sig and not (st.unseen and (st.picture is None or st.picture > 0)):
                 out[st.action] = out.get(st.action, 0) + 1
         return out
 
@@ -754,7 +775,7 @@ class LoopMixin:
                  "step_total": round((time.monotonic() - t0) * 1000)})
         task.prev = {"sig": sig, "label": chosen.label, "ok": out.ok, "events": events, "app": ctx.app,
                      "screen": obs.screen_text if obs else None, "window": obs.window if obs else None,
-                     "unseen": bool(out.unseen)}
+                     "unseen": bool(out.unseen), "glance": (obs.notes.get("glance") if obs else None)}
         task.updated = time.time()
         if out.output:
             task.outputs.update(out.output)
@@ -816,16 +837,24 @@ class LoopMixin:
         """Now that we see where the last step led, remember it (and remember steps that did nothing)."""
         self.models.see(app, sig, obs.window, [a.label for a in obs.affordances if a.channel == "window"][: int(self.cfg.get("appmodel.sample", 12))])
         prev, task.prev = task.prev, None
+        # …and so are the picture before and the picture after. Only within one app: a glance is of the
+        # app's window, and across a switch there is no "same picture" to have changed.
+        seen = None
+        if prev and (prev.get("app") or {}).get("pid") == (app or {}).get("pid"):
+            seen = sight.compare(prev.get("glance"), obs.notes.get("glance"), int(self.cfg.get("observe.sight.tolerance", 2)))
+        if prev and task.steps and seen is not None:
+            task.steps[-1].picture = round(seen["share"], 4)
         if prev and task.steps and prev.get("screen") is not None and not task.steps[-1].outcome:
             # the screen before and the screen after are both in hand exactly here, and nowhere else
             task.steps[-1].outcome = what_changed(
                 prev.get("screen") or "", obs.screen_text, prev.get("window"), obs.window,
-                (prev.get("app") or {}).get("name"), (app or {}).get("name"))
+                (prev.get("app") or {}).get("name"), (app or {}).get("name"), picture=seen)
         if not prev or not prev.get("sig"):
             return
         events = [x for x in prev.get("events", []) if not x.startswith("wait failed")]
         # an effect is a new screen, a UI event, or different text on screen (a calculator's display, a field)
         changed = sig != prev["sig"] or bool(events) or (prev.get("screen") is not None and prev["screen"] != obs.screen_text)
+        changed = changed or bool(seen and seen["cells"])      # a person would say it changed: they saw it change
         self.models.record(prev.get("app"), prev["sig"], prev["label"], sig, bool(prev.get("ok")), changed)
         key = f"{prev['sig']}|{prev['label']}"
         if not prev.get("ok"):
@@ -835,9 +864,10 @@ class LoopMixin:
             # as it was when it failed (asking again there gets the same failure), and offered again once
             # anything on it has changed. `engine.max_repeats` still ends it for good.
             task.memory.failed[key] = exact_state(prev["sig"], prev.get("screen") or "")
-        elif not changed and not prev.get("unseen"):
+        elif not changed and not (prev.get("unseen") and seen is None):
             # nothing happened: never offered again from this screen in this task. Unless what it does is
-            # something the engine has no way to see — then "nothing changed" is a fact about the observer
+            # something the engine has no way to see — then "nothing changed" is a fact about the observer.
+            # With a glance before and after it *was* seen, and an unchanged picture is evidence like any other
             task.memory.no_effect.add(key)
 
     # ------------------------------------------------------------------ routines

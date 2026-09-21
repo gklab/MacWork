@@ -58,25 +58,24 @@ your program, a [standing grant](../README.md#safety) answers it once.
 ## What the engine may conclude
 
 Everything the loop has learned to conclude — *that did nothing*, *that has had its turns from this screen*,
-*that choice was taken back* — rests on the screen showing what an action did. A view that draws itself shows
-nothing, so a hold reports that its effect may not be visible (`Outcome.unseen`), and none of those rules
-counts it. Walking forward six times from a screen that never changes is not being stuck.
+*that choice was taken back* — rests on being able to see what an action did. A view that draws itself tells
+Accessibility nothing, so the engine looks at it the way a person does: a coarse glance at the window before
+and after (`observe.sight`: a 32×32 grid of brightness, about 30 ms, never leaves the Mac). It does not know
+what the picture is *of*; it knows how much of it changed and roughly where, and says so as a fact:
 
-That cuts both ways: with nothing to read back, the decider is choosing blind. For anything beyond a few
-steps the view has to be *described*.
+    move forward — hold w for 1.2 s -> the picture in the window changed (38% of it, across the window); no text on screen did
 
-## Describing a view that draws itself
+A hold that changed nothing — walking into a wall — is withdrawn like any other action that did nothing. One
+that keeps changing the picture can be taken again and again: that is not being stuck.
 
-On-device OCR (`vision`) reads text off such a window and nothing else. A program whose state matters — where
-the player is, what is in front of them — needs a provider that knows it, registered like any other:
+Where no glance can be had (no Screen Recording permission, an older helper), a hold reports that its effect
+may not be visible (`Outcome.unseen`) and nothing is concluded from it at all. The history then says so
+rather than claiming nothing happened.
 
-```toml
-[project.entry-points."macwork.providers"]
-my_game = "my_pkg:provide"      # (ctx, observation) -> None
-```
+## What is still missing
 
-It puts what it knows into `observation.screen_text` (so the decider reads it, and the engine's memory of
-states works again) and may append its own affordances on the `hold` channel — `Affordance(id, "hold", "hold",
-label, {"keys": [...], "buttons": [...], "move": {...}, "ms": ...})`. Put measured facts in the labels
-("the door is 4 blocks ahead"): arithmetic stays in code, the decider interprets facts. That package is where
-knowledge of one program belongs; this repository stays without it.
+Seeing *that* the picture changed is not seeing *what is in it*. On-device OCR reads the text in such a window
+and nothing else, so in a view with no text the decider chooses among the declared controls knowing only the
+goal, what it has done, and how the picture responded. A general, on-device description of what a window
+shows — for any window, with no knowledge of any program — is the capability that is missing, and it is not
+built yet.

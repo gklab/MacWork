@@ -70,7 +70,7 @@ func ocrLanguages() -> [String] {
 }
 
 /// The on-screen window of ``pid`` closest to ``near`` (the AX frame), or its largest one.
-private func captureWindow(pid: pid_t, near: CGRect?) throws -> (CGImage, CGRect) {
+private func captureWindow(pid: pid_t, near: CGRect?, maxWidth: CGFloat? = nil) throws -> (CGImage, CGRect) {
     try runAsync(timeout: 8) {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         let wins = content.windows.filter { $0.owningApplication?.processID == pid && $0.windowLayer == 0 && $0.frame.width > 40 }
@@ -87,7 +87,8 @@ private func captureWindow(pid: pid_t, near: CGRect?) throws -> (CGImage, CGRect
         }
         let screen = NSScreen.screens.first(where: { $0.frame.contains(centre) })
             ?? NSScreen.screens.max(by: { overlap($0) < overlap($1) })
-        let scale = screen?.backingScaleFactor ?? 2
+        var scale = screen?.backingScaleFactor ?? 2
+        if let w = maxWidth { scale = min(scale, w / win.frame.width) }   // a glance needs no detail: let the capture shrink it
         let cfg = SCStreamConfiguration()
         cfg.width = max(1, safeInt(win.frame.width * scale))
         cfg.height = max(1, safeInt(win.frame.height * scale))
@@ -137,6 +138,36 @@ func screenOCR(_ p: Params) throws -> Any {
 }
 
 /// screen.capture {pid, near?, crop?: [x,y,w,h] in screen points, path} -> {path, frame}. For local describers only.
+/// What a window looks like, coarsely: an n×n grid of brightness, one byte a cell.
+///
+/// A person who presses a key looks at the screen to see whether anything happened. For a window that
+/// describes itself to Accessibility the engine can do the same from the tree; for one that draws itself —
+/// a game, a map, a canvas, a video — the tree says nothing and the picture is all there is. Two glances,
+/// before and after, say how much of the window changed and roughly where. That is a measurement, not an
+/// interpretation: nothing here knows what the picture is *of*.
+///
+/// The pointer is left out of the capture, so moving it does not count as the window changing.
+func glanceGrid(_ img: CGImage, n: Int) -> [UInt8] {
+    var px = [UInt8](repeating: 0, count: n * n)
+    px.withUnsafeMutableBytes { buf in
+        // drawing into an n×n grey context *is* the averaging: each cell is the mean brightness under it
+        if let ctx = CGContext(data: buf.baseAddress, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n,
+                               space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) {
+            ctx.interpolationQuality = .medium
+            ctx.draw(img, in: CGRect(x: 0, y: 0, width: n, height: n))
+        }
+    }
+    return px
+}
+
+func screenGlance(_ p: Params) throws -> Any {
+    guard let pidNum = p["pid"] as? Int else { throw RPCError("bad_params", "pid required") }
+    let n = max(4, min(p["grid"] as? Int ?? 32, 64))
+    let (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"), maxWidth: CGFloat(n * 8))
+    return ["grid": n, "cells": Data(glanceGrid(img, n: n)).base64EncodedString(),
+            "frame": [safeInt(frame.minX), safeInt(frame.minY), safeInt(frame.width), safeInt(frame.height)]]
+}
+
 func screenCapture(_ p: Params) throws -> Any {
     guard let pidNum = p["pid"] as? Int, let path = p["path"] as? String else { throw RPCError("bad_params", "pid and path required") }
     var (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"))

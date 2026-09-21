@@ -149,6 +149,7 @@ One Mac, one keyboard: tasks run one at a time, in a queue the caller can see an
 | what an app can do without its UI | scripting dictionary · `NSServices` · `CFBundleURLTypes` |
 | installed apps | Spotlight + LaunchServices (405 here, against 146 by scanning directories) |
 | a window the tree cannot describe | ScreenCaptureKit + Vision, on-device; text becomes clickable, the wheel scrolls |
+| whether anything happened, where the tree cannot say | a coarse glance at the window before and after each action, on-device: how much of the picture changed and where |
 | whole documents | the window or the file read in full, not just the part on screen |
 | the person's own automations | `shortcuts`, with what the shortcut returns |
 | files | UTType hierarchy, `NSDataDetector`, PDFKit; which file a window is showing (`AXDocument`) |
@@ -174,11 +175,13 @@ browser is an app. The cost is stated honestly: Chrome puts no page content in t
    back from which screen, what a task already holds — and never offers a completed action again.
 3. **Typed questions, never prose.** Each step is one request with its questions fanned out in parallel:
    next action · what kind of move · did the last step work · is it really done · is this screen risky.
-4. **Arithmetic stays in code.** Option labels state measured facts ("returns all 17 lines at once; the
+4. **It looks, like a person does.** Where the Accessibility tree says nothing — a game, a map, a canvas — the
+   engine compares what the window looked like before and after, without knowing what the picture is of.
+5. **Arithmetic stays in code.** Option labels state measured facts ("returns all 17 lines at once; the
    window shows only part"); the decider interprets facts, it does not compute them.
-5. **Fold, don't rank.** Above 255 options the largest groups become one "look into …" entry each, opened
+6. **Fold, don't rank.** Above 255 options the largest groups become one "look into …" entry each, opened
    the way a person opens a menu. Nothing is dropped by a relevance guess.
-6. **Callers own language.** Text to type, queries and file names come from the caller; a task that needs
+7. **Callers own language.** Text to type, queries and file names come from the caller; a task that needs
    them stops with `need_input` rather than inventing them.
 
 ## Safety
