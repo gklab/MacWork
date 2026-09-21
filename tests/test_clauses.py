@@ -145,3 +145,36 @@ def test_an_app_name_is_still_protected(name):
 
 def test_a_bundle_id_still_protects_its_own_app():
     assert protector(["com.apple.mail"])._is_protected("com.apple.mail")
+
+
+# --------------------------------------------------------------------------- the same clause, every step
+
+def test_a_clause_judged_not_worth_tagging_is_not_judged_again(tmp_path):
+    """Measured with `macwork profile` and a decider that answers instantly: 163 ms of every step was the
+    engine's own, and 155 ms of that was one line — a regex made of every installed app's name (405 here),
+    run over 1574 clauses per step. A clause found worth tagging was remembered and skipped next time; one
+    found *not* worth it was not, so menus and button labels were re-examined on every single step."""
+    from macwork.config import Config
+    from macwork.privacy import Redactor
+    calls = []
+    r = Redactor(Config.load(), entities=lambda cs: [[] for _ in cs], protect=lambda: ["Mail", "Numbers"])
+    real = r._worth_tagging
+    r._worth_tagging = lambda c: (calls.append(c), real(c))[1]          # type: ignore[method-assign]
+    screen = {"actions": [f"menu item number {i}" for i in range(50)]}   # nothing name-like in any of them
+    r.value(screen)
+    first = len(calls)
+    r.value(screen)                                                      # the next step: the same screen
+    assert first > 0 and len(calls) == first, f"{len(calls) - first} clauses were examined a second time"
+
+
+def test_remembering_that_does_not_stop_a_new_clause_being_looked_at(tmp_path):
+    from macwork.config import Config
+    from macwork.privacy import Redactor
+    found = []
+    def ents(cs):
+        found.extend(cs)
+        return [[{"type": "PERSON", "text": "Emily Johnson"}] if "Emily Johnson" in c else [] for c in cs]
+    r = Redactor(Config.load(), entities=ents)
+    r.value({"a": "menu item one"})
+    out = r.value({"a": "menu item one", "b": "call Emily Johnson"})
+    assert "Emily Johnson" not in str(out)

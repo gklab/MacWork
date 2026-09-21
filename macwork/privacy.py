@@ -116,6 +116,7 @@ class Redactor:
         self.protect = protect            # names from this Mac itself (installed apps…) that are never personal data
         self._protected: list[str] | None = None
         self._tagged: set[str] = set()   # clauses already tagged in this task (labels repeat every step)
+        self._skipped: set[str] = set()  # …and the ones found to hold nothing name-like, which repeat just as much
         self._detected: set[str] = set()
         self.enabled = bool(r.get("enabled", True))
         self.kinds = set(r.get("entities") or [])
@@ -192,9 +193,18 @@ class Redactor:
                 mixed = any(_caseless(ch) for ch in c) and any(ch.isalpha() and not _caseless(ch) for ch in c)
                 runs = _runs(c) if mixed else ([c] if _short_name_like(c) else [])
                 for piece in [c] + [_carrier(r) for r in runs if len(r) >= 2]:
-                    if len(piece) >= 2 and piece not in seen and piece not in self._tagged and self._worth_tagging(piece):
-                        seen.add(piece)
-                        clauses.append(piece)
+                    if len(piece) < 2 or piece in seen or piece in self._tagged or piece in self._skipped:
+                        continue
+                    # Both answers are remembered, not only "yes". A clause worth tagging went into
+                    # `_tagged` and was skipped next step; one *not* worth it went nowhere, so every menu
+                    # and button label was re-examined on every step against a regex made of every
+                    # installed app's name — measured at 155 ms of the 163 ms the engine itself spends
+                    # per step. The answer cannot change: the protected list is loaded once.
+                    if not self._worth_tagging(piece):
+                        self._skipped.add(piece)
+                        continue
+                    seen.add(piece)
+                    clauses.append(piece)
         if not clauses:
             return
         # `max_clauses` used to cut the list here and send the rest untagged — no error, no flag, no note,
