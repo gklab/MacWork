@@ -147,7 +147,11 @@ class LoopMixin:
         if "over all its turns" in spent or "budget of $" in spent or "as many times" in spent:
             return False                                   # a whole-task ceiling: that is the end of it
         last = task.steps[-1]
-        if not (last.ok and last.events):
+        # An effect is not only a visible one. Reading a file, reading a window in full, running a
+        # Shortcut and taking the clipboard all return `wait=False` and raise no Accessibility event — so
+        # a long task that ended its turn on a *read* was told it had got nowhere and scored failed, one
+        # line above a comment saying this is not a count of UI events.
+        if not (last.ok and (last.events or last.produced)):
             return False
         # whether the task is getting somewhere is the decider's judgement, not a count of UI events
         progress = last.decision.get("progress")
@@ -607,7 +611,8 @@ class LoopMixin:
         effect = str(self.cache.get("floor.last_category") or "")
         task.steps.append(Step(len(task.steps), chosen.label, chosen.id, out.ok, events, decision,
                                round((time.monotonic() - t0) * 1000), out.error, chosen.channel, chosen.verb,
-                               chosen.context, sorted(params), before, key=chosen.key, effect=effect))
+                               chosen.context, sorted(params), before, key=chosen.key, effect=effect,
+                               produced=bool(out.output)))
         if out.ok and effect not in ("", "navigate", "enter") and ctx.app:
             task.changed.append({"n": len(task.steps) - 1, "action": chosen.label, "effect": effect,
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
@@ -623,7 +628,11 @@ class LoopMixin:
             task.memory.facts.record(read["path"].rsplit("/", 1)[-1], read.get("kind") or "", read["text"], len(task.steps))
         page = (out.output or {}).get("read_window")
         if page and page.get("text"):     # and so is everything a window said, not only the part on screen
-            task.memory.facts.record(page.get("app") or "a window", "read in full", page["text"], len(task.steps))
+            # "read in full" is a claim, and for a window whose tree holds only its chrome it is a false
+            # one: what comes back is the toolbar. Record what it was, so the decider is not told the
+            # document has been read when the address bar has.
+            how = "its tree holds only the window's own controls, not its content" if page.get("thin") else "read in full"
+            task.memory.facts.record(page.get("app") or "a window", how, page["text"], len(task.steps))
         ran = (out.output or {}).get("shortcut_result")
         if ran and ran.get("text"):       # and what one of the person's own Shortcuts handed back
             task.memory.facts.record(ran["name"], "a shortcut's result", ran["text"], len(task.steps))

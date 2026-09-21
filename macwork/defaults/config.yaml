@@ -172,6 +172,11 @@ observe:
     requires_input: text         # "put it on the clipboard" is offered only when the caller supplied text
     label: put the given text on the clipboard
   readall:                       # "read everything this window says", for what does not fit on screen
+    # A window whose tree holds only its chrome gives back the toolbar and the address bar. Measured on
+    # Chrome: 41 nodes, all toolbar. Below either of these the read is reported as what it is, so the
+    # decider is not told the document was read when the address bar was.
+    thin_below_nodes: 25
+    thin_below_chars: 400
     enabled: true
     offer_over: 200              # only offered when the screen text is long enough to be a summary
     chars: 40000

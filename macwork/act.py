@@ -185,7 +185,12 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         whole = "\n".join(seen)[: int(rc.get("chars", 40000))]
         if not whole:
             return Outcome(False, error="there is no readable text in this window", wait=False)
-        return Outcome(True, output={"read_window": {"app": (ctx.app or {}).get("name") or "", "text": whole,
+        # A window whose tree holds only its chrome — a browser, a canvas — gives back the toolbar and the
+        # address bar, and this was recorded as "read in full" and became a fact the task could then write
+        # back as the document. Measured on Chrome: 41 nodes, all toolbar. Say which it was.
+        thin = len(snap.get("nodes", [])) < int(rc.get("thin_below_nodes", 25)) or \
+            len(whole) < int(rc.get("thin_below_chars", 400))
+        return Outcome(True, output={"read_window": {"thin": thin, "app": (ctx.app or {}).get("name") or "", "text": whole,
                                                      "truncated": bool(snap.get("truncated"))}}, wait=False)
     if a.verb == "raise":           # bring another window of the app to the front
         ctx.helper.call("ax.perform", ref=t["ref"], action="AXRaise")

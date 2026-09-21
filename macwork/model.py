@@ -84,6 +84,10 @@ class Step:
     slot_keys: list[str] = field(default_factory=list)
     before: str | None = None                    # screen state the step was taken from (signature + text digest)
     key: str = ""                                # the affordance's language-independent identity, if it had one
+    produced: bool = False                       # it handed something back — a file's text, a window read in
+                                                 # full, what a Shortcut returned. Such a step raises no
+                                                 # Accessibility event, and "did anything happen" used to
+                                                 # be a count of those alone
     effect: str = ""                             # the floor's category for it: navigate | enter | delete | send | …
                                                  # "" = nobody judged it. This is what `revert` reads to know
                                                  # which steps changed something, rather than judging again
