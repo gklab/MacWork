@@ -29,8 +29,17 @@ confirm:
     or system setting is touched, nothing is saved, sent or installed, and doing it again or undoing it in the
     app would put things back
   release: [navigate, enter, edit]      # the verdicts that let an action through; every other one asks the user
-  release_only_for:                     # a release offered only for certain verbs (others are always offered)
+  # A verdict narrowed to the actions it can honestly apply to. Entries are verbs or channel:<name>, and an
+  # action that is neither cannot be released by that verdict however sure the classifier is. "It only changes
+  # what this window holds" is a judgement about prose; "this is the channel that moves files" is a fact about
+  # the action — where a fact is available it is not the classifier's to overrule.
+  release_only_for:
     enter: [type, type_submit]
+    # `edit` covers a document, a calculator entry, a form. Those are reached through the window, the
+    # keyboard, the app's menus or a pointer. The channels left out reach past the window by construction:
+    # file (including moving to the Trash), app (quitting), script and script_cmd (running code), service
+    # (handing content to another app), shortcut, clipboard.
+    edit: [channel:window, channel:keys, channel:menu, channel:pointer]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something

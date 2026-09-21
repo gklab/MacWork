@@ -102,17 +102,40 @@ class PolicyMixin:
     def _releases(self, a: Affordance | None = None) -> dict[str, str]:
         """The verdicts that let an action through, named by policy rather than written into the code: what a
         Mac holds harmless is a policy question, and it grew — deleting a word inside the document being edited
-        is not the delete the floor is there for, and asking the user about it stopped a real task dead."""
+        is not the delete the floor is there for, and asking the user about it stopped a real task dead.
+
+        ``release_only_for`` narrows a verdict to the actions it can honestly apply to. Each entry is a verb
+        or ``channel:<name>``; an action that is neither cannot be released by that verdict however sure the
+        classifier is. "It only changes what this window holds" is a judgement about prose; "this action is
+        on the channel that moves files" is a fact about the action, and where a fact is available it is not
+        the classifier's to overrule.
+
+        ``a`` is None when the question is "what counts as a release at all" rather than "may *this* be
+        released" — every caller that is deciding about an action passes it.
+        """
         conf = self.cfg.policy.get("confirm", {}) or {}
         only_for = conf.get("release_only_for") or {}
         out = {}
         for name in conf.get("release") or ["navigate", "enter"]:
-            verbs = only_for.get(name)
-            if verbs and a is not None and a.verb not in verbs:   # a is None: asking what counts, not what to offer
+            allowed = only_for.get(name)
+            if allowed and a is not None and a.verb not in allowed and f"channel:{a.channel}" not in allowed:
                 continue
             if conf.get(name):
                 out[name] = str(conf[name]).strip()
         return out or {"navigate": "it only opens, shows or navigates to something"}
+
+    def _scored(self, a: Affordance, verdict: tuple[str, Any]) -> tuple[str, float]:
+        """(what it was judged to be, how much of that judgement counts as a release *for this action*).
+
+        The score used to be worked out once and cached. But `release_only_for` makes the answer depend on
+        the action — and the cache key is the app, the label and where it sits, which does not tell a menu
+        command apart from the file channel moving something to the Trash. A score computed for one was
+        being handed to the other.
+        """
+        choice_, probs = verdict
+        if not isinstance(probs, dict):     # a score cached by an older run: keep it rather than lose the verdict
+            return choice_, float(probs)
+        return choice_, sum(float(probs.get(r, 0.0)) for r in self._releases(a))
 
     def _floor_options(self, a: Affordance, hits: list[str]) -> dict[str, str]:
         conf = self.cfg.policy.get("confirm", {}) or {}
@@ -160,7 +183,9 @@ class PolicyMixin:
             a = ans.get(qid) or {}
             probs = a.get("probabilities") or {}
             if a:
-                cache[key] = (a.get("choice", ""), sum(float(probs.get(r, 0.0)) for r in self._releases()))
+                # the probabilities, not a score: what fraction of them counts as "released" depends on the
+                # action being asked about, and the key does not distinguish a menu command from a file move
+                cache[key] = (a.get("choice", ""), probs)
 
     def _verdict(self, task_id: str, ctx: Ctx, a: Affordance, hits: list[str], window: str | None,
                  ask: bool) -> tuple[str, float] | None:
@@ -170,9 +195,9 @@ class PolicyMixin:
         not be reached. A failed attempt is never cached: it would make the words stand for the rest of the run.
         """
         key = self._floor_key(ctx, a)
-        cache: dict[str, tuple[str, float]] = self.cache.setdefault("floor.verdicts", {})
+        cache: dict[str, tuple[str, dict[str, float]]] = self.cache.setdefault("floor.verdicts", {})
         if key in cache:
-            return cache[key]
+            return self._scored(a, cache[key])
         if not ask or getattr(ctx, "gate", None) is None:
             return None
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
@@ -184,9 +209,8 @@ class PolicyMixin:
             log.info("floor classification unavailable for %r: %s", a.label[:40], exc)
             return None
         probs = (ans.get("what") or {}).get("probabilities") or {}
-        cache[key] = ((ans.get("what") or {}).get("choice", ""),
-                      sum(float(probs.get(r, 0.0)) for r in self._releases()))
-        return cache[key]
+        cache[key] = ((ans.get("what") or {}).get("choice", ""), probs)
+        return self._scored(a, cache[key])
 
     def _floor(self, task_id: str, ctx: Ctx, a: Affordance, window: str | None = None, ask: bool = True) -> list[str]:
         """The floor categories that gate this action ([] = none).
@@ -215,7 +239,7 @@ class PolicyMixin:
                 self.audit.record("floor", task=task_id, action=a.label, released=True, navigate=round(nav, 3), words=hits)
                 return []
             return hits
-        return [] if top in self._releases() or top == "" else [top]
+        return [] if top in self._releases(a) or top == "" else [top]
 
     def _risky(self, a: Affordance, ctx: Ctx | None = None) -> bool:
         """A cheap read for the places that filter a whole pool of actions before a decider question picks one
