@@ -84,6 +84,8 @@ class Step:
     slot_keys: list[str] = field(default_factory=list)
     before: str | None = None                    # screen state the step was taken from (signature + text digest)
     key: str = ""                                # the affordance's language-independent identity, if it had one
+    outcome: str = ""                            # what it did, once the next look has shown it: "「12×」 became
+                                                 # 「12×2」". "ok" only ever meant the action was carried out
     produced: bool = False                       # it handed something back — a file's text, a window read in
                                                  # full, what a Shortcut returned. Such a step raises no
                                                  # Accessibility event, and "did anything happen" used to

@@ -29,6 +29,53 @@ from .skills import Skills
 log = logging.getLogger(__name__)
 
 
+NOTHING_CHANGED = "nothing on screen changed"
+
+
+def _visible(line: str) -> str:
+    """A line without the marks nobody can see. A calculator's display is full of U+200E, and a value that
+    gained one has not changed."""
+    import unicodedata
+    return "".join(ch for ch in line if unicodedata.category(ch) != "Cf").strip()
+
+
+def what_changed(before_text: str, after_text: str, before_window: str | None = None, after_window: str | None = None,
+                 before_app: str | None = None, after_app: str | None = None, limit: int = 200) -> str:
+    """What the last action did to the screen, as a fact the decider can read.
+
+    The history said `button 「2」 -> ok`, and ok means the button went down — not that the display went
+    from 12× to 12×2, which is the one thing that would have shown the mistake. The engine holds the screen
+    before and the screen after at the moment it looks again; this is only the subtraction.
+
+    Lines, not characters: a screen is a set of things that are there, and what an action does is make
+    some of them appear, go away or turn into something else. One line gone and one new is said as the
+    first *becoming* the second, because that is what it is.
+    """
+    def lines(text: str) -> list[str]:
+        return list(dict.fromkeys(v for v in (_visible(x) for x in (text or "").split("\n")) if v))
+
+    def cut(x: str, n: int = 48) -> str:
+        return x if len(x) <= n else x[: n - 1] + "…"
+
+    before, after = lines(before_text), lines(after_text)
+    gone = [x for x in before if x not in after]
+    new = [x for x in after if x not in before]
+    parts: list[str] = []
+    if after_app and before_app and after_app != before_app:
+        parts.append(f"now in {after_app}")
+    if (after_window or "") != (before_window or "") and (before_window or after_window):
+        parts.append(f"window 「{cut(before_window or '(none)', 30)}」 → 「{cut(after_window or '(none)', 30)}」")
+    if len(gone) == 1 and len(new) == 1:
+        parts.append(f"「{cut(gone[0])}」 became 「{cut(new[0])}」")
+    else:
+        for name, items in (("appeared", new), ("gone", gone)):
+            if items:
+                shown = "; ".join(cut(x) for x in items[:3])
+                parts.append(f"{name}: {shown}" + (f" (+{len(items) - 3} more)" if len(items) > 3 else ""))
+    out = ", ".join(parts) or NOTHING_CHANGED
+    return out if len(out) <= limit else out[: limit - 1] + "…"
+
+
 def exact_state(sig: str, screen_text: str) -> str:
     """The screen's structure *and* what it says: `12×` and `12×2` are one structure and two states.
 
@@ -363,8 +410,19 @@ class LoopMixin:
         return out
 
     def _history(self, task: Task) -> list[str]:
-        return [f"{s.action} -> {'ok' if s.ok else 'failed'}" + (f" (ui: {', '.join(s.events[:4])})" if s.events else " (no ui change)")
-                for s in task.steps[-int(self.cfg.get("engine.history", 6)):]]
+        """What was done and what it *did* — not only that it was carried out (see `what_changed`)."""
+        def line(s: Step) -> str:
+            if not s.ok:
+                return f"{s.action} -> failed" + (f": {s.error[:100]}" if s.error else "")
+            reacted = f" (ui: {', '.join(s.events[:4])})" if s.events else ""
+            if s.outcome and s.outcome != NOTHING_CHANGED:
+                return f"{s.action} -> {s.outcome}"
+            if s.outcome and s.events:
+                # the app did react, only not in any text the engine can read — saying "nothing changed"
+                # here would be telling the decider something false
+                return f"{s.action} -> ok{reacted}, no text on screen changed"
+            return f"{s.action} -> ok" + (reacted or " (no ui change)")
+        return [line(s) for s in task.steps[-int(self.cfg.get("engine.history", 6)):]]
 
     # ------------------------------------------------------------------ ask
     def _ask(self, task: Task, look: Look) -> dict[str, Any] | _Again:
@@ -674,7 +732,7 @@ class LoopMixin:
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
         task.prev = {"sig": sig, "label": chosen.label, "ok": out.ok, "events": events, "app": ctx.app,
-                     "screen": obs.screen_text if obs else None}
+                     "screen": obs.screen_text if obs else None, "window": obs.window if obs else None}
         task.updated = time.time()
         if out.output:
             task.outputs.update(out.output)
@@ -734,6 +792,11 @@ class LoopMixin:
         """Now that we see where the last step led, remember it (and remember steps that did nothing)."""
         self.models.see(app, sig, obs.window, [a.label for a in obs.affordances if a.channel == "window"][: int(self.cfg.get("appmodel.sample", 12))])
         prev, task.prev = task.prev, None
+        if prev and task.steps and prev.get("screen") is not None and not task.steps[-1].outcome:
+            # the screen before and the screen after are both in hand exactly here, and nowhere else
+            task.steps[-1].outcome = what_changed(
+                prev.get("screen") or "", obs.screen_text, prev.get("window"), obs.window,
+                (prev.get("app") or {}).get("name"), (app or {}).get("name"))
         if not prev or not prev.get("sig"):
             return
         events = [x for x in prev.get("events", []) if not x.startswith("wait failed")]
