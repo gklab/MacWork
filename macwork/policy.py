@@ -288,7 +288,11 @@ class PolicyMixin:
         top, nav = verdict
         self.cache["floor.last_category"] = top     # what it was judged to be, for the step to record
         if top == "":
-            return hits
+            # The decider answered and the answer was unusable — not the same as not being able to ask it.
+            # This used to `return hits`, which on a Mac whose language the words do not cover is an empty
+            # list, which is a release.
+            log.info("the classification of %r came back with no verdict", a.label[:60])
+            return hits or ["unclassified"]
         # One threshold, both paths. Batch 2 removed a word list that read a miss as "safe"; what replaced
         # it required near-certainty to release an action the words flagged and took the classifier's bare
         # argmax for one they did not — so the same unsure verdict released on a German or Japanese Mac and

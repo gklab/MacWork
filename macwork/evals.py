@@ -362,8 +362,38 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
     return report
 
 
+def _forget(engine: Engine) -> None:
+    """Put the engine back to not having seen this Mac.
+
+    `fresh: true` promises that every task is solved by reasoning on the live screen rather than by recall,
+    and it emptied the app models *once*, at the start of the suite. Task 2 then ran on what task 1 had
+    learned about the same app, and the safety floor's verdict cache spanned all 29 tasks and every
+    repeat — so the later a task ran, the better it did, and the three repeats of a task were not three
+    independent trials.
+
+    Not everything cached is recall. Which apps are installed is a fact about the Mac and costs 1.8 s to
+    re-read; the pseudonym table is privacy machinery. Those stay.
+    """
+    for key in ("floor.verdicts", "floor.harmless", "vision.ocr", "vision.wanted", "vision.canvas",
+                "menu.snap", "menubar.owners", "learn.safe", "services.all"):
+        got = engine.cache.get(key)
+        if isinstance(got, (dict, set)):
+            got.clear()
+        else:
+            engine.cache.pop(key, None)
+    if engine.cfg.docs["config"].get("appmodel", {}).get("dir", "").startswith("/"):
+        import tempfile
+
+        from .appmodel import AppModels
+        engine.cfg.docs["config"]["appmodel"]["dir"] = tempfile.mkdtemp(prefix="macwork-eval-apps-")
+        engine.models = AppModels(engine.cfg)
+        engine.cache["appmodels"] = engine.models
+
+
 def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: int, runs: int,
               progress: Callable[[str], None]) -> dict[str, Any]:
+    if suite.get("fresh", True):
+        _forget(engine)
     eval_dir = str(_sandbox(engine, task)) if suite.get("sandbox") else ""
     t = _sub(task, eval_dir) if eval_dir else task
     progress(f"[{t['id']}{f' #{n + 1}' if runs > 1 else ''}] {t['goal']}")
@@ -398,6 +428,17 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         t0 = time.monotonic()
         try:
             res = engine.do(t["goal"], t.get("inputs") or {}, t.get("app"), progress=lambda m: progress(f"   → {m}"))
+            # `need_continue` means "getting somewhere, out of budget for this turn". The CLI resumes it
+            # and so does every MCP client, so a harness that scores it a failure is measuring the budget
+            # rather than the engine. Bounded, because a task that only ever asks to continue is stuck.
+            continues = 0
+            limit = int(suite.get("max_continues", 3))
+            while res.get("status") == "need_continue" and "need_continue" not in expected and continues < limit:
+                continues += 1
+                progress(f"   → continuing ({continues}/{limit}): {res.get('reason', '')[:60]}")
+                res = engine.resume(res["task_id"], progress=lambda m: progress(f"   → {m}"))
+            if continues:
+                base["continued"] = continues
         except Exception as exc:  # noqa: BLE001  (one broken task must not stop the suite)
             res = {"status": "error", "reason": str(exc)[:200], "steps": [], "decider": {"calls": 0, "cost_usd": 0.0}}
         seconds = round(time.monotonic() - t0, 1)

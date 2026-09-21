@@ -10,7 +10,7 @@ from .act import get_channel
 from .decider import DeciderError, choice, noul
 from .model import Affordance, Observation
 from .loop import Progress
-from .observe import Ctx, arrange, get_provider, observe
+from .observe import Ctx, arrange, get_provider, installed_apps, observe
 
 log = logging.getLogger(__name__)
 

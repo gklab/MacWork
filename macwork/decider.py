@@ -168,6 +168,10 @@ class ChainDecider:
 
     def __init__(self, deciders: list[Decider]) -> None:
         self.deciders = deciders
+        # Every step makes two `decide()` calls — the step's own, and the safety classification sent beside
+        # it — so two failures can arrive together. Dropping the head with a bare pop(0) could then drop
+        # two for one failure and empty the list, which wedges the engine for the rest of the session.
+        self._lock = threading.Lock()
 
     def __getattr__(self, attr: str) -> Any:      # name, calls, cost_usd, last_ms, warm…: whoever is in front
         return getattr(self.deciders[0], attr)
@@ -178,11 +182,14 @@ class ChainDecider:
             try:
                 return head.decide(state, questions)
             except DeciderError as exc:
-                if len(self.deciders) == 1:
-                    raise
-                log.warning("decider %s could not answer (%s); switching to %s for the rest of this session",
-                            getattr(head, "name", "?"), exc, getattr(self.deciders[1], "name", "?"))
-                self.deciders.pop(0)
+                with self._lock:
+                    if self.deciders and self.deciders[0] is not head:
+                        continue          # someone else already moved on; try whoever is in front now
+                    if len(self.deciders) == 1:
+                        raise
+                    log.warning("decider %s could not answer (%s); switching to %s for the rest of this session",
+                                getattr(head, "name", "?"), exc, getattr(self.deciders[1], "name", "?"))
+                    self.deciders.pop(0)
 
 
 def make_decider(cfg: Config, helper: Any = None) -> Decider:
