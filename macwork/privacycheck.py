@@ -93,10 +93,54 @@ def run(cfg: Config, entities: Found | None, app_names: list[str], detect: Found
         out = Redactor(cfg, entities=entities, protect=lambda: app_names, detect=detect).text(word)
         if out != word:
             ui_over.append({"ui": word, "sent": out})
+    door = _through_the_door(cfg, entities, app_names, detect, items)
     n = len(items)
     return {"texts": n, "leaked": sum(v[0] for v in per_kind.values()),
             "leak_rate": round(sum(v[0] for v in per_kind.values()) / n, 3),
             "by_kind": {k: f"{v[0]}/{v[1]} leaked" for k, v in per_kind.items()},
             "app_names_checked": min(len(app_names), 80) * 3, "app_names_hidden_by_mistake": len(over),
             "ui_words_checked": len(UI_WORDS), "ui_words_hidden_by_mistake": len(ui_over),
+            "through_the_gate": door,
             "examples": {"leaks": leaks[:8], "over_redacted": (over + ui_over)[:8]}}
+
+
+def _through_the_door(cfg: Config, entities: Found | None, app_names: list[str], detect: Found | None,
+                      items: list[tuple[str, str, str]]) -> dict[str, Any]:
+    """The same corpus again, but through `Gate.decide` — the door the engine actually sends by.
+
+    This measurement existed and looked at the wrong thing. It ran the corpus through `Redactor`, which is
+    one part of the door, and reported a leak rate for the whole. Meanwhile `Gate.decide` was redacting the
+    state and the options and passing each question's *wording* through untouched — and the safety floor
+    interpolates the action's own label into that wording, several times per step. A number that says 27%
+    while the largest leak is not in the sample is worse than no number.
+
+    So this puts each corpus text in all three places a real request has: the state, an option, and the
+    question's own wording.
+    """
+    from .privacy import Audit, Gate
+
+    class Capture:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def decide(self, state: Any, questions: dict[str, Any]) -> dict[str, Any]:
+            self.sent.append(repr(state) + repr(questions))
+            return {k: {"type": "choice", "choice": "a", "confidence": 1.0} for k in questions}
+
+    seen = Capture()
+    gate = Gate(seen, Audit(cfg))
+    leaked: list[dict[str, str]] = []
+    for kind, value, text in items:
+        r = Redactor(cfg, entities=entities, protect=lambda: app_names, detect=detect)
+        try:
+            gate.decide(r, {"app": "Mail", "screen_text": text},
+                        {"q": {"type": "choice", "instructions": f"what does 「{text}」 do?",
+                               "criteria": {"a": text, "b": "nothing"}}})
+        except Exception:                          # noqa: BLE001  (a refusal is not a leak)
+            continue
+        if _leaked(value, seen.sent[-1]):
+            leaked.append({"kind": kind, "sent": seen.sent[-1][:200]})
+    return {"requests": len(items), "leaked": len(leaked),
+            "leak_rate": round(len(leaked) / (len(items) or 1), 3),
+            "places_checked": ["state", "criteria", "instructions"],
+            "examples": leaked[:5]}

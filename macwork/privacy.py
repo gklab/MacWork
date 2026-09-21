@@ -342,10 +342,26 @@ class Gate:
         self.audit = audit
 
     def decide(self, redactor: Redactor, state: Any, questions: dict[str, dict[str, Any]], task: str = "") -> dict[str, dict[str, Any]]:
+        """Everything that goes out goes through one entity pass — the state, the options, *and* the wording.
+
+        The wording was the hole. It reads like fixed prose from `questions.yaml`, but twelve call sites
+        interpolate a live UI string into it: the safety floor puts the action's own label in
+        (`policy.py`), tidy puts an app and a window title in, learn puts an action in. A label carries
+        what a field holds by construction — `observe` appends `(now: …)` — and a row is labelled by the
+        text it shows. So one request went out with the same address pseudonymised in `state` and in the
+        clear in `instructions`, several times per step, for the life of the project.
+
+        One pass over the whole request, not three: the same person has to get the same token everywhere in
+        it, or the decider is shown two names for one thing and its answer is about neither.
+        """
         crit = {k: q["criteria"] for k, q in questions.items() if "criteria" in q}
-        safe = redactor.value({"state": state, "criteria": crit})   # one entity pass for the whole request
+        says = {k: q["instructions"] for k, q in questions.items() if "instructions" in q}
+        safe = redactor.value({"state": state, "criteria": crit, "instructions": says})
         safe_state = safe["state"]
-        safe_questions = {k: {**q, "criteria": safe["criteria"][k]} if k in crit else q for k, q in questions.items()}
+        safe_questions = {k: {**q,
+                              **({"criteria": safe["criteria"][k]} if k in crit else {}),
+                              **({"instructions": safe["instructions"][k]} if k in says else {})}
+                          for k, q in questions.items()}
         if redactor.failed:   # tagging broke: every string is "[withheld]" — sending that is deciding blind
             self.audit.record("refused", task=task, why="entity tagging failed; nothing was sent")
             raise RedactionError("personal data could not be checked for, so nothing was sent")
