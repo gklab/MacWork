@@ -397,6 +397,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         for app in task.apps.values():
             self.models.save(app)
         self.audit.record("task", task=task.id, status=status, reason=reason, steps=len(task.steps))
+        if status in ("failed", "cancelled") and task.changed and self.cfg.get("engine.revert.on_failure", False):
+            # Before tidy, not after: putting a change back is done through the app's own undo command, and
+            # tidy closes the windows that command lives in. `revert` refuses on its own terms — it will not
+            # undo while someone has been using the Mac, and it stops at the first change it cannot put back.
+            task.outputs["revert"] = self.revert(task.id)
         if status in ("done", "failed", "cancelled") and self.cfg.get("engine.tidy", "auto") == "auto":
             # pending and blocked tasks keep everything as it is: the user or caller continues there
             if self.cfg.get("engine.tidy_background", True):   # the result goes back now; closing apps can follow

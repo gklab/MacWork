@@ -101,18 +101,6 @@ explore_safe: >-
   In this app, would choosing "{action}" only show or navigate — open a view, tab, panel, sidebar, window, list or
   dialog, change the zoom or the mode of display — without creating, changing, sending, deleting, installing,
   signing in, quitting or starting anything?
-web_action: >-
-  You are driving a web browser for the user to accomplish the goal in the state. Pick the single next action
-  that makes the most progress. Open the result or link most likely to hold the answer (prefer authoritative
-  sources, skip ads, sign-in and cookie banners); type the query into a search box when this site has one and
-  nothing useful is showing; scroll when the answer is probably further down; choose done once the goal is
-  accomplished or answered by the current page or the saved notes. Do not repeat an action already in history.
-web_passage: Which passage of the current page is most relevant to the goal (holds the answer or the key facts)?
-web_useful: Does the current page's text contain concrete information that answers, or directly helps answer, the goal?
-web_enough: Taken together, do the saved notes and the current page already fully answer or accomplish the goal?
-web_stuck: >-
-  Is the run stuck: blocked by a captcha, sign-in wall or error page, or repeating the same actions without
-  getting closer to the goal?
 
 # ---- planner prompts ({placeholders} are filled in by the engine)
 planner_system: >-

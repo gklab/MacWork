@@ -151,8 +151,6 @@ observe:
     requires_input: text         # offered only when the caller supplied inputs.text
     label: type the given text at the cursor, into whatever has keyboard focus / 在光标处输入文字
     submit_label: type the given text at the cursor and press Return / 在光标处输入文字并回车
-  labels:
-    web_research: research this on the web (search, open pages, read the relevant passages) / 上网查资料、搜索、读网页
   shortcuts:                     # the person's own Shortcuts — also the only route by which an app's
                                  # declared App Intent can actually be performed (no process may perform
                                  # another app's intent; the system does, through Shortcuts and Siri)
@@ -262,7 +260,9 @@ engine:
     max_steps: 8            # how far back to go in one call
     require_user_idle_s: 5  # refuse while someone has been using the Mac: their keystrokes went into these
                             # same apps, and an undo would take those back instead
-    on_failure: false       # reverting by itself is an action too; it is asked for, not assumed
+    on_failure: false       # true: a task that failed or was cancelled puts its own changes back before
+                            # tidy runs (tidy closes the windows the undo command lives in). Off by default:
+                            # reverting is an action too, and it is asked for rather than assumed
   max_steps: 12                  # per run: one do(), or one resume() after the caller answered
   budget_s: 90                   # per run too — the caller's thinking time is not the task's
   total_steps: 48                # over all of a task's runs together
