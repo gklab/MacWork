@@ -711,9 +711,16 @@ class LoopMixin:
             progress(f"routine: {a.label}")
             t0 = time.monotonic()
             out, events = self._execute(ctx, a, params)
+            # the same bookkeeping a step taken by the loop gets: a routine that renames, types and saves
+            # changed exactly as much as the steps it replays, and `revert` used to answer "this task
+            # changed nothing" for one
+            effect = str(self.cache.get("floor.last_category") or "")
             task.steps.append(Step(len(task.steps), a.label, a.id, out.ok, events, {"replay": skill["id"]},
                                    round((time.monotonic() - t0) * 1000), out.error, a.channel, a.verb, a.context,
-                                   sorted(params), key=a.key))
+                                   sorted(params), key=a.key, effect=effect, produced=bool(out.output)))
+            if out.ok and effect not in ("", "navigate", "enter") and ctx.app:
+                task.changed.append({"n": len(task.steps) - 1, "action": a.label, "effect": effect,
+                                     "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
             if out.target:
                 task.target = out.target
             if not out.ok:

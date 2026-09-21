@@ -72,7 +72,9 @@ def check(engine: Engine, task: dict[str, Any], result: dict[str, Any], only: tu
     if any(k in spec for k in (*SCREEN_CHECKS, "screen_excludes")):
         window, screen, front = _text_of(engine, task.get("check_app") or result.get("_app") or task.get("app"))
     outputs = result.get("outputs", {}) or {}
-    trace = "\n".join(result.get("steps", []) + [str(t.get("text", "")) for t in outputs.get("typed_by_planner", [])])
+    trace = "\n".join(result.get("steps", [])
+                      + [str(t.get("text", "")) for t in outputs.get("typed_by_planner", [])]
+                      + [str(t.get("text", "")) for t in outputs.get("planner_inputs", [])])
     fields = {"screen_contains": screen + "\n" + window, "window_contains": window, "frontmost": front,
               "output_contains": json.dumps(outputs, ensure_ascii=False), "answer_contains": str(outputs.get("answer", ""))}
     for key, want in spec.items():

@@ -88,8 +88,7 @@ class ConsultMixin:
         if task.blocked_reason:
             return True
         task.plan, task.plan_i = (plan["steps"] or task.plan or []), 0
-        for k, v in plan["inputs"].items():
-            task.inputs.setdefault(k, v)
+        self._plan_inputs(task, ctx, plan.get("inputs") or {})
         self.audit.record("plan", task=task.id, steps=plan["steps"], problem=problem)
         return True
 
@@ -133,6 +132,35 @@ class ConsultMixin:
             return
         if answer:
             task.outputs["answer"] = answer
+
+    def _plan_inputs(self, task: Task, ctx: Ctx | None, inputs: dict[str, Any]) -> None:
+        """Text a plan wants put into `task.inputs`.
+
+        `inputs` is where the *caller's* text lives, and everything downstream treats it that way — it is
+        typed, saved and reported as something a person asked for. `_fill` puts a planner's text through a
+        provenance guard before it can be typed and records it where the injection checks look; this went
+        round all of it with a `setdefault`, so a planner asked for a plan could put anything there and it
+        became indistinguishable from what the caller supplied.
+
+        The same guard, then: a value the task has already seen, or one the decider judges to be what the
+        task already had, written another way. Anything else is refused and said so.
+        """
+        for k, v in inputs.items():
+            if k in task.inputs:            # the caller's own words are never overwritten
+                continue
+            text = str(v)
+            source = task.memory.facts.source_of(text) if task.memory.facts else None
+            if source is None:
+                a = Affordance("plan", "keys", "type", f"the value the plan gives for 「{k}」", {})
+                if not self._text_stands(task, ctx, text, a):
+                    log.info("refused planned input %r: seen nowhere", text[:60])
+                    self.audit.record("refused_text", task=task.id, text=text[:120], into=f"inputs.{k}")
+                    task.outputs.setdefault("refused_text", []).append({"into": f"inputs.{k}", "text": text[:120]})
+                    continue
+                source = "judged to be what the task already had"
+            task.inputs[k] = text
+            task.outputs.setdefault("planner_inputs", []).append({"into": k, "text": text, "source": source})
+            self.audit.record("filled_text", task=task.id, into=f"inputs.{k}", source=source)
 
     def _fill(self, task: Task, ctx: Ctx, obs: Observation | None, a: Affordance, slot: str) -> str | None:
         backend = self.planning_backend
