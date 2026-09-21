@@ -81,6 +81,24 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
         print("\n→ grant Accessibility to the helper: `macwork doctor --ask` opens the prompts, or "
               "System Settings ▸ Privacy & Security ▸ Accessibility", file=sys.stderr)
     using = str(st.get("decider", {}).get("using") or "")
+    route = None
+    if "error" not in st.get("decider", {}):
+        try:
+            route = getattr(getattr(eng, "decider", None), "route_ms", lambda: None)()
+        except Exception:                           # noqa: BLE001  (a diagnostic line must not fail the doctor)
+            route = None
+    if route is not None:
+        # what a step costs before the engine does anything at all; see JevDecider.route_ms
+        from .profile import profile
+        from .store import Store
+        step = sum(v["median_ms"] for k, v in profile(Store(cfg).path)["stages"].items()
+                   if k in ("observe", "decide", "act", "wait"))
+        share = f" — about {route / step:.0%} of a {step:.0f} ms step on this Mac" if step else ""
+        print(f"\n→ one round trip to the decider takes {route:.0f} ms from this network{share}.", file=sys.stderr)
+        if route > 250:
+            print("  That is the floor under every decision, and it is the route, not the engine: a request a game\n"
+                  "  would send costs nearly the same from here. A proxy rule that sends the decider's host through a\n"
+                  "  faster node is worth more than any optimisation inside this program.", file=sys.stderr)
     if using.startswith("local:"):
         # `auto` fell back, and both halves of that are worth saying: this decider's confidence is not
         # calibrated, and whether the backend answers at all is not something `status()` can know without

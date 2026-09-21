@@ -113,6 +113,26 @@ class JevDecider:
 
     _warm_after_s = 15.0
 
+    def route_ms(self, samples: int = 3) -> float | None:
+        """One round trip to the service on a connection that is already open, in ms — no key, no tokens.
+
+        Every step costs at least this, whatever the engine does, and it differs by an order of magnitude
+        between networks: measured from one Mac behind a tunnel, a four-option request a game would send
+        took 467 ms against 550 ms for the engine's own two-hundred-option one. People driving games
+        smoothly with the same model are not sending smaller requests, they are closer to it. So the
+        number is reported rather than left to be mistaken for the engine being slow.
+        """
+        try:
+            self._http.head(self._base, timeout=8)             # opens (or reuses) the pooled connection
+            took = []
+            for _ in range(max(1, samples)):
+                t0 = time.monotonic()
+                self._http.head(self._base, timeout=8)
+                took.append((time.monotonic() - t0) * 1000)
+            return round(min(took), 1)
+        except Exception:                                       # noqa: BLE001  (a diagnostic must not raise)
+            return None
+
     def decide(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         t0 = time.monotonic()
         self._last_used = t0
