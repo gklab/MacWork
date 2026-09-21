@@ -644,9 +644,14 @@ class LoopMixin:
             return AGAIN
         harmless = lambda a: self._backs_out(task, look.ctx, redactor, look.state, a)  # noqa: E731
         if self._needs_confirm(chosen, risky_screen, task.approved, harmless, floor=floor):
+            because = floor or ["the screen asks to confirm something"]
+            granted, offer = self.standing(task.id, look.ctx, chosen, because)
+            if granted:
+                progress(f"allowed by a standing grant: {chosen.label}")
+                return chosen
             task.held = chosen
             return self._finish(task, "need_confirm", "this action is irreversible or outward-facing",
-                                {"confirm": chosen.public(), "because": floor or ["the screen asks to confirm something"]})
+                                self._confirm_pending(chosen.public(), because, offer))
         return chosen
 
     # ------------------------------------------------------------------ perform
@@ -662,10 +667,11 @@ class LoopMixin:
         # `need_input` supplies text for an action nobody has classified.
         if look is None and self.approval_key(chosen) not in task.approved:
             gated = self._floor(task.id, ctx, chosen, (obs.window if obs else None) or (task.target or {}).get("window"))
-            if gated:
+            granted, offer = self.standing(task.id, ctx, chosen, gated) if gated else (False, None)
+            if gated and not granted:
                 task.held = chosen
                 return self._finish(task, "need_confirm", "this action is irreversible or outward-facing",
-                                    {"confirm": chosen.public(), "because": gated})
+                                    self._confirm_pending(chosen.public(), gated, offer))
         params = {k: task.inputs[k] for k in chosen.slots if k in task.inputs}
         for carried in ("text", "url"):   # a planner suggestion carries its own text or link
             if carried in chosen.target and chosen.id.startswith("t"):
@@ -696,10 +702,12 @@ class LoopMixin:
                     task.memory.declined.add(chosen.label)
                     progress(f"not asked for, skipped: {typed.label[:80]}")
                     return None
-                task.held = chosen
-                task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
-                return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
-                                    {"confirm": {**chosen.public(), "text": text[:200]}, "because": floor})
+                granted, offer = self.standing(task.id, ctx, typed, floor)    # …and so is a standing grant
+                if not granted:
+                    task.held = chosen
+                    task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
+                    return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
+                                        self._confirm_pending({**chosen.public(), "text": text[:200]}, floor, offer))
         task.tries = [t for t in task.tries if self._suggestion_label(t) != chosen.label]
         task.pace.redo = 0
         progress(chosen.label)

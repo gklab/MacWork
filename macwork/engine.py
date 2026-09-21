@@ -28,6 +28,7 @@ from .consult import ConsultMixin
 from .decider import Decider, DeciderError, make_decider
 from .effects import EffectsMixin
 from .facts import Facts
+from .grants import Grants
 from .helper import Helper, HelperError
 from .judge import MOVES, JudgeMixin
 from .learn import LearnMixin
@@ -84,6 +85,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         self.models = AppModels(self.cfg)
         self.skills = Skills(self.cfg)
         self.store = Store(self.cfg)
+        self.grants = Grants(self.cfg)
         self.cache["appmodels"] = self.models
         self.cache["skills"] = self.skills
         self._planner: Any = None
@@ -236,7 +238,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         return {"app": ctx.app, "window": obs.window, "screen_text": obs.screen_text,
                 "affordances": [a.public() for a in affs[:limit]], "total": len(affs), "notes": obs.notes}
 
-    def act(self, affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False) -> dict[str, Any]:
+    def act(self, affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False,
+            remember: bool = False) -> dict[str, Any]:
         with self._lock:      # acting does drive the Mac, so it waits its turn like a task does
             if not self._last:
                 return {"ok": False, "error": "call observe first"}
@@ -267,9 +270,15 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             if classify:
                 ctx.gate = self.gate
             floor = self._floor("step", ctx, a, obs.window) if classify else None
-            if self._needs_confirm(a, 0.0, set(), floor=floor) and not confirm:
-                return {"ok": False, "needs_confirm": True, "affordance": a.public(), "because": floor,
-                        "hint": "call act again with confirm=true"}
+            if self._needs_confirm(a, 0.0, set(), floor=floor):
+                granted, offer = self.standing("step", ctx, a, floor if floor is not None else self._floor_hits(a))
+                if not (granted or confirm):
+                    return {"ok": False, "needs_confirm": True, "affordance": a.public(), "because": floor,
+                            "hint": "call act again with confirm=true", **({"remember": offer} if offer else {})}
+                if confirm and remember and offer and not granted:
+                    self.grants.add(offer, "caller")
+                    self.audit.record("grant", task="step", id=offer["id"], app=offer.get("bundle_id"),
+                                      action=offer.get("action"), because=offer.get("because"), source="caller")
             missing = [k for k, s in a.slots.items() if s.required and k not in (params or {})]
             if missing:
                 return {"ok": False, "needs_input": missing, "affordance": a.public()}
@@ -289,8 +298,20 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             threading.Thread(target=backend.warm, name="planner-warm", daemon=True).start()   # never blocks the task
         return self._run_queued(task, progress, None)
 
+    def allow(self, task_id: str, source: str = "cli") -> dict[str, Any]:
+        """Remember the confirmation a task is waiting for (or was), as a standing grant."""
+        task = self.tasks.get(task_id) or self._recall(task_id)
+        offer = (task.pending or {}).get("remember") if task else None
+        if not offer:
+            return {"ok": False, "error": "unknown task" if task is None else
+                    "this task is not waiting on a confirmation that may be remembered"}
+        row = self.grants.add(offer, source)
+        self.audit.record("grant", task=task_id, id=row["id"], app=row.get("bundle_id"), action=row.get("action"),
+                          because=row.get("because"), source=source)
+        return {"ok": True, "grant": {k: row.get(k) for k in ("id", "app", "bundle_id", "action", "because")}}
+
     def resume(self, task_id: str, inputs: dict[str, Any] | None = None, confirm: bool | None = None,
-               choice_id: str | None = None, progress: Progress | None = None) -> dict[str, Any]:
+               choice_id: str | None = None, progress: Progress | None = None, remember: bool = False) -> dict[str, Any]:
         self._gc()
         task = self.tasks.get(task_id) or self._recall(task_id)
         if task is None:
@@ -305,6 +326,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                 return task.result()
             if held:
                 self.resume_approval(task)
+            if remember:          # "yes, and do not ask me about this one again"
+                task.outputs["remembered"] = self.allow(task.id, "caller")
         if task.status == "ambiguous":
             held = task.options.get(choice_id or "")
             if held is None:

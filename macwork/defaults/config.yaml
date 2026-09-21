@@ -368,6 +368,17 @@ input:
   focus_wait_s: 0.8              # how long to wait for the field to really have the keyboard before typing
   submit_wait_s: 0.8             # …and for the typed text to be in it before Return is sent
 
+grants:                          # standing grants: a confirmation the person chose to have remembered, for one
+                                 # action in one app (`macwork grants` lists them, `… revoke` takes one back).
+                                 # The engine never adds one by itself, and nothing else makes it more permissive
+  enabled: true
+  path: ~/Library/Application Support/macwork/grants.json
+  never_for: [delete, send, pay, risky_screen]   # floor categories that ask every time whatever was said before.
+                                 # risky_screen: the gate came from what the screen was asking, not from the
+                                 # action — "OK" is a different act on every dialog
+  from_mcp: false                # may an MCP caller pass remember=true? Off: a caller is usually a model, and a
+                                 # standing permission is the person's to give — `macwork grants allow <task-id>`
+
 audit:
   enabled: true
   path: ~/Library/Logs/macwork/audit.jsonl

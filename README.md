@@ -190,6 +190,10 @@ The safety floor in `policy.yaml` is a floor, not a way of deciding what to do.
 * **A verdict cannot release what it does not cover.** "It only edits this window" is a judgement; "this
   channel moves files" is a fact about the action, and the classifier does not overrule a fact.
 * **Approval is per action and spent on use.** Confirming one action does not confirm the next.
+* **Standing grants instead of tuned thresholds.** A confirmation can be remembered — for one action in one
+  app, like a macOS privacy grant — so the same scene does not ask twice and nobody edits a number.
+  Only a person gives one (`macwork grants allow <task-id>`, or "always" at the prompt); an MCP caller cannot
+  grant itself one, deleting, sending and paying can never have one, and `macwork grants revoke` takes it back.
 * On a screen judged risky, every other action needs confirmation too, unless it only backs out.
 * While the screen is locked, only non-UI channels run. `engine.mode: yield` (the default) gives the
   keyboard back the moment you touch it.

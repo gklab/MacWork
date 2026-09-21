@@ -358,6 +358,31 @@ class PolicyMixin:
                 return cached[0] not in self._releases() and cached[0] != ""
         return bool(self._floor_hits(a))
 
+    # ------------------------------------------------------------------ standing grants
+    def standing(self, task_id: str, ctx: Ctx, a: Affordance, because: list[str]) -> tuple[bool, dict[str, Any] | None]:
+        """(a grant the person gave covers this, what a grant for it would be if it may have one).
+
+        Asked only at the point where the caller would otherwise be asked — after the floor has judged the
+        action and after the goal was found to call for it. A grant answers "may this go ahead without
+        asking me", never "should this be done".
+        """
+        offer = self.grants.offer(ctx.app, a, because)
+        row = self.grants.covers(offer)
+        if row is None:
+            return False, offer
+        self.grants.used(offer)
+        self.audit.record("floor", task=task_id, action=a.label, released=True, grant=row.get("id"),
+                          because=because, granted_at=row.get("granted_at"))
+        return True, offer
+
+    def _confirm_pending(self, shown: dict[str, Any], because: list[str], offer: dict[str, Any] | None) -> dict[str, Any]:
+        pending: dict[str, Any] = {"confirm": shown, "because": because}
+        if offer:     # the caller can offer "always allow this" — and is told how the person does it
+            pending["remember"] = offer
+            pending["remember_how"] = ("resume with remember=true" if self.cfg.get("grants.from_mcp", False)
+                                       else "the person runs: macwork grants allow <task-id>")
+        return pending
+
     @staticmethod
     def approval_key(a: Affordance) -> str:
         """What an approval is *for*.

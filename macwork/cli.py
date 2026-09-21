@@ -25,6 +25,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -208,8 +209,12 @@ def cmd_do(cfg: Config, args: argparse.Namespace) -> int:
             res = eng.resume(res["task_id"], progress=lambda m: print(f"  → {m}", file=sys.stderr))
             continue
         if res["status"] == "need_confirm":
-            ok = input(f"confirm: {p['confirm']['label']} ? [y/N] ").strip().lower() == "y"
-            res = eng.resume(res["task_id"], confirm=ok, progress=lambda m: print(f"  → {m}", file=sys.stderr))
+            # "a": yes, and remember it — offered only where a standing grant may be given at all. This
+            # prompt is a terminal with a person at it, which is exactly who may give one.
+            can = bool(p.get("remember"))
+            said = input(f"confirm: {p['confirm']['label']} ? [y/N{'/a = always allow this here' if can else ''}] ").strip().lower()
+            res = eng.resume(res["task_id"], confirm=said in ("y", "a") and (can or said == "y"),
+                             remember=can and said == "a", progress=lambda m: print(f"  → {m}", file=sys.stderr))
         elif res["status"] == "need_input":
             vals = {k: input(f"{k} ({d}): ") for k, d in p.get("inputs", {}).items()}
             res = eng.resume(res["task_id"], inputs=vals, progress=lambda m: print(f"  → {m}", file=sys.stderr))
@@ -279,6 +284,52 @@ def cmd_key(cfg: Config, args: argparse.Namespace) -> int:
     service = cfg.get("decider.keychain_service", "macwork")
     store_keychain_key(service, key, account=name)
     print(f"stored in the login Keychain (service {service}, account {name})")
+    return 0
+
+
+def cmd_grants(cfg: Config, args: argparse.Namespace) -> int:
+    """Standing grants: list them, give one for a task that is waiting on a confirmation, take them back."""
+    from .grants import Grants
+    from .privacy import Audit
+    from .store import Store
+
+    grants = Grants(cfg)
+    if args.action == "allow":
+        if not args.id:
+            print("which task? macwork grants allow <task-id>", file=sys.stderr)
+            return 1
+        task = Store(cfg).get(args.id)
+        offer = (task.pending or {}).get("remember") if task else None
+        if not offer:
+            print("no such task" if task is None else
+                  "that task is not waiting on a confirmation that may be remembered", file=sys.stderr)
+            return 1
+        row = grants.add(offer, "cli")
+        Audit(cfg).record("grant", task=args.id, id=row["id"], app=row.get("bundle_id"), action=row.get("action"),
+                          because=row.get("because"), source="cli")
+        print(f"{row['id']}  {row.get('app') or row.get('bundle_id') or '(no app)'}: {row.get('action')}\n"
+              f"will not be asked about again. It still has to be confirmed for the waiting task "
+              f"(mac_resume confirm=true). Take it back with: macwork grants revoke {row['id']}")
+        return 0
+    if args.action in ("revoke", "clear"):
+        if args.action == "revoke" and not args.id:
+            print("which one? macwork grants revoke <id>   (macwork grants clear removes all)", file=sys.stderr)
+            return 1
+        try:
+            n = grants.revoke(args.id if args.action == "revoke" else None)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        Audit(cfg).record("grant", revoked=args.id or "all", count=n)
+        print(f"{n} grant{'s' if n != 1 else ''} taken back")
+        return 0 if n or args.action == "clear" else 1
+    rows = grants.all()
+    if not rows:
+        print("no standing grants: every gated action asks")
+    for r in rows:
+        when = time.strftime("%Y-%m-%d", time.localtime(r.get("granted_at", 0)))
+        print(f"{r['id']}  {(r.get('app') or r.get('bundle_id') or '(no app)'):<18} {r.get('action', '')[:70]}\n"
+              f"{'':14}because {', '.join(r.get('because') or [])} · granted {when} via {r.get('source')} · used {r.get('used', 0)}×")
     return 0
 
 
@@ -522,6 +573,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("key")
     p.add_argument("action", choices=["set"])
     p.add_argument("name", nargs="?", help="typesafe (default), deepseek, or any keychain_account from the config")
+    p = sub.add_parser("grants")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "allow", "revoke", "clear"])
+    p.add_argument("id", nargs="?", help="allow: a task id · revoke: a grant id (or the start of one)")
     p = sub.add_parser("learn")
     p.add_argument("app")
     p = sub.add_parser("skills")
@@ -555,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
     handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "revert": cmd_revert, "watch": cmd_watch, "serve": cmd_serve,
-                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "compare": cmd_compare, "profile": cmd_profile, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
+                "key": cmd_key, "grants": cmd_grants, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "compare": cmd_compare, "profile": cmd_profile, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     missing = {c for c in sub.choices} - set(handlers)   # a subcommand with no handler is a KeyError at run time
     assert not missing, f"no handler for {missing}"
     return handlers[args.cmd](cfg, args)

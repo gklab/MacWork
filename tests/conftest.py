@@ -25,6 +25,9 @@ def _no_real_task_store(monkeypatch, tmp_path_factory):
     `engine.store` override in a test still wins over this — the environment is merged first.
     """
     monkeypatch.setenv("MACWORK__ENGINE__STORE", str(tmp_path_factory.mktemp("store") / "tasks.db"))
+    # …and the same for standing grants, which matter more: a grant written by a test would be a real
+    # permission on this Mac.
+    monkeypatch.setenv("MACWORK__GRANTS__PATH", str(tmp_path_factory.mktemp("grants") / "grants.json"))
 
 
 @pytest.fixture(autouse=True)
