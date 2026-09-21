@@ -296,6 +296,7 @@ class LoopMixin:
                 task.memory.declined.add(label)
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
         dead_here |= {a.label for a in affs if a.label in self._withdrawn_here(task, here)}
+        dead_here |= {a.label for a in affs if task.memory.failed.get(f"{sig}|{a.label}") == here}   # failed, and nothing has changed since
         affs = [a for a in affs if a.label not in dead_here and a.label not in task.memory.declined]   # facts: did nothing / not asked for
         # An action that is complete is not an option. A real run read a file, was handed all of it, and was
         # offered "read the text of" the same file on each of the next nine steps — and took it three times.
@@ -817,8 +818,16 @@ class LoopMixin:
         # an effect is a new screen, a UI event, or different text on screen (a calculator's display, a field)
         changed = sig != prev["sig"] or bool(events) or (prev.get("screen") is not None and prev["screen"] != obs.screen_text)
         self.models.record(prev.get("app"), prev["sig"], prev["label"], sig, bool(prev.get("ok")), changed)
-        if not (changed and prev.get("ok")):      # nothing happened: never offered again from this screen in this task
-            task.memory.no_effect.add(f"{prev['sig']}|{prev['label']}")
+        key = f"{prev['sig']}|{prev['label']}"
+        if not prev.get("ok"):
+            # It could not be carried out — the app was busy, the element went away, a wait timed out. That
+            # says something about the moment, not about the action, and this used to remove the action from
+            # this screen for the rest of the task all the same. It is withheld while the screen is exactly
+            # as it was when it failed (asking again there gets the same failure), and offered again once
+            # anything on it has changed. `engine.max_repeats` still ends it for good.
+            task.memory.failed[key] = exact_state(prev["sig"], prev.get("screen") or "")
+        elif not changed:                         # nothing happened: never offered again from this screen in this task
+            task.memory.no_effect.add(key)
 
     # ------------------------------------------------------------------ routines
     def _replay(self, task: Task, skill: dict[str, Any], progress: Progress) -> bool:

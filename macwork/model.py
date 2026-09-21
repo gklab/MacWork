@@ -139,6 +139,11 @@ class Memory:
                                                                # the same answer to the same state, so without
                                                                # this it makes the same mistake from the same
                                                                # screen until it runs out of steps
+    failed: dict[str, str] = field(default_factory=dict)       # "screen|action" that could not be carried out ->
+                                                               # the exact state it failed in. Not `no_effect`:
+                                                               # "it could not be done just then" is not "it
+                                                               # does nothing", and only the second is a fact
+                                                               # about the action
     yielded: set[str] = field(default_factory=set)             # `Affordance.yields` of what this task already got
     retracted_at: int = -1                                     # len(steps) when the last one was noted (a look can repeat)
 
