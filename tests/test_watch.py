@@ -100,8 +100,11 @@ def test_one_that_is_switched_off_matches_nothing():
 
 def test_watching_a_folder_does_not_also_poll_the_clipboard():
     """A stream and a poll each cost something; neither should start because another rule needed apps."""
+    import os
     sub = subscription(Config.load(), rules({"when": {"event": "file.changed", "path": "~/D"}, "do": "x"}))
-    assert sub["paths"] == ["~/D"] and not sub["clipboard_every_s"] and not sub["apps"]
+    # expanded, because the helper watches an absolute path and the matcher has to compare against the
+    # same one — the two deriving it separately is what made the documented example never fire
+    assert sub["paths"] == [os.path.expanduser("~/D")] and not sub["clipboard_every_s"] and not sub["apps"]
 
 
 def test_what_a_rule_does_need_is_subscribed_to():
@@ -181,3 +184,47 @@ def test_nothing_here_drives_the_mac():
     helper_calls = {ast.unparse(n.args[0]) for n in ast.walk(tree)
                     if isinstance(n, ast.Call) and ast.unparse(n.func).endswith("helper.call") and n.args}
     assert helper_calls <= {"'events.watch'", "'events.poll'"}, helper_calls
+
+
+# --------------------------------------------------------------------------- paths the two sides agree on
+
+def test_the_example_in_the_docs_actually_fires(tmp_path):
+    """docs/triggers.md leads with `path: ~/Downloads/*.pdf`. The Swift side expands `~` before it watches
+    the folder, so the events come back as `/Users/<you>/Downloads/x.pdf` — and the matcher compared that
+    against the unexpanded pattern. The watch was set on the right folder and nothing ever matched."""
+    import os
+    t = rules({"when": {"event": "file.changed", "path": "~/Downloads/*.pdf"}, "do": "归档"})[0]
+    real = os.path.expanduser("~/Downloads/发票.pdf")
+    assert t.matches({"kind": "file.changed", "path": real})
+
+
+def test_it_still_does_not_match_a_different_folder(tmp_path):
+    import os
+    t = rules({"when": {"event": "file.changed", "path": "~/Downloads/*.pdf"}, "do": "x"})[0]
+    assert not t.matches({"kind": "file.changed", "path": os.path.expanduser("~/Documents/发票.pdf")})
+    assert not t.matches({"kind": "file.changed", "path": os.path.expanduser("~/Downloads/notes.txt")})
+
+
+def test_an_absolute_pattern_is_unaffected():
+    t = rules({"when": {"event": "file.changed", "path": "/tmp/box/*.pdf"}, "do": "x"})[0]
+    assert t.matches({"kind": "file.changed", "path": "/tmp/box/a.pdf"})
+
+
+def test_the_folder_watched_and_the_folder_matched_are_the_same_one(tmp_path):
+    """The two sides derive the path separately; if they ever disagree the rule is silently dead."""
+    import os
+    t = rules({"when": {"event": "file.changed", "path": "~/Downloads/*.pdf"}, "do": "x"})[0]
+    watched = subscription(Config.load(), [t])["paths"][0]
+    assert os.path.isabs(watched), f"the helper is asked to watch {watched!r}, which is not a path"
+    assert t.matches({"kind": "file.changed", "path": watched + "/a.pdf"})
+
+
+def test_a_pattern_that_is_not_a_regex_does_not_take_the_batch_down(tmp_path):
+    """`matches` tries the pattern as a regex after fnmatch; a glob like `a[b` is not one, and an
+    exception there loses every event in that poll, not just the one rule."""
+    eng = Engine([{"seq": 1, "kind": "file.changed", "path": "/tmp/a[b.pdf"}])
+    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": {"event": "file.changed", "path": "/tmp/a[b*"},
+                                                       "do": "x"}]}))
+    w.start()
+    w.seq = 0
+    assert w.tick()

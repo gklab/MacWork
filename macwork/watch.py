@@ -32,6 +32,26 @@ log = logging.getLogger(__name__)
 WHEN_KEYS = {"event", "app", "bundle_id", "path", "text"}
 
 
+def expand_pattern(pattern: str) -> str:
+    """`~/Downloads/*.pdf` -> `/Users/you/Downloads/*.pdf`, leaving the glob alone.
+
+    `Path.expanduser` is not enough on its own here: the pattern is not a path, and only its leading `~`
+    is ours to touch.
+    """
+    return str(Path(pattern.split("*", 1)[0]).expanduser()) + pattern[len(pattern.split("*", 1)[0]):] \
+        if pattern.startswith("~") else pattern
+
+
+def _regex_match(pattern: str, value: str) -> bool:
+    """A glob is often not a valid regex (`a[b*`). Trying it as one is a convenience, so a pattern that
+    will not compile means "this rule did not match", never an exception — one of those used to lose every
+    event in the poll it happened during, not just its own rule."""
+    try:
+        return bool(re.fullmatch(pattern, value or ""))
+    except re.error:
+        return False
+
+
 class Trigger:
     """One rule: which events it answers to, what to do, and how often at most."""
 
@@ -55,16 +75,24 @@ class Trigger:
 
     def matches(self, event: dict[str, Any]) -> bool:
         """Every condition given must hold. `event` is matched by pattern, the rest by glob, so a rule can
-        say `app.*` or a folder's whole subtree without the file inventing a syntax of its own."""
+        say `app.*` or a folder's whole subtree without the file inventing a syntax of its own.
+
+        A path is expanded on both sides first. The helper expands `~` before it watches a folder, so its
+        events come back absolute — and this compared them against the pattern as written, so the example
+        that leads `docs/triggers.md` set the watch on the right folder and then never matched anything.
+        Two sides deriving a path separately is how a rule dies quietly.
+        """
         if not self.enabled:
             return False
         for key, want in self.when.items():
             got = str(event.get("path" if key == "path" else key, "") or "")
             if key == "event":
                 got = str(event.get("kind", ""))
-            if key == "text":
+            elif key == "text":
                 got = " ".join(str(v) for v in event.values())
-            if not fnmatch.fnmatch(got, str(want)) and not re.fullmatch(str(want), got or ""):
+            elif key == "path":
+                want, got = expand_pattern(str(want)), str(Path(got).expanduser())
+            if not fnmatch.fnmatch(got, str(want)) and not _regex_match(str(want), got):
                 return False
         return True
 
@@ -92,7 +120,8 @@ def subscription(cfg: Config, triggers: list[Trigger]) -> dict[str, Any]:
     a rule somewhere else needed apps.
     """
     kinds = [t.when.get("event", "*") for t in triggers if t.enabled]
-    paths = sorted({str(t.when["path"]).split("*")[0].rstrip("/") or "/"
+    # the same expansion the matcher uses, so the folder watched and the folder matched cannot drift apart
+    paths = sorted({str(Path(expand_pattern(str(t.when["path"])).split("*")[0]).expanduser()).rstrip("/") or "/"
                     for t in triggers if t.enabled and t.when.get("path")})
     def any_kind(*prefixes: str) -> bool:
         return any(k == "*" or k.startswith(prefixes) or fnmatch.fnmatch(p, k)
