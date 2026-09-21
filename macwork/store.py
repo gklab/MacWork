@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS tasks_updated ON tasks (updated);
 
 # Rebuilt from their own fields; anything not listed is a plain value.
 _PARTS = {"pace": Pace, "memory": Memory, "desktop": Desktop}
-_SETS = {"approved", "no_effect", "expanded", "screens_seen", "declined"}
+_SETS = {"approved", "no_effect", "expanded", "screens_seen", "declined", "yielded"}
 
 
 def _plain(value: Any) -> Any:

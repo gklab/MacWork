@@ -297,6 +297,10 @@ class LoopMixin:
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
         dead_here |= {a.label for a in affs if a.label in self._withdrawn_here(task, here)}
         affs = [a for a in affs if a.label not in dead_here and a.label not in task.memory.declined]   # facts: did nothing / not asked for
+        # An action that is complete is not an option. A real run read a file, was handed all of it, and was
+        # offered "read the text of" the same file on each of the next nine steps — and took it three times.
+        # The identity is the source's (path, size, modified), so a file that has changed can be read again.
+        affs = [a for a in affs if not (a.yields and a.yields in task.memory.yielded)]
         if locked:                                # nothing on screen can be operated; keep what works without UI
             affs = [a for a in affs if a.channel in (e.get("locked_channels") or [])]
             if not affs:
@@ -736,6 +740,8 @@ class LoopMixin:
         task.updated = time.time()
         if out.output:
             task.outputs.update(out.output)
+            if out.ok and chosen.yields:
+                task.memory.yielded.add(chosen.yields)
         read = (out.output or {}).get("file_read")
         if read and read.get("text"):     # what a file said is as much a fact as what a screen showed
             task.memory.facts.record(read["path"].rsplit("/", 1)[-1], read.get("kind") or "", read["text"], len(task.steps))

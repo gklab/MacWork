@@ -7,10 +7,12 @@ running and on screen.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -422,6 +424,8 @@ def window(ctx: Ctx, obs: Observation) -> None:
     if nodes and nodes[0].get("role") == "AXWindow":
         obs.window = nodes[0].get("title") or obs.window
         obs.notes["window_frame"] = nodes[0].get("frame")
+        if nodes[0].get("document"):      # the file this window is showing, as the app itself reports it
+            obs.notes["window_document"] = nodes[0]["document"]
     element_affordances(ctx, obs, nodes, "w")
     obs.notes["window_actionable"] = count(nodes)
     if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
@@ -1000,10 +1004,13 @@ def readall(ctx: Ctx, obs: Observation) -> None:
         return
     if len(obs.screen_text) < int(rc.get("offer_over", 200)):
         return   # the whole of it is already in front of the decider
+    # From the same exact screen it returns the same text: once a task has it, it is not an option there.
+    seen = zlib.crc32(f"{obs.window}\n{obs.screen_text}".encode("utf-8"))
     obs.affordances.append(Affordance(
         f"t{len(obs.affordances)}", "window", "read_all",
-        str(rc.get("label", "read all the text in this window, including what is scrolled out of sight")),
-        {"pid": ctx.app["pid"]}, context=ctx.app.get("name", "")))
+        str(rc.get("label", "read all the text in this window — returns everything it says at once, "
+                            "including what is scrolled out of sight, with nothing to scroll")),
+        {"pid": ctx.app["pid"]}, context=ctx.app.get("name", ""), yields=f"window:{ctx.app['pid']}:{seen}"))
 
 
 @provider("services")
@@ -1060,6 +1067,64 @@ def drag(ctx: Ctx, obs: Observation) -> None:
         {"spots": dict(list(spots.items())[: int(ctx.cfg.get("observe.drag.max_spots", 300))])},
         slots={"from": Slot("text", "the label of what to drag, as it appears on screen"),
                "onto": Slot("text", "the label of what to drop it onto")}))
+
+
+def _same_file(a: Any, b: Any) -> bool:
+    try:
+        return bool(a) and bool(b) and os.path.samefile(str(a), str(b))
+    except OSError:
+        return False
+
+
+def _measure(ctx: Ctx, path: Path) -> dict[str, Any]:
+    """What can be said about a file without reading it to anyone: how big, how many lines, how it ends.
+
+    Arithmetic stays in code. "The file is longer than the window" is a comparison the decider gets wrong
+    and the engine gets right, so it is made here and handed over as a fact. Kept per (size, modified), so
+    a file is measured once and again only when it has changed.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    stamp = f"{st.st_size}.{st.st_mtime_ns}"
+    known = ctx.cache.setdefault("files.measured", {})
+    if known.get(str(path), {}).get("stamp") == stamp:
+        return known[str(path)]
+    out: dict[str, Any] = {"stamp": stamp, "bytes": st.st_size}
+    if 0 < st.st_size <= int(ctx.cfg.get("observe.files.measure_bytes", 200000)):
+        try:
+            text = path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            text = ""                          # not plain text: the helper may still read it (a PDF, an RTF)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()] if "\x00" not in text else []
+        if lines:
+            out.update(lines=len(text.splitlines()), tail=lines[-1])
+    known[str(path)] = out
+    return out
+
+
+def _read_file(ctx: Ctx, obs: Observation, aid: str, path: Path, shown: str, is_open: bool) -> Affordance:
+    """`read the text of …`, saying what it returns.
+
+    The bare label lost to scrolling on a real task: asked what a 17-line file ended with, with the first
+    9 lines on screen, the decider put 0.03 on reading it and never chose it. Nothing in the label said
+    that it returns the *whole* file, or that the window did not. The same request with those two facts
+    stated put 0.72 on it and chose it 5 times out of 5. Where it sat among the options made no difference.
+    """
+    m = _measure(ctx, path)
+    n = m.get("lines")
+    label = f"read the text of {shown} — returns " + (
+        f"all {n} lines of it at once" if n and n > 1 else "everything it says at once") + ", with nothing to open or scroll"
+    # Whether the window shows the end of it is measured, not guessed: the file's last line is either
+    # among what the screen says or it is not.
+    if is_open and m.get("tail") and _squash(m["tail"]) not in _squash(obs.screen_text):
+        label += "; the window in front shows only part of it"
+    return Affordance(aid, "file", "read", label, {"path": str(path)}, yields=f"file:{path}:{m.get('stamp', '')}")
+
+
+def _squash(text: str) -> str:
+    return "".join(str(text).split())
 
 
 def _openers(ctx: Ctx, path: Path) -> list[dict[str, Any]]:
@@ -1143,19 +1208,27 @@ def files(ctx: Ctx, obs: Observation) -> None:
             if str(here) in {a.target.get("path") for a in obs.affordances}:
                 continue
             what = "folder" if here.is_dir() else "file"
-            obs.affordances.append(Affordance(f"p{named}", "file", "open",
-                                              f"open the {what} {here} in whichever app this Mac opens it with",
-                                              {"path": str(here)}))
+            # Already open in the window in front — the app says so itself (its window's document). Opening
+            # it is then a completed action, and offering one reads as "this still needs doing": with a file
+            # open and the goal about its contents, a real run was offered eight ways to open it again.
+            is_open = _same_file(obs.notes.get("window_document"), here)
+            if not is_open:
+                obs.affordances.append(Affordance(f"p{named}", "file", "open",
+                                                  f"open the {what} {here} in whichever app this Mac opens it with",
+                                                  {"path": str(here)}))
             # …and in any of the apps the system says can open it. A goal that names one ("open it in Safari")
             # can only be followed if that is an option: with just the line above, a real task opened the page
             # in the default browser and the goal was not met.
+            front = (ctx.app or {}).get("bundle_id")
             for j, opener in enumerate(_openers(ctx, here)):
+                if is_open and opener.get("bundle_id") == front:
+                    continue                  # open in this very app; another app is still a different act
                 obs.affordances.append(Affordance(
                     f"p{named}o{j}", "file", "open", f"open {here.name} with {opener['name']}",
                     {"path": str(here), "app": opener.get("path"), "bundle_id": opener.get("bundle_id")}))
             obs.affordances.append(Affordance(f"P{named}", "file", "reveal", f"show where {here} is on disk", {"path": str(here)}))
             if here.is_file():
-                obs.affordances.append(Affordance(f"T{named}", "file", "read", f"read the text of {here}", {"path": str(here)}))
+                obs.affordances.append(_read_file(ctx, obs, f"T{named}", here, str(here), is_open))
             # The Mac can put a file in the Trash without Finder being driven at all. It is offered like any
             # other action and gated like any other: the floor classifies it, and the user is asked first.
             obs.affordances.append(Affordance(f"X{named}", "file", "trash",
@@ -1193,7 +1266,8 @@ def files(ctx: Ctx, obs: Observation) -> None:
         # does, not who it opens.
         obs.affordances.append(Affordance(f"F{i}", "file", "reveal", f"show where 「{pp.name}」 is on disk", {"path": p}))
         # what a file says can be read without opening it in anything, and becomes a fact of the task
-        obs.affordances.append(Affordance(f"R{i}", "file", "read", f"read the text of 「{pp.name}」", {"path": p}))
+        obs.affordances.append(_read_file(ctx, obs, f"R{i}", pp, f"「{pp.name}」",
+                                          _same_file(obs.notes.get("window_document"), pp)))
 
 
 # ----------------------------------------------------------------------------- learned routines

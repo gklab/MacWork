@@ -27,6 +27,9 @@ class Affordance:
     slots: dict[str, Slot] = field(default_factory=dict)
     context: str = ""              # where it lives (app ▸ menu path, window)
     key: str = ""                  # language-independent identity, where the Mac gives one (see `identity`)
+    yields: str = ""               # for an action that only *returns* something (a file's text, a window's): what
+                                   # exactly it would return, as an identity that changes when the source does.
+                                   # Once a task holds that, the action is complete and is not offered again
 
     def identity(self) -> str:
         """What this action *is*, as independently of the interface language as the Mac allows.
@@ -136,6 +139,7 @@ class Memory:
                                                                # the same answer to the same state, so without
                                                                # this it makes the same mistake from the same
                                                                # screen until it runs out of steps
+    yielded: set[str] = field(default_factory=set)             # `Affordance.yields` of what this task already got
     retracted_at: int = -1                                     # len(steps) when the last one was noted (a look can repeat)
 
 

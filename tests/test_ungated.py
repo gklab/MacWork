@@ -75,7 +75,7 @@ def test_a_harmless_ambiguous_pick_is_not_stopped(tmp_path):
 
 # --------------------------------------------------------------------------- tidy and learn
 
-def fake_gate(eng, wants: str):
+def fake_gate(monkeypatch, eng, wants: str):
     """A gate that answers both kinds of question a real one sees: the caller's "which of these" (it picks
     the option whose text contains `wants`) and the floor's "what does this do"."""
     def decide(redactor, state, questions, task=None):
@@ -93,7 +93,10 @@ def fake_gate(eng, wants: str):
                 out[name] = {"type": "choice", "confidence": 1.0,
                              "choice": next((k for k, v in opts.items() if wants in v), "none")}
         return out
-    type(eng).gate = property(lambda self: type("G", (), {"decide": staticmethod(decide)})())
+    # Through monkeypatch, so it is undone: set on the class directly it outlived the test, and every engine
+    # built afterwards in the same run answered through this fake — three unrelated tests failed that way.
+    monkeypatch.setattr(type(eng), "gate", property(lambda self: type("G", (), {"decide": staticmethod(decide)})()),
+                        raising=False)
 
 
 def gated_pick(monkeypatch, eng, module, offers, wants="Löschen"):
@@ -106,7 +109,7 @@ def gated_pick(monkeypatch, eng, module, offers, wants="Löschen"):
         ran.append(a.label)
         return Outcome(True), []
     monkeypatch.setattr(Engine, "_execute", execute)
-    fake_gate(eng, wants)
+    fake_gate(monkeypatch, eng, wants)
     return ran
 
 

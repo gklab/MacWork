@@ -204,6 +204,7 @@ observe:
     limit: 15
     roots: ["~"]
     input_keys: [query, keywords, file]   # inputs that trigger a Spotlight search
+    measure_bytes: 200000        # a named file up to this size is measured (lines, how it ends) so its options can state facts
     openers: 4                           # besides the default one, how many apps the system says can open a file are offered
 
 planner:

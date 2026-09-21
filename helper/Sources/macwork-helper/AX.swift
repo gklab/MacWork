@@ -11,6 +11,7 @@ private let batchAttrs: [String] = [
     "AXPlaceholderValue", kAXHelpAttribute, kAXSelectedAttribute, kAXIdentifierAttribute,
     "AXMenuItemCmdChar", "AXMenuItemCmdModifiers", kAXRoleDescriptionAttribute, "AXMenuItemMarkChar",
     kAXURLAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
+    kAXDocumentAttribute,
 ].map { $0 as String }
 
 final class AXStore {
@@ -193,6 +194,10 @@ private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, sett
     if let s = axString(at(17), limit: 4) { node["mark"] = s }   // ✓ on the current mode / a toggled setting
     if let u = at(18) as? NSURL, let s = u.absoluteString { node["url"] = String(s.prefix(300)) }
     if let s = axString(at(19), limit: textLimit) { node["selected_text"] = s }
+    // Which file a window is showing, as the app itself reports it (a file URL). It answers "is that
+    // document already open here?" without comparing a window title to a file name — two files can share
+    // a name, and a title can be anything.
+    if let s = at(21) as? String, let u = URL(string: s), u.isFileURL { node["document"] = u.path }
     // What can be done with this element, asked of the element itself rather than assumed from its role.
     // A role list makes anything with an unusual role — a web input, a contenteditable group, a custom
     // control — simply not exist for the engine; these attributes are the element's own answer.
