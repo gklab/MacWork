@@ -171,7 +171,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         # of the process. They are started afresh once they get big; a token only has to be stable within
         # one piece of work, and for those three a piece of work is one call.
         keeper = self._redactors.get(key)
-        if keeper is not None and key in ("observe", "web", "learn") \
+        if keeper is not None and key in ("observe", "learn") \
                 and len(keeper.table) > int(self.cfg.get("redact.table_limit", 5000, doc="privacy")):
             log.info("pseudonym table for %r restarted at %d entries", key, len(keeper.table))
             self._redactors.pop(key, None)
@@ -246,14 +246,25 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                 stale = ":" in affordance_id and not affordance_id.startswith(f"o{self._obs_seq}:")
                 return {"ok": False, "error": f"{affordance_id} is from an earlier observation: observe again" if stale
                         else f"no affordance {affordance_id} in the last observation"}
-            # the observation's goal and inputs still apply (the web channel reads them), but which app is in
-            # front and what is running may have changed since it was taken
+            # the observation's goal and inputs still apply, but which app is in front and what is running
+            # may have changed since it was taken
             ctx = self._ctx(seen.goal, seen.inputs, obs.app, "observe")
+            # Two channels are not executors: the loop reads them and decides again rather than handing them
+            # to `act`. At the step level there is no loop, so they were offered by `observe` and then came
+            # back "no channel 'vision'" — an option that cannot be taken is not an option.
+            if a.channel == "vision":
+                ctx.cache.setdefault("vision.wanted", {}).setdefault("observe", set()).add(a.target["key"])
+                self._last = None
+                return {"ok": True, "observe_again": True,
+                        "note": "this window will be read from the screen on the next observe"}
+            if a.channel == "skill":
+                return {"ok": False, "error": "a learned routine is a whole task, not a step: run it with mac_do",
+                        "affordance": a.public()}
             # The gate is built only where a decision is actually needed. Building it unconditionally meant
             # `classify_step_level: false` still constructed a decider — so the switch did nothing, and the
             # step level, which is documented as "the caller drives", could not be used without an API key.
             classify = (self.cfg.policy.get("confirm") or {}).get("classify_step_level", True)
-            if classify or a.channel == "web":
+            if classify:
                 ctx.gate = self.gate
             floor = self._floor("step", ctx, a, obs.window) if classify else None
             if self._needs_confirm(a, 0.0, set(), floor=floor) and not confirm:

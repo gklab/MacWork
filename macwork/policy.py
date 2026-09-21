@@ -263,7 +263,7 @@ class PolicyMixin:
         if self._floor_hits(a) if floor is None else floor:
             return True
         th = float(self.cfg.get("engine.thresholds.risky_screen", 0.6))
-        exempt = set(conf.get("screen_gate_exempt") or ["web"])
+        exempt = set(conf.get("screen_gate_exempt") or [])
         if risky_screen < th or a.channel in exempt:
             return False
         return not (harmless and harmless(a))   # pointer clicks included

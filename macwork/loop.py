@@ -512,7 +512,7 @@ class LoopMixin:
             if chosen is None:
                 return self._finish(task, "failed", "no action left to take on this screen")
         redactor = self.redactor(task.id)
-        if chosen.channel in ("app", "shortcut", "web") and not self._serves_goal(task, look.ctx, chosen):
+        if chosen.channel in ("app", "shortcut") and not self._serves_goal(task, look.ctx, chosen):
             task.memory.declined.add(chosen.label)       # leaving for something the goal gives no reason for (e.g. text on a page asked)
             progress(f"not what the goal is about, skipped: {chosen.label}")
             return AGAIN

@@ -455,7 +455,17 @@ def test_saving_replacing_and_pointer_clicks_on_risky_screens_ask_first(tmp_path
         assert eng._needs_confirm(Affordance("x", "window", "press", label), 0.0, set()), label
     click = Affordance("o1", "pointer", "click", "click 「好」 in 滚动区")
     assert eng._needs_confirm(click, risky_screen=0.94, approved=set())     # vision clicks obey a risky screen too
-    assert not eng._needs_confirm(Affordance("r0", "web", "research", "research"), 0.94, set())
+
+
+def test_no_channel_is_exempt_from_a_risky_screen_unless_one_is_named(tmp_path):
+    """The default used to exempt `web`, and that channel no longer exists. Nothing is exempt now, and the
+    setting is what grants it — an exemption written into the code is one nobody can see."""
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    a = Affordance("s0", "shortcut", "run", "run shortcut 「x」")
+    assert eng._needs_confirm(a, risky_screen=0.94, approved=set())
+    lenient = Engine(cfg(tmp_path, policy={"confirm": {"screen_gate_exempt": ["shortcut"]}}),
+                     helper=FakeHelper(), decider=ScriptedDecider([]))
+    assert not lenient._needs_confirm(a, risky_screen=0.94, approved=set())
 
 
 def test_planner_suggestions_are_offered_to_the_decider_not_forced(tmp_path):
