@@ -352,3 +352,25 @@ def test_eval_harness_statistics_substitution_and_checks(tmp_path):
     assert check(eng, t, {"outputs": {"answer": "There are 3 files."}, "steps": ["menu File ▸ Open"]}) == (True, "checked")
     ok, why = check(eng, t, {"outputs": {"answer": "3"}, "steps": ["open app Chess"]})
     assert not ok and "trace_excludes" in why
+
+
+def test_a_replan_after_something_went_wrong_does_not_draw_on_the_same_allowance(tmp_path):
+    """Two reasons to think again used to share one allowance. A task spent its replans at steps 0 and 2 on
+    "not sure about this screen", then typed a formula the app rejected — the reason written on the screen —
+    and had none left for the one moment that called for it."""
+    from macwork.model import Step, Task
+
+    eng = Engine(cfg(tmp_path, config={"planner": {"max_replans": 0, "max_corrections": 2}}),
+                 helper=FakeHelper(), decider=ScriptedDecider([]))
+    eng._planner = FakeBackend([{"steps": ["fix the formula"], "inputs": {}},
+                                {"steps": ["fix the formula"], "inputs": {}}])
+    task = Task(goal="total the column", id="t1")
+    task.plan, task.pace.replans = ["type the total"], 1          # the ordinary allowance is used up
+    eng.tasks[task.id] = task
+
+    assert not eng._consult(task, None, None, "not sure"), "nothing went wrong, and the allowance was spent"
+
+    task.steps.append(Step(n=0, action="type 「=SUM(x)」", channel="keys", verb="type", ok=True, events=["changed"],
+                           decision={"progress_after": 0.1}))
+    assert eng._consult(task, None, None, "the formula was rejected"), "it went wrong, and the planner was not asked"
+    assert task.pace.corrections == 1 and task.pace.replans == 1

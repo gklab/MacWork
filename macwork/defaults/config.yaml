@@ -115,6 +115,7 @@ observe:
     # nodes in its chrome and none in its editing area counted as "well described" under the count alone.
     sparse_below: 8              # fewer actionable AX elements than this = nothing to work with
     canvas_min_texts: 6
+    max_empty_places: 12         # where read text lines up in rows and columns, this many empty crossings are offered as places too
     canvas_area_share: 0.35      # this much of a window holding nothing the tree named = read it now, not on request
     canvas_max_inside: 2         # …where "nothing" means at most this many described elements within it
     languages: auto              # auto = this Mac's languages, kept to the ones the recogniser supports
@@ -236,6 +237,7 @@ planner:
   context_skip_channels: [app, shortcut, file]   # not worth the planner's attention budget (running apps are listed separately)
   max_steps: 8                   # sub-goals per plan
   max_replans: 2
+  max_corrections: 3             # replans after a step judged to have gone wrong are counted on their own
   fill_inputs: true              # let the planner write text a step needs instead of asking the caller
   trust_on_device: true          # on-device planners see unredacted text; cloud planners never do
   endpoints:                     # any OpenAI-compatible chat API

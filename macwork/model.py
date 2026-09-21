@@ -141,6 +141,7 @@ PENDING = {"need_input", "need_confirm", "ambiguous", "need_continue"}
 class Pace:
     """How much of each kind of move this task has already made (the engine's own budgets)."""
     replans: int = 0
+    corrections: int = 0                                       # replans that followed a step judged to have gone wrong
     looks: int = 0                                             # how many times it did (budget: engine.max_looks)
     launched: bool = False                                     # the app the caller named was opened by the engine
     tidied: bool = False

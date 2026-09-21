@@ -59,7 +59,22 @@ class ConsultMixin:
     def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str, affs: list[Affordance] | None = None) -> bool:
         """Ask the planner for (new) sub-goals. False when there is none, or it has been asked enough."""
         backend = self.planning_backend
-        if backend is None or self.cfg.get("planner.when", "auto") == "never" or task.pace.replans >= int(self.cfg.get("planner.max_replans", 2)) + 1:
+        if backend is None or self.cfg.get("planner.when", "auto") == "never":
+            return False
+        # Two different reasons to think again, and they used to draw on one allowance. "I am not sure about
+        # this screen" can be said before anything has been tried; "what I just did went wrong" comes with
+        # evidence. A task spent its replans at steps 0 and 2 on the first kind, then typed a formula the app
+        # rejected — the reason was written on the screen — and had none left for the one moment that called
+        # for it. Whether the last step went wrong is a judgement the decider already makes every step
+        # (`progress`), so a replan that follows one is counted on its own.
+        last = task.steps[-1] if task.steps else None
+        went_wrong = last is not None and (not last.ok or float(last.decision.get("progress_after", 1.0))
+                                           < float(self.cfg.get("engine.thresholds.progress_bad", 0.2)))
+        if went_wrong:
+            if task.pace.corrections >= int(self.cfg.get("planner.max_corrections", 3)):
+                return False
+            problem = f"the last action did not do what it was for ({last.action[:80]}); what the screen says now is in the context. {problem}"
+        elif task.pace.replans >= int(self.cfg.get("planner.max_replans", 2)) + 1:
             return False
         # Asking the same question of the same screen gets the same answer, and this answer is not cheap:
         # measured on this Mac, one replan is 1.5-2.7s of local model, and one task spent 12 of its 21
@@ -79,7 +94,10 @@ class ConsultMixin:
             log.info("planner: %s", exc)
             task.outputs.setdefault("planner_errors", []).append(str(exc)[:200])
             return False
-        task.pace.replans += 1
+        if went_wrong:
+            task.pace.corrections += 1
+        else:
+            task.pace.replans += 1
         task.blocked_reason = plan.get("blocked") or ""
         dead = {k.split("|", 1)[1] for k in task.memory.no_effect}
         task.tries = [t for t in plan.get("try") or [] if self._suggestion_label(t) not in dead]   # facts beat suggestions

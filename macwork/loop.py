@@ -552,6 +552,8 @@ class LoopMixin:
             task.wants_answer = float(ans["wants_answer"].get("noul", 0.0))
         log.info("step %d %s", len(task.steps), d)
         last = task.steps[-1] if task.steps else None
+        if last is not None and "progress" in d:
+            last.decision["progress_after"] = d["progress"]   # how a step turned out is only known on the next look
         if last and last.before and d.get("progress", 1.0) < float(th.get("progress_bad", 0.2)):
             task.memory.no_effect.add(f"{last.before.split(':')[0]}|{last.action}")   # the decider saw no effect: a fact for that screen
 

@@ -612,6 +612,66 @@ def popups(ctx: Ctx, obs: Observation) -> None:
 
 
 # ----------------------------------------------------------------------------- vision fallback
+def empty_crossings(boxes: list[dict[str, Any]], limit: int = 12) -> list[dict[str, Any]]:
+    """Places on a canvas that hold nothing, found from the things around them that do.
+
+    Reading a screen gives back text, so a place with no text in it does not exist — and in a table that is
+    exactly the place a task is sent to: the empty cell where a total goes. A task told to put a column's
+    total in the 「合计」 row clicked 「合计」, 「金额」 and 「数量 金额」 in turn, eleven steps of it, because
+    those were the only places it had. A person sees that the words line up in rows and columns and clicks
+    where the row and the column cross.
+
+    Nothing here knows what a spreadsheet is. Things that are aligned — by their left edges, their right
+    edges or their centres — are a column, things at one height are a row, and a row with nothing where a
+    column passes through it has an empty crossing. A calendar, a form laid out as a grid and a seating plan
+    are the same thing to this.
+
+    Alignment, not overlap: two adjacent headers are often read as one wide box, which overlaps both of the
+    columns beneath it, and judged by overlap it glued 「数量」 and 「金额」 into a single column with its
+    crossing in the gap between them. A wide box is aligned with at most one of them.
+    """
+    items = [b for b in boxes if b.get("frame") and len(b["frame"]) == 4 and str(b.get("text") or "").strip()]
+    if len(items) < 3:
+        return []
+    heights = sorted(b["frame"][3] for b in items)
+    h = float(heights[len(heights) // 2]) or 1.0
+
+    def aligned(a: list[float], b: list[float]) -> bool:       # a shared left edge, right edge or centre
+        tol = 0.5 * h
+        return (abs(a[0] - b[0]) <= tol or abs((a[0] + a[2]) - (b[0] + b[2])) <= tol
+                or abs((a[0] + a[2] / 2) - (b[0] + b[2] / 2)) <= tol)
+
+    columns: list[list[dict[str, Any]]] = []
+    for b in sorted(items, key=lambda b: b["frame"][0]):
+        home = next((c for c in columns if any(aligned(b["frame"], m["frame"]) for m in c)), None)
+        (home.append(b) if home is not None else columns.append([b]))
+    columns = [c for c in columns if len(c) >= 2]             # one thing is not a column
+    rows: list[list[dict[str, Any]]] = []
+    for b in sorted(items, key=lambda b: b["frame"][1]):
+        cy = b["frame"][1] + b["frame"][3] / 2
+        home = next((r for r in rows if abs((r[0]["frame"][1] + r[0]["frame"][3] / 2) - cy) <= 0.6 * h), None)
+        (home.append(b) if home is not None else rows.append([b]))
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        y = sum(m["frame"][1] + m["frame"][3] / 2 for m in r) / len(r)
+        for c in columns:
+            if any(m in r for m in c):
+                continue                                       # the column already has something in this row
+            x = sorted(m["frame"][0] + m["frame"][2] / 2 for m in c)[len(c) // 2]
+            if any(m["frame"][0] - 2 <= x <= m["frame"][0] + m["frame"][2] + 2 for m in r):
+                continue                                       # something in this row already covers that spot
+            top, bottom = min(m["frame"][1] for m in c), max(m["frame"][1] + m["frame"][3] for m in c)
+            if not (top - 3 * h <= y <= bottom + 3 * h):
+                continue                                       # too far from the column to be part of its grid
+            out.append({"x": x, "y": y,
+                        "row": [str(m["text"]) for m in sorted(r, key=lambda m: m["frame"][0])],
+                        "column": [str(m["text"]) for m in sorted(c, key=lambda m: m["frame"][1])]})
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def _inside(inner: list[int], outer: list[int], slack: int = 2) -> bool:
     return (inner[0] >= outer[0] - slack and inner[1] >= outer[1] - slack and
             inner[0] + inner[2] <= outer[0] + outer[2] + slack and inner[1] + inner[3] <= outer[1] + outer[3] + slack)
@@ -890,6 +950,13 @@ def vision(ctx: Ctx, obs: Observation) -> None:
                 obs.notes["_vision_spots"].add(spot)
                 obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click 「{b['text']}」{where_c}",
                                                   {"x": x, "y": y, "frame": b["frame"]}, context=u.get("context", "")))
+            for e in empty_crossings(inside_boxes, int(vc.get("max_empty_places", 12))):
+                beside = " ".join(f"「{t[:20]}」" for t in e["row"][:3])
+                under = " ".join(f"「{t[:20]}」" for t in e["column"][:5])
+                obs.affordances.append(Affordance(
+                    f"o{len(obs.affordances)}", "pointer", "click",
+                    f"click the empty place in the row of {beside}, in line with {under}{where_c}",
+                    {"x": e["x"], "y": e["y"]}, context=u.get("context", "")))
             continue
         inside = [b["text"] for b in inside_boxes]
         name = " ".join(inside)

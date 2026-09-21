@@ -247,3 +247,51 @@ def test_a_window_the_tree_does_describe_is_not_read(tmp_path):
 
     assert not read, "a window the tree describes was read from the screen anyway"
     assert any(a.channel == "vision" for a in obs.affordances), "…and reading it was not even offered"
+
+
+# --------------------------------------------------------------------------- places that hold nothing
+
+def _box(text: str, x: int, y: int, w: int = 30, h: int = 14) -> dict:
+    return {"text": text, "frame": [x, y, w, h]}
+
+
+# a table as it is read off a screen: names left-aligned, figures right-aligned, the last row unfinished
+TABLE = [_box("Item", 100, 100, 32), _box("Price", 270, 100, 36),
+         _box("Pencil", 100, 120, 44), _box("137", 282, 120, 24),
+         _box("Notebook", 100, 140, 62), _box("249", 282, 140, 24),
+         _box("Total", 100, 160, 36)]
+
+
+def test_the_empty_cell_where_a_total_goes_is_a_place():
+    """Reading a screen gives back text, so a place with no text in it does not exist — and in a table that
+    is exactly where a task is sent. One told to put a total in the last row clicked the row's label and the
+    column's header in turn, eleven steps of it, because those were the only places it had."""
+    from macwork.observe import empty_crossings
+    found = empty_crossings(TABLE)
+    spot = next((e for e in found if e["row"] == ["Total"] and "137" in e["column"]), None)
+    assert spot is not None, f"the crossing of the Total row and the figures was not found: {found}"
+    assert 282 <= spot["x"] <= 306 and abs(spot["y"] - 167) <= 2, "it is not where the cell is"
+
+
+def test_a_cell_that_holds_something_is_not_offered_as_empty():
+    from macwork.observe import empty_crossings
+    assert not any(e["row"] == ["Pencil", "137"] for e in empty_crossings(TABLE))
+
+
+def test_a_header_read_as_one_wide_box_does_not_glue_two_columns_together():
+    """Two adjacent headers are often read as one box. Judged by overlap it joined both columns beneath it
+    into one, and the empty crossing landed in the gap between them — on nothing."""
+    from macwork.observe import empty_crossings
+    boxes = [_box("Item", 100, 100, 32), _box("Qty Price", 200, 100, 106),
+             _box("Pencil", 100, 120, 44), _box("12", 222, 120, 16), _box("137", 282, 120, 24),
+             _box("Notebook", 100, 140, 62), _box("5", 230, 140, 8), _box("249", 282, 140, 24),
+             _box("Total", 100, 160, 36)]
+    in_total_row = [e for e in empty_crossings(boxes) if e["row"] == ["Total"]]
+    assert len(in_total_row) == 2, f"two columns, two empty cells: {in_total_row}"
+    xs = sorted(round(e["x"]) for e in in_total_row)
+    assert xs[0] < 250 < xs[1], f"one under each column, not one between them: {xs}"
+
+
+def test_scattered_text_is_not_a_grid():
+    from macwork.observe import empty_crossings
+    assert empty_crossings([_box("Hello", 10, 10), _box("World", 300, 200), _box("Again", 150, 420)]) == []
