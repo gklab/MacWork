@@ -6,6 +6,7 @@ running and on screen.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -506,19 +507,26 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
                 elsewhere_left += 1     # it cost a snapshot but it is not one of them: do not spend the slot
             continue
         where = "in front of the app" if over else "elsewhere on screen"
-        found.append({"pid": w["pid"], "from": w.get("owner", ""), "text": text, "where": where})
+        # which interruption this is, across looks: who put it up and what it says (its position may move)
+        key = f"{w.get('owner', '')}|{hashlib.sha1(text.encode()).hexdigest()[:10]}"
+        found.append({"pid": w["pid"], "from": w.get("owner", ""), "text": text, "where": where,
+                      "key": key, "frame": w.get("frame"), "over": bool(over)})
         # its controls: pressed through Accessibility like the app's own; the effect is watched on the app
         sub = Ctx(ctx.cfg, ctx.helper, ctx.goal, ctx.inputs, {"pid": w["pid"], "name": w.get("owner", "")}, ctx.running, ctx.cache)
         n0 = len(obs.affordances)
         element_affordances(sub, obs, nodes, "c", where=f"a prompt from {w.get('owner', '')} {where}")
         for a in obs.affordances[n0:]:
             a.target["watch"] = ctx.app["pid"]
+            a.target["interruption"] = key      # the loop decides what these are *for* before any is offered
         if not over and not oc.get("elsewhere_actions", True):
             del obs.affordances[n0:]    # read it, but do not offer its controls
     if found:
         obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"], "where": o["where"]} for o in found]
+        obs.notes["interruptions"] = [{k: o[k] for k in ("key", "from", "text", "where", "frame", "over")} for o in found]
         lines = [f"[{o['where']}, from {o['from']}: {o['text']}]" for o in found]
-        obs.screen_text = "\n".join(lines + ([obs.screen_text] if obs.screen_text else []))
+        # after the app's own text, not before it. At the top, a prompt that had nothing to do with the goal
+        # was the first thing the decider read on every look — and the first thing it then chose.
+        obs.screen_text = "\n".join(([obs.screen_text] if obs.screen_text else []) + lines)
 
 
 @provider("menubar_extras")
@@ -826,13 +834,38 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         return
     # "this task asked to read that window" is that task's business; kept globally, one task's choice made
     # every later task OCR the same window for the life of the process
+    # A window can be richly described and still say nothing about the part the task is about. Numbers has 29
+    # actionable nodes in its chrome and one scroll area, 989x1103 of a 1260x1201 window — 72% of it — that
+    # the tree describes not at all: no cell, no number, no header. Reading it was offered as one option
+    # among 843 and the decider took it about as often as it took anything else. How much of a window the
+    # tree leaves undescribed is a fact it can be asked for before anything is read, and where most of a
+    # window is undescribed, looking at it is not one way of seeing what is there — it is the only one.
+    win = obs.notes.get("window_frame") or []
+    area = float(win[2]) * float(win[3]) if len(win) == 4 and win[2] and win[3] else 0.0
+    # …and "undescribed" has to mean the region holds nothing the tree named, not merely that the region
+    # itself is unnamed. Chrome's web area is one unlabeled container covering the whole window, with 520
+    # described controls inside it; Numbers' is one covering 72% with nothing inside at all. Measured the
+    # first way they look identical, and Chrome would pay for an OCR on every look for nothing.
+    placed = [a.target["frame"] for a in obs.affordances
+              if a.channel in ("window", "pointer") and isinstance(a.target.get("frame"), (list, tuple))]
+    hollow = 0.0
+    for u in unlabeled:
+        f = u.get("frame")
+        if not f or len(f) != 4:
+            continue
+        inside = sum(1 for g in placed if _inside(g, f))
+        if inside <= int(vc.get("canvas_max_inside", 2)):
+            hollow = max(hollow, float(f[2]) * float(f[3]))
+    mostly_undescribed = bool(area) and hollow / area >= float(vc.get("canvas_area_share", 0.35))
+
     wanted = ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set())
-    if mode == "auto" and not empty and not known_canvas and vc.get("on_demand", True) and key not in wanted:
+    if mode == "auto" and not empty and not known_canvas and not mostly_undescribed \
+            and vc.get("on_demand", True) and key not in wanted:
         # the tree names most things: reading the screen for the rest costs ~0.3 s, so it happens when asked for
         obs.affordances.append(Affordance("vr", "vision", "reveal", f"read the {len(unlabeled)} controls without a label in this window "
                                           "from the screen (to see what they are)", {"key": key}, context=ctx.app.get("name", "")))
         return
-    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas)
+    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas or mostly_undescribed)
     if res is None:
         return
     boxes = res.get("boxes", [])

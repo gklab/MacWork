@@ -143,6 +143,7 @@ class ScriptedDecider:
     calls_for = 1.0
     serves = 1.0
     stands = 1.0     # answer judged to follow from what was seen, when it is not traceable word for word
+    about = 0.0      # is the goal about a prompt that turned up? By default it merely turned up
     what: dict = {}
     what_when: str = ""      # apply `what` only where this appears in the question (i.e. to one action)
     why = "failed"
@@ -180,7 +181,7 @@ class ScriptedDecider:
                 else:
                     out[k] = {"type": "noul", "noul": self.backs_out if k == "backs_out" else self.verify if k == "verified"
                               else self.calls_for if k == "calls_for" else self.serves if k == "serves"
-                              else self.stands if k == "stands" else 1.0}
+                              else self.stands if k == "stands" else self.about if k == "about" else 1.0}
             return out
         self.seen.append((state, questions))
         step = self.script.pop(0)

@@ -30,6 +30,7 @@ from .effects import EffectsMixin
 from .facts import Facts
 from .grants import Grants
 from .helper import Helper, HelperError
+from .interrupt import InterruptMixin
 from .judge import MOVES, JudgeMixin
 from .learn import LearnMixin
 from .loop import LoopMixin, Progress
@@ -57,7 +58,7 @@ def _names(a: dict[str, Any]) -> list[str]:
             _norm_name(str(a.get("path", "")).rsplit("/", 1)[-1].removesuffix(".app"))]
 
 
-class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, TidyMixin, LearnMixin):
+class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, ConsultMixin, TidyMixin, LearnMixin):
     def __init__(self, cfg: Config | None = None, helper: Helper | None = None, decider: Decider | None = None) -> None:
         self.cfg = cfg or Config.load()
         self.helper = helper or Helper(self.cfg)

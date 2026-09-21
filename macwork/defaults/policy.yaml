@@ -45,7 +45,9 @@ confirm:
   back_out: >-
     it only closes, cancels, dismisses or goes back from what is on screen — a panel, a sheet, an alert, a
     menu, a tab — and commits nothing by doing so: no file, message, account, purchase or system setting is
-    touched, nothing is saved, sent or installed, and nothing anyone typed is thrown away by it
+    touched, nothing is saved, sent or installed, and nothing anyone typed is thrown away by it. Answering a
+    permission, consent or payment prompt is never this, whichever way it is answered: refusing is a decision
+    too, and the system remembers it
   release: [navigate, enter, edit, back_out]   # the verdicts that let an action through; every other one asks the user
   # A verdict narrowed to the actions it can honestly apply to. Entries are verbs or channel:<name>, and an
   # action that is neither cannot be released by that verdict however sure the classifier is. "It only changes

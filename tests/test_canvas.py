@@ -190,3 +190,60 @@ def test_a_shortcut_that_returns_nothing_reports_nothing(monkeypatch):
     monkeypatch.setattr(sp, "run", lambda cmd, **kw: sp.CompletedProcess(cmd, 0, stdout="", stderr=""))
     out = get_channel("shortcut")(ctx(Helper()), Affordance("s0", "shortcut", "run", "run it", {"name": "x"}), {})
     assert out.ok and out.output == {}
+
+
+def test_a_window_mostly_undescribed_is_read_without_being_asked(tmp_path):
+    """Numbers reports 29 actionable nodes in its chrome and one scroll area — 989x1103 of a 1260x1201
+    window, 72% of it — that the tree describes not at all: no cell, no number, no header. Reading it was
+    offered as one option among 843. How much of a window the tree leaves undescribed can be asked for
+    before anything is read, and where most of it is undescribed there is no other way to see what is there.
+    """
+    from macwork.observe import PROVIDERS, Ctx
+    from macwork.model import Observation
+    from tests.test_engine import FakeHelper, cfg
+
+    read = []
+
+    class Canvas(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.ocr":
+                read.append(p)
+                return {"frame": [0, 0, 1260, 1201],
+                        "boxes": [{"text": "137", "frame": [700, 300, 40, 20], "conf": 0.9},
+                                  {"text": "Total", "frame": [700, 400, 40, 20], "conf": 0.9}]}
+            return super().call(method, timeout, **p)
+
+    obs = Observation(app={"pid": 42, "name": "Numbers"}, window="sales", affordances=[])
+    obs.notes["window_frame"] = [0, 0, 1260, 1201]
+    obs.notes["window_actionable"] = 29                      # a well-stocked chrome
+    obs.notes["unlabeled"] = [{"frame": [0, 98, 989, 1103], "rdesc": "scroll area", "context": ""}]
+    ctx = Ctx(cfg(tmp_path), Canvas(), app={"pid": 42, "name": "Numbers"}, running=[])
+    PROVIDERS["vision"](ctx, obs)
+
+    assert read, "the window was left unread, so nothing in it can be acted on"
+    assert any(a.channel == "pointer" and "137" in a.label for a in obs.affordances), \
+        [a.label for a in obs.affordances]
+
+
+def test_a_window_the_tree_does_describe_is_not_read(tmp_path):
+    from macwork.observe import PROVIDERS, Ctx
+    from macwork.model import Observation
+    from tests.test_engine import FakeHelper, cfg
+
+    read = []
+
+    class Watching(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.ocr":
+                read.append(p)
+                return {"frame": [0, 0, 1260, 1201], "boxes": []}
+            return super().call(method, timeout, **p)
+
+    obs = Observation(app={"pid": 42, "name": "TextEdit"}, window="untitled", affordances=[])
+    obs.notes["window_frame"] = [0, 0, 1260, 1201]
+    obs.notes["window_actionable"] = 29
+    obs.notes["unlabeled"] = [{"frame": [0, 0, 120, 40], "rdesc": "group", "context": ""}]   # a corner of it
+    PROVIDERS["vision"](Ctx(cfg(tmp_path), Watching(), app={"pid": 42, "name": "TextEdit"}, running=[]), obs)
+
+    assert not read, "a window the tree describes was read from the screen anyway"
+    assert any(a.channel == "vision" for a in obs.affordances), "…and reading it was not even offered"

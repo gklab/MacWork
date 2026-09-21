@@ -115,6 +115,8 @@ observe:
     # nodes in its chrome and none in its editing area counted as "well described" under the count alone.
     sparse_below: 8              # fewer actionable AX elements than this = nothing to work with
     canvas_min_texts: 6
+    canvas_area_share: 0.35      # this much of a window holding nothing the tree named = read it now, not on request
+    canvas_max_inside: 2         # …where "nothing" means at most this many described elements within it
     languages: auto              # auto = this Mac's languages, kept to the ones the recogniser supports
     language_correction: false   # it "corrects" towards those languages, and what is read is UI labels,
                                  # file names and code identifiers — where correction is most often wrong
@@ -326,6 +328,8 @@ engine:
   service_front_s: 1.5           # a service that brings its app forward does it quickly, or it does not do it
   repeat_notice: 3               # the same action three times running is put in front of the decider as a fact
   max_repeats: 4                 # an action taken this many times from the very same screen stops being offered there
+  interruptions:
+    aside_tries: 2               # a prompt that will not go after this many dismissals is left for the user instead
   max_circles: 3                 # …and one that keeps leading back to a screen already seen stops being offered at all
   max_waits: 4                   # times per task the decider may choose to wait for a loading/busy app
   wait_s: 1.5
@@ -345,6 +349,7 @@ engine:
     risky_screen: 0.6
     backs_out: 0.8               # on a risky screen, an action judged to only back out goes ahead without asking
     wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done
+    interruption_is_the_task: 0.6   # below this, a prompt that turned up is in the way of the goal, not part of it
     answer_stands: 0.6           # an answer no screen holds word for word is reported only if it follows from what was seen
     text_stands: 0.75            # …and text to type is held to more: the same value rewritten, never a new one
     serves_goal: 0.35            # leaving the app worked in (another app, a Shortcut, the web) must serve the stated goal

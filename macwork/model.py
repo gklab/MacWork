@@ -132,6 +132,7 @@ class Memory:
     """What this run learned as it went: what changed nothing, what was skipped, which screens it saw, and the
     facts it may write from."""
     consulted: set[Any] = field(default_factory=set)           # screens the planner has already been asked about
+    interruptions: dict[str, dict[str, Any]] = field(default_factory=dict)   # what each thing in the way turned out to be
     no_effect: set[str] = field(default_factory=set)           # "screen|action" that changed nothing: never offered again
     expanded: set[str] = field(default_factory=set)            # option groups the decider chose to look into
     screens_seen: set[str] = field(default_factory=set)

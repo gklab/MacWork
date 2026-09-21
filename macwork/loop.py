@@ -122,6 +122,7 @@ class Look:
     floor_map: dict[str, str] = field(default_factory=dict)      # question id -> the verdict key it answers
     floor_questions: dict[str, Any] = field(default_factory=dict)
     floor_state: dict[str, Any] = field(default_factory=dict)    # no screen text: the floor is judged on the action alone
+    aside: Affordance | None = None           # a control that sets an interruption aside: taken before the goal is asked about
 
     @property
     def by_id(self) -> dict[str, Affordance]:
@@ -161,6 +162,14 @@ class LoopMixin:
                 if isinstance(look, dict):
                     return look
                 last_look = look
+                if look.aside is not None:        # something in the way that can simply be dismissed: do that first.
+                    # No decision is asked for it — the floor already judged that it only backs out, which is
+                    # the one judgement this needs — and the goal is asked about nothing until the way is clear.
+                    progress(f"set aside: {look.aside.label}")
+                    done = self._perform(task, ctx, look, look.aside, progress)
+                    if done is not None:
+                        return done
+                    continue
                 ans = self._ask(task, look)
                 if isinstance(ans, dict) and "task_id" in ans:
                     return ans
@@ -313,6 +322,7 @@ class LoopMixin:
         for label in set(task.memory.circles):
             if task.memory.circles.count(label) >= going_nowhere:
                 task.memory.declined.add(label)
+        affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
         dead_here |= {a.label for a in affs if a.label in self._withdrawn_here(task, here)}
         dead_here |= {a.label for a in affs if task.memory.failed.get(f"{sig}|{a.label}") == here}   # failed, and nothing has changed since
@@ -370,6 +380,7 @@ class LoopMixin:
             state["seen_in_each_app"] = task.memory.facts.brief()
         look = Look(ctx, obs, sig, locked, affs, flat, folded, groups, options, state, questions, fp_seen, dead_before, timing)
         look.floor_map, look.floor_questions, look.floor_state = floor_map, floor_q, floor_state
+        look.aside = aside
         return look
 
     def _state(self, task: Task, ctx: Ctx, obs: Observation, sig: str, flat: list[Affordance], dead_here: set[str],
@@ -388,6 +399,9 @@ class LoopMixin:
         task.memory.screens_seen.add(sig)
         if sig not in task.memory.screen_notes:          # every distinct screen, briefly: the evidence for a final diagnosis
             task.memory.screen_notes[sig] = f"{state['app']} — {obs.window or '(no window)'}: {obs.screen_text[:200]}"
+        left = [f"{x.get('from')}: {str(x.get('says'))[:80]}" for x in (task.outputs.get("left_for_you") or [])]
+        if left:     # on screen, and not this task's to answer: the user has been told
+            state["left_for_the_user_to_answer"] = left[:4]
         if task.memory.circles:
             state["went_in_circles"] = task.memory.circles[-6:]
         last, run = self._run_length(task)
