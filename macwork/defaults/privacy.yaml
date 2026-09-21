@@ -25,7 +25,10 @@ redact:
   replace:                             # regex -> fixed text
     '/Users/[^/\s]+': '~'
   names: []                            # names always hidden (backs up the tagger, which misses some)
-  max_clauses: 600                     # clauses tagged per request
+  # A batch size, not a cliff. It used to cut the list and send the remainder untagged, with no error and
+  # no note — so a long screen stopped being redacted partway through, in the part nobody looks at.
+  max_clauses: 600                     # clauses per call to the on-device tagger
+  max_clauses_total: 6000              # past this, nothing is sent at all: the same refusal as tagging failing
   entity_cache: 20000                  # tagged clauses remembered across tasks (menus and buttons repeat)
   table_limit: 5000                    # pseudonyms kept for the long-lived readers (observe / web / learn)
                                        # before their table is started afresh; a task's own table is never cut

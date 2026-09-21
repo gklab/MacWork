@@ -109,7 +109,8 @@ class Redactor:
         r = cfg.privacy.get("redact", {}) or {}
         self.detect = detect
         self.detect_kinds = set(r.get("detect") or [])
-        self.max_clauses = int(r.get("max_clauses", 600))
+        self.max_clauses = int(r.get("max_clauses", 600))          # per call to the tagger
+        self.max_clauses_total = int(r.get("max_clauses_total", 6000))   # past this, nothing is sent at all
         self.failed = False               # tagging broke: nothing may leave until the task is over
         self._lock = threading.RLock()    # the floor classification runs beside the step's own request, on one table
         self.protect = protect            # names from this Mac itself (installed apps…) that are never personal data
@@ -181,13 +182,27 @@ class Redactor:
                         clauses.append(piece)
         if not clauses:
             return
-        try:
-            found = self.entities(clauses[: self.max_clauses])
-        except Exception as exc:  # noqa: BLE001  (redaction must never block, but it must not leak either)
-            log.warning("entity tagging failed (%s); withholding all text", exc)
+        # `max_clauses` used to cut the list here and send the rest untagged — no error, no flag, no note,
+        # so a long screen simply stopped being redacted partway through. It is a batch size now: every
+        # clause is checked, in as many calls as that takes.
+        if len(clauses) > self.max_clauses_total:
+            # There has to be an end to it somewhere, and when it is reached this behaves like the tagger
+            # failing — loudly, withholding everything — rather than like it succeeding on a part.
+            log.warning("%d clauses in one request is more than the ceiling (redact.max_clauses_total=%d); "
+                        "withholding all text rather than sending the rest unchecked",
+                        len(clauses), self.max_clauses_total)
             self.failed = True
             return
-        self._tagged.update(clauses[: self.max_clauses])
+        found: list[Any] = []
+        for i in range(0, len(clauses), max(1, self.max_clauses)):
+            batch = clauses[i: i + max(1, self.max_clauses)]
+            try:
+                found += list(self.entities(batch))
+            except Exception as exc:  # noqa: BLE001  (redaction must never block, but it must not leak either)
+                log.warning("entity tagging failed (%s); withholding all text", exc)
+                self.failed = True
+                return
+        self._tagged.update(clauses)
         carriers = {c: c for c in clauses}
         for tmpl in _CARRIERS.values():                  # entities in a carrier sentence must lie inside the run
             head, tail = tmpl.split("{}")
