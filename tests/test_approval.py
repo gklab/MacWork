@@ -17,7 +17,7 @@ import pytest
 
 from macwork.engine import Engine
 from macwork.model import Affordance, Task
-from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+from tests.test_engine import worded, FakeHelper, ScriptedDecider, cfg
 
 
 def eng(tmp_path):
@@ -150,7 +150,7 @@ def test_the_caller_is_not_asked_the_same_question_twice_in_a_row(tmp_path):
                 elif k == "move":
                     out[k] = {"type": "choice", "choice": "act", "probabilities": {"act": 0.95}}
                 else:                                               # the floor classifying an action
-                    bad = "rm -rf" in str(q.get("instructions", ""))
+                    bad = "rm -rf" in worded(q)
                     pick = "execute" if bad else "navigate"
                     out[k] = {"type": "choice", "choice": pick, "probabilities": {pick: 0.99}}
             return out

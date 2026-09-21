@@ -96,11 +96,11 @@ class ConsultMixin:
         """The word-for-word check refuses any answer written as a sentence: "there are three files" is prose
         around a count, and prose is not on screen. So an answer the check cannot trace is not dropped — it is
         judged against what the task saw, which still catches a value that was never on any screen."""
-        if ctx is None or ctx.gate is None:
-            return False
+        gate = getattr(ctx, "gate", None) if ctx is not None else None
+        gate = gate or self.gate     # an ending has no ctx, and a guard must not be off because of that
         state = {"goal": task.goal, "answer": answer, "seen_in_each_app": task.memory.facts.brief()}
         try:
-            ans = ctx.gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("answer_stands"))}, task=task.id)
+            ans = gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("answer_stands"))}, task=task.id)
         except DeciderError:
             return False
         stands = float(ans.get("stands", {}).get("noul", 0.0))

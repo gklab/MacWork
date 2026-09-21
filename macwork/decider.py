@@ -35,17 +35,23 @@ class Decider(Protocol):
     def decide(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]: ...
 
 
-def noul(instructions: str, true: str | None = None, false: str | None = None) -> dict[str, Any]:
+def noul(instructions: str, true: str | None = None, false: str | None = None,
+         fills: dict[str, str] | None = None) -> dict[str, Any]:
     q: dict[str, Any] = {"type": "noul", "instructions": instructions}
     if true or false:
         q["criteria"] = {"true": true or "yes", "false": false or "no"}
+    if fills:                # "{action}" and friends: redacted on their own, so our own wording survives
+        q["fills"] = dict(fills)
     return q
 
 
-def choice(instructions: str, options: dict[str, str]) -> dict[str, Any]:
+def choice(instructions: str, options: dict[str, str], fills: dict[str, str] | None = None) -> dict[str, Any]:
     if not 2 <= len(options) <= MAX_OPTIONS:
         raise ValueError(f"choice needs 2..{MAX_OPTIONS} options, got {len(options)}")
-    return {"type": "choice", "instructions": instructions, "criteria": options}
+    q: dict[str, Any] = {"type": "choice", "instructions": instructions, "criteria": options}
+    if fills:
+        q["fills"] = dict(fills)
+    return q
 
 
 def score(instructions: str, levels: list[str]) -> dict[str, Any]:

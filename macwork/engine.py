@@ -426,10 +426,21 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
         self.take_hands(wait_s=wait, cancelled=lambda: task.id in self._cancelled)
 
     def _finish(self, task: Task, status: str, reason: str = "", pending: dict[str, Any] | None = None) -> dict[str, Any]:
+        answered_anyway = False
+        if status in ("done", "failed", "cancelled", "blocked", "need_continue"):
+            self._answer_before_ending(task, None)   # a question asked is owed whatever the task found out
+            # A goal that asks a question is done when the question is answered. One asked which item cost
+            # the most read the file, answered it correctly — "金额最高的是显示器，金额为1790。" — and still
+            # reported `failed`, because it had gone on to flail in the app's sort options. The caller is not
+            # served by "failed" with the right answer attached. The reason it gave itself is kept, and what
+            # it did is not learned as a routine: the answer was right, the way it went about it was not.
+            if status in ("failed", "need_continue") and task.outputs.get("answer"):
+                task.outputs["unfinished_but_answered"] = reason
+                status, reason, answered_anyway = "done", "the question is answered from what the task saw", ""
         task.status, task.reason, task.pending = status, reason, pending or {}
         task.updated = time.time()
         self.store.save(task)
-        if status == "done":
+        if status == "done" and not answered_anyway:
             path = self.skills.record(task, task.start_app)
             if path:
                 task.outputs["learned_routine"] = path.stem

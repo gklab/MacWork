@@ -11,7 +11,7 @@ from macwork.model import Affordance, Observation
 from macwork.observe import Ctx, element_affordances, vision
 from macwork.planner import OpenAICompatPlanner, Planning, _json_from
 from macwork.privacy import Audit, Redactor
-from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+from tests.test_engine import worded, FakeHelper, ScriptedDecider, cfg
 
 SDEF = """<?xml version="1.0"?><!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
 <dictionary><suite name="Standard Suite"><command name="quit" code="aevtquit"/></suite>
@@ -259,7 +259,7 @@ def test_learning_explores_only_what_the_decider_judges_harmless_and_caches_it(t
         calls, cost_usd, last_ms = 0, 0.0, 1.0
         def decide(self, state, questions):
             self.calls += 1
-            return {k: {"type": "noul", "noul": 0.95 if "Show Sidebar" in q["instructions"] else 0.1} for k, q in questions.items()}
+            return {k: {"type": "noul", "noul": 0.95 if "Show Sidebar" in worded(q) else 0.1} for k, q in questions.items()}
     eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=Judge())
     ctx = Ctx(eng.cfg, eng.helper, app={"pid": 42, "name": "TextEdit", "bundle_id": "x"})
     obs = Observation(app=None, window="w", affordances=[])

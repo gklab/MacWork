@@ -12,7 +12,7 @@ import json
 from macwork.engine import Engine
 from macwork.model import Affordance
 from macwork.observe import Ctx
-from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+from tests.test_engine import worded, FakeHelper, ScriptedDecider, cfg
 
 GERMAN = {"nodes": [
     {"ref": "g1.0", "role": "AXMenuBar", "depth": 0},
@@ -36,7 +36,7 @@ class Classifier(ScriptedDecider):
     """Answers a floor question the way a real classifier would: it reads the action, not a word list."""
 
     def _classify(self, q):
-        destructive = "Löschen" in q.get("instructions", "")
+        destructive = "Löschen" in worded(q)
         pick = "delete" if destructive else "navigate"
         return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
 
@@ -123,7 +123,7 @@ def test_editing_inside_a_document_goes_ahead_but_deleting_a_file_still_asks(tmp
     drawn by the classifier — "inside the document being worked on" — not by a list of menu items."""
     class InDocument(ScriptedDecider):
         def _classify(self, q):
-            pick = "edit" if "编辑" in q.get("instructions", "") else "delete"
+            pick = "edit" if "编辑" in worded(q) else "delete"
             return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
 
     class Editing(FakeHelper):
@@ -161,7 +161,7 @@ def test_putting_a_file_in_the_trash_is_offered_but_asks_first(tmp_path):
 
     class Trashing(ScriptedDecider):
         def _classify(self, q):
-            pick = "delete" if "废纸篓" in q.get("instructions", "") or "Trash" in q.get("instructions", "") else "navigate"
+            pick = "delete" if "废纸篓" in worded(q) or "Trash" in worded(q) else "navigate"
             return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
 
     obs = Observation(app=None, window=None, affordances=[])
@@ -174,3 +174,30 @@ def test_putting_a_file_in_the_trash_is_offered_but_asks_first(tmp_path):
     res = eng.do(f"删除 {tmp_path}/keep.txt")
     assert res["status"] == "need_confirm" and res["pending"]["because"] == ["delete"]
     assert (tmp_path / "keep.txt").exists(), "it went ahead without being confirmed"
+
+
+def test_getting_out_of_a_dialog_survives_the_goal_gate(tmp_path):
+    """No goal ever asks to close the panel an app put up on the way to what was asked for. A task told to
+    total a column in Numbers met the Open dialog, chose its close button, had it dropped as "not asked
+    for", and typed the column's name at the cursor instead. An action that only backs out stands."""
+    class Gated(ScriptedDecider):
+        """The goal says nothing about closing anything; the classifier says that is all this action does."""
+        calls_for = 0.0
+        backs_out = 1.0
+
+        def _classify(self, q):
+            pick = "back_out" if "关闭" in worded(q) else "navigate"
+            return {"type": "choice", "choice": pick, "probabilities": {pick: 1.0}}
+
+    class Dialog(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("scope") not in ("menubar",):
+                return {"nodes": [{"ref": "d.0", "role": "AXWindow", "title": "打开", "depth": 0},
+                                  {"ref": "d.1", "role": "AXButton", "rdesc": "按钮", "title": "关闭",
+                                   "actions": ["AXPress"], "parent": "d.0"}], "ms": 1}
+            return super().call(method, timeout, **p)
+
+    d = Gated([{"pick": "关闭"}, {"pick": "done", "done": 0.95}])
+    res = Engine(cfg(tmp_path), helper=Dialog(), decider=d).do("把金额那一列的合计填进去")
+    assert any("关闭" in s for s in (res.get("steps") or [])), \
+        f"the way out of the dialog was dropped: {res.get('status')} / {res.get('steps')}"

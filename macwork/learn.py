@@ -106,10 +106,11 @@ class LearnMixin:
         if not flat:
             return None
         options = {"none": "none of these gets back without changing anything"} | {a.id: a.describe() for a in flat}
-        q = self.cfg.question("way_back").replace("{action}", done).replace("{window}", window or "the previous window")
+        q = self.cfg.question("way_back")
+        base_fills = {"action": done, "window": window or "the previous window"}
         try:
             ans = self.gate.decide(self.redactor("learn"), {"app": (ctx.app or {}).get("name"), "window": obs.window,
-                                                           "screen_text": obs.screen_text[:600]}, {"back": choice(q, options)}, task="learn")
+                                                           "screen_text": obs.screen_text[:600]}, {"back": choice(q, options, fills=base_fills)}, task="learn")
         except DeciderError:
             return None
         key = (ans.get("back") or {}).get("choice")
@@ -128,7 +129,7 @@ class LearnMixin:
         for i in range(0, min(len(todo), int(lc.get("max_judged", 160))), batch):
             chunk = todo[i:i + batch]
             try:
-                ans = self.gate.decide(self.redactor("learn"), state, {f"s{j}": noul(q.replace("{action}", a.label)) for j, a in enumerate(chunk)}, task="learn")
+                ans = self.gate.decide(self.redactor("learn"), state, {f"s{j}": noul(q, fills={"action": a.label}) for j, a in enumerate(chunk)}, task="learn")
             except DeciderError as exc:
                 log.info("learn: %s", exc)
                 break

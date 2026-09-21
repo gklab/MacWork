@@ -21,7 +21,7 @@ import pytest
 
 from macwork.engine import Engine
 from macwork.model import Affordance, Observation, Task
-from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+from tests.test_engine import FakeHelper, ScriptedDecider, cfg, worded
 
 
 class Floor(ScriptedDecider):
@@ -30,7 +30,7 @@ class Floor(ScriptedDecider):
     def decide(self, state, questions):
         out = {}
         for k, q in questions.items():
-            text = str(q.get("instructions", "")) + str(q.get("criteria", ""))
+            text = worded(q) + str(q.get("criteria", ""))
             bad = "Delete" in text or "Löschen" in text
             if q.get("type") == "noul":
                 out[k] = {"type": "noul", "noul": 0.9 if bad else 0.1, "confidence": 0.95}
@@ -81,7 +81,7 @@ def fake_gate(monkeypatch, eng, wants: str):
     def decide(redactor, state, questions, task=None):
         out = {}
         for name, q in questions.items():
-            text = str(q.get("instructions", ""))
+            text = worded(q)
             if q.get("type") == "noul":
                 out[name] = {"type": "noul", "noul": 0.9 if "Löschen" in text else 0.1, "confidence": 0.95}
             elif name in ("what",):                     # the floor classifying one action

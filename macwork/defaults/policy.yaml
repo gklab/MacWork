@@ -42,7 +42,11 @@ confirm:
     deleting part of it or undoing it. Nothing outside that window changes: no file, message, account, purchase
     or system setting is touched, nothing is saved, sent or installed, and doing it again or undoing it in the
     app would put things back
-  release: [navigate, enter, edit]      # the verdicts that let an action through; every other one asks the user
+  back_out: >-
+    it only closes, cancels, dismisses or goes back from what is on screen — a panel, a sheet, an alert, a
+    menu, a tab — and commits nothing by doing so: no file, message, account, purchase or system setting is
+    touched, nothing is saved, sent or installed, and nothing anyone typed is thrown away by it
+  release: [navigate, enter, edit, back_out]   # the verdicts that let an action through; every other one asks the user
   # A verdict narrowed to the actions it can honestly apply to. Entries are verbs or channel:<name>, and an
   # action that is neither cannot be released by that verdict however sure the classifier is. "It only changes
   # what this window holds" is a judgement about prose; "this is the channel that moves files" is a fact about
@@ -61,6 +65,9 @@ confirm:
     # app (quitting), script and script_cmd (running code), service (handing content to another app),
     # shortcut, clipboard.
     edit: [channel:window, channel:keys, channel:menu]
+    # Getting out of the way of a dialog is what this is for, and only a control on that screen can do it.
+    # Quitting an app, trashing a file or running a command are not "backing out", whatever they are called.
+    back_out: [channel:window, channel:keys, channel:menu, channel:pointer]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something

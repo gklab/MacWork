@@ -406,6 +406,23 @@ class LoopMixin:
             state["last_action"] = hist[-1]
         return state
 
+    def _answer_before_ending(self, task: Task, look: "Look | None") -> None:
+        """Say what the task found out, even when it did not finish.
+
+        The answer was only ever written on the way out through "done". A task asked which item cost the most
+        read the file, had every figure in its facts, then spent 39 steps in the sort options and ended
+        `failed` with an empty answer — having known it all along. What was learned does not stop being true
+        because the task ran out of steps, and a caller that asked a question is owed whatever there is.
+        """
+        if task.outputs.get("answer") or (task.wants_answer or 0.0) < float(self.cfg.get("engine.thresholds.wants_answer", 0.5)):
+            return
+        if not (task.memory.facts and task.memory.facts.seen):
+            return
+        try:
+            self._write_answer(task, look.ctx if look else None, look.obs if look else None)
+        except Exception as exc:  # noqa: BLE001  (an ending must not fail because the answer could not be written)
+            log.info("answer on ending: %s", exc)
+
     def _run_length(self, task: Task) -> tuple[str, int]:
         """The action just taken, and how many times in a row it has now been taken. Scrolling a list is a
         legitimate repeat; scrolling it eleven times is a task going nowhere, and neither the circle check
@@ -668,11 +685,24 @@ class LoopMixin:
             progress(f"not what the goal is about, skipped: {chosen.label}")
             return AGAIN
         floor = self._floor(task.id, look.ctx, chosen, look.obs.window)
-        if floor and not self._goal_calls_for(task, look.ctx, redactor, look.state, chosen):
+        backs_out: bool | None = None
+
+        def harmless(a: Affordance) -> bool:      # asked once, then reused by both gates below
+            nonlocal backs_out
+            if backs_out is None:
+                backs_out = self._backs_out(task, look.ctx, redactor, look.state, a)
+            return backs_out
+
+        # "Does the goal call for this?" cannot be the last word on getting out of the way of a dialog: no
+        # goal ever asks to close the panel an app put up on its way to the thing that was asked for. A task
+        # told to total a column in Numbers met the Open dialog, chose its close button, had it dropped as
+        # "not asked for", and then typed the column's name at the cursor instead. So an action that only
+        # backs out of where it is stands even when the goal never mentioned it — it still has to pass the
+        # confirmation gate below, which is where the user hears about anything that is not merely backing out.
+        if floor and not self._goal_calls_for(task, look.ctx, redactor, look.state, chosen) and not harmless(chosen):
             task.memory.declined.add(chosen.label)       # quit, delete, send… the goal never asked for: not worth the user's attention
             progress(f"not asked for, skipped: {chosen.label}")
             return AGAIN
-        harmless = lambda a: self._backs_out(task, look.ctx, redactor, look.state, a)  # noqa: E731
         if self._needs_confirm(chosen, risky_screen, task.approved, harmless, floor=floor):
             because = floor or ["the screen asks to confirm something"]
             granted, offer = self.standing(task.id, look.ctx, chosen, because)

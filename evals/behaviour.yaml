@@ -93,3 +93,44 @@ tasks:
     # Dictionary publishes "Look Up in Dictionary" as a system Service and the engine may use it directly
     check: {screen_contains: ["serendipity"]}
     cleanup: [{key: "cmd+w"}]
+
+  # --- working *in* a table, not just opening one ----------------------------------------------------
+  # Every spreadsheet task so far stopped at the first cell: open Numbers, type 42. That is opening an app,
+  # not using one. These two ask for what a table is actually for — a total that is in no cell until the
+  # task puts it there, and a question only answerable by reading down a column and comparing.
+  - id: table-total
+    app: com.apple.iWork.Numbers
+    goal: 用 Numbers 打开 {eval_dir}/sales.csv，把「金额」这一列的合计算出来，填在「合计」那一行
+    fixtures:
+      - path: sales.csv
+        text: |
+          名称,数量,金额
+          铅笔,12,137
+          笔记本,5,249
+          背包,2,586
+          台灯,3,408
+          合计,,
+    setup: [{close_untitled: *untitled, dont_save: *dont_save}]
+    # 137 + 249 + 586 + 408. No cell holds it, so it is either the app's own sum or arithmetic the engine
+    # did — and if it did it itself, the facts guard has to let a computed number through, which is the
+    # other half of what this task is watching.
+    check:
+      screen_contains: ["1380", "1,380"]
+    cleanup: [{key: "cmd+w"}, {press: *dont_save, within: 2}]
+
+  - id: table-largest-row
+    app: com.apple.iWork.Numbers
+    goal: 用 Numbers 打开 {eval_dir}/stock.csv，金额最高的是哪一项？
+    fixtures:
+      - path: stock.csv
+        text: |
+          名称,数量,金额
+          订书机,9,214
+          显示器,1,1790
+          鼠标垫,14,96
+          键盘,4,655
+    # the answer is on the screen, but only to something that reads down a column and compares
+    check:
+      answer_contains: ["显示器"]
+      trace_excludes: ["存储|保存|Save"]
+    cleanup: [{key: "cmd+w"}, {press: *dont_save, within: 2}]

@@ -184,9 +184,9 @@ class PolicyMixin:
             return False
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
                  "where": a.context, "kind": f"{a.channel} {a.verb}"}
-        q = self.cfg.question("floor_harmless").replace("{action}", a.label)
+        q, fills = self.cfg.question("floor_harmless"), {"action": a.label}
         try:
-            ans = ctx.gate.decide(self.redactor(task_id), state, {"harmless": noul(q)}, task=task_id)
+            ans = ctx.gate.decide(self.redactor(task_id), state, {"harmless": noul(q, fills=fills)}, task=task_id)
         except DeciderError as exc:
             log.info("floor: no second opinion for %r (%s)", a.label[:40], exc)
             return False
@@ -241,7 +241,7 @@ class PolicyMixin:
             if key in mapping.values():
                 continue
             qid = f"floor{len(questions)}"
-            questions[qid] = choice(self.cfg.question("floor_what").replace("{action}", a.label), self._floor_options(a, hits))
+            questions[qid] = choice(self.cfg.question("floor_what"), self._floor_options(a, hits), fills={"action": a.label})
             mapping[qid] = key
             actions.append({"action": a.label, "where": a.context, "kind": f"{a.channel} {a.verb}"})
         state = {"app": (ctx.app or {}).get("name"), "window": window, "actions": actions}
@@ -272,9 +272,9 @@ class PolicyMixin:
             return None
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
                  "where": a.context, "kind": f"{a.channel} {a.verb}"}
-        q = self.cfg.question("floor_what").replace("{action}", a.label)
+        q, fills = self.cfg.question("floor_what"), {"action": a.label}
         try:
-            ans = ctx.gate.decide(self.redactor(task_id), state, {"what": choice(q, self._floor_options(a, hits))}, task=task_id)
+            ans = ctx.gate.decide(self.redactor(task_id), state, {"what": choice(q, self._floor_options(a, hits), fills=fills)}, task=task_id)
         except DeciderError as exc:
             log.info("floor classification unavailable for %r: %s", a.label[:40], exc)
             return None
@@ -443,9 +443,9 @@ class PolicyMixin:
         """Asked only for an action the safety floor gates: does the goal itself call for it?"""
         if self.approval_key(a) in task.approved:
             return True
-        q = self.cfg.question("goal_calls_for").replace("{action}", a.label)
+        q, fills = self.cfg.question("goal_calls_for"), {"action": a.label}
         try:
-            ans = ctx.gate.decide(redactor, self._goal_state(task, ctx, a), {"calls_for": noul(q)}, task=task.id)
+            ans = ctx.gate.decide(redactor, self._goal_state(task, ctx, a), {"calls_for": noul(q, fills=fills)}, task=task.id)
         except DeciderError:
             return True    # cannot tell: let the caller decide
         return float(ans.get("calls_for", {}).get("noul", 1.0)) >= float(self.cfg.get("engine.thresholds.goal_calls_for", 0.3))
@@ -457,19 +457,23 @@ class PolicyMixin:
             return True
         cache = task.memory.serves
         if a.label not in cache:
-            q = self.cfg.question("serves_goal").replace("{action}", a.label)
+            q, fills = self.cfg.question("serves_goal"), {"action": a.label}
             try:
-                ans = ctx.gate.decide(self.redactor(task.id), self._goal_state(task, ctx, a), {"serves": noul(q)}, task=task.id)
+                ans = ctx.gate.decide(self.redactor(task.id), self._goal_state(task, ctx, a), {"serves": noul(q, fills=fills)}, task=task.id)
                 cache[a.label] = float(ans.get("serves", {}).get("noul", 1.0)) >= float(self.cfg.get("engine.thresholds.serves_goal", 0.35))
             except DeciderError:
                 cache[a.label] = True
         return cache[a.label]
 
     def _backs_out(self, task: Task, ctx: Ctx, redactor: Redactor, state: dict[str, Any], a: Affordance) -> bool:
-        """Asked only on a screen judged risky: does this particular action just back out of it?"""
-        q = self.cfg.question("backs_out").replace("{action}", a.label)
+        """Does this action just back out of where it is — close a panel, cancel, dismiss, go back?
+
+        Asked on a screen judged risky, and also before dropping a gated action the goal never asked for:
+        getting out of a dialog is never what a goal asks for, and a task that cannot do it is stuck there.
+        """
+        q, fills = self.cfg.question("backs_out"), {"action": a.label}
         try:
-            ans = ctx.gate.decide(redactor, state, {"backs_out": noul(q)}, task=task.id)
+            ans = ctx.gate.decide(redactor, state, {"backs_out": noul(q, fills=fills)}, task=task.id)
         except DeciderError:
             return False
         return float(ans.get("backs_out", {}).get("noul", 0.0)) >= float(self.cfg.get("engine.thresholds.backs_out", 0.8))

@@ -114,6 +114,20 @@ class FakeHelper:
         return [p for m, p in self.calls if m == method]
 
 
+def worded(q: dict) -> str:
+    """The instructions as the decider really receives them.
+
+    A question that names a live UI string hands it over in `fills` rather than interpolating it, so that
+    `Gate.decide` can redact the value without redacting our own wording. A test double that reads
+    `instructions` straight off the question sees `{action}` and nothing else — which is how one of these
+    fakes came to classify 「Alles Löschen」 as navigation and let it run.
+    """
+    text = str(q.get("instructions", ""))
+    for name, value in (q.get("fills") or {}).items():
+        text = text.replace("{" + name + "}", str(value))
+    return text
+
+
 class ScriptedDecider:
     """Answers each request from a script: ``pick`` (an option key or a substring of its text), ``move`` (act by
     default; done when the pick is done), plus optional noul answers by question name."""
@@ -143,7 +157,7 @@ class ScriptedDecider:
         crit = q["criteria"]
         if self.what and (not self.what_when or self.what_when in q.get("instructions", "")):
             return {"type": "choice", "choice": max(self.what, key=self.what.get), "probabilities": dict(self.what)}
-        released = ("navigate", "enter", "edit")      # the verdicts policy.yaml lets through
+        released = tuple(Config.load().policy["confirm"]["release"])   # policy says which verdicts let an action through
         if len([c for c in crit if c not in released]) > 4:      # the whole floor was offered
             pick = "enter" if "enter" in crit else "navigate"
         else:
@@ -303,13 +317,14 @@ def test_do_happy_path_runs_menu_then_done(tmp_path):
     res = eng.do("make a new document")
     assert res["status"] == "done" and res["steps"] == ["menu File ▸ New Document (⌘N)"]
     assert eng.helper.did("ax.perform")[0]["ref"] == "g1.6"
-    # two steps, plus one floor request for the first: every action on offer is classified in that one batch,
-    # which rides along with the step's own request. The chosen action is in it, so no second round trip is
-    # needed before acting — and it is still classified, because a word list that misses must never read as
-    # "safe"; that is what makes the floor hold in a language the words never saw.
-    assert res["decider"]["calls"] == 3
+    # Every action on offer is classified in one batch that rides along with the step's own request. The step
+    # does not wait that batch out, so whether its answer is back before the action is chosen depends on
+    # scheduling — which makes an exact request count a test of the scheduler. What has to hold is that the
+    # chosen action was in the batch, and that it is classified at all: a word list that misses must never
+    # read as "safe", which is what makes the floor hold in a language the words never saw.
+    assert res["decider"]["calls"] <= 5
     floor = [q for _, q in eng.decider.side if any(k.startswith("floor") for k in q)]
-    assert floor and any("New Document" in q["instructions"] for q in floor[0].values())
+    assert floor and any("New Document" in worded(q) for q in floor[0].values())
     second_state = eng.decider.seen[1][0]
     assert "AXValueChanged" in second_state["last_action"]           # the decider sees what the UI did
 

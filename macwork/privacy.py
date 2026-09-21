@@ -395,12 +395,27 @@ class Gate:
         it, or the decider is shown two names for one thing and its answer is about neither.
         """
         crit = {k: q["criteria"] for k, q in questions.items() if "criteria" in q}
-        says = {k: q["instructions"] for k, q in questions.items() if "instructions" in q}
-        safe = redactor.value({"state": state, "criteria": crit, "instructions": says})
+        # Redacting the wording as a whole cost the wording. The tagger reads it as prose, and prose has
+        # names in it: "Judge from what the words mean" — the floor's own instruction — went out as
+        # "⟦PERSON_1⟧ from what the words mean". 5817 of 12288 questions in one run carried a pseudonym
+        # where a word of ours had been. A question that names a live UI string now hands it over in
+        # `fills` instead of interpolating it first: the template is ours and goes as written, the value
+        # is redacted with everything else, and the two are put together here.
+        says = {k: q["instructions"] for k, q in questions.items() if "instructions" in q and "fills" not in q}
+        fills = {k: q["fills"] for k, q in questions.items() if "fills" in q}
+        safe = redactor.value({"state": state, "criteria": crit, "instructions": says, "fills": fills})
         safe_state = safe["state"]
-        safe_questions = {k: {**q,
+
+        def worded(k: str, q: dict[str, Any]) -> str:
+            text = q["instructions"]
+            for name, value in (safe["fills"].get(k) or {}).items():
+                text = text.replace("{" + name + "}", str(value))
+            return text
+
+        safe_questions = {k: {**{kk: vv for kk, vv in q.items() if kk != "fills"},
                               **({"criteria": safe["criteria"][k]} if k in crit else {}),
-                              **({"instructions": safe["instructions"][k]} if k in says else {})}
+                              **({"instructions": safe["instructions"][k]} if k in says else {}),
+                              **({"instructions": worded(k, q)} if k in fills else {})}
                           for k, q in questions.items()}
         if redactor.failed:   # tagging broke: every string is "[withheld]" — sending that is deciding blind
             self.audit.record("refused", task=task, why="entity tagging failed; nothing was sent")

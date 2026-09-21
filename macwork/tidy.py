@@ -144,10 +144,11 @@ class TidyMixin:
                  "windows_opened_by_the_task": [{"app": w["app"], "window": w["title"], "kind": w["kind"]} for w in windows]}
         questions: dict[str, Any] = {}
         for i, f in enumerate(facts):
-            questions[f"keep{i}"] = noul(self.cfg.question("keep_open").replace("{app}", str(f["app"])))
-            questions[f"bg{i}"] = noul(self.cfg.question("stays_running").replace("{app}", str(f["app"])))
+            questions[f"keep{i}"] = noul(self.cfg.question("keep_open"), fills={"app": str(f["app"])})
+            questions[f"bg{i}"] = noul(self.cfg.question("stays_running"), fills={"app": str(f["app"])})
         for j, w in enumerate(windows):
-            questions[f"win{j}"] = noul(self.cfg.question("keep_window").replace("{window}", str(w["title"])).replace("{app}", str(w["app"])))
+            questions[f"win{j}"] = noul(self.cfg.question("keep_window"),
+                                        fills={"window": str(w["title"]), "app": str(w["app"])})
         try:
             ans = self.gate.decide(self.redactor(task.id), state, questions, task=task.id)
         except DeciderError as exc:
@@ -279,13 +280,13 @@ class TidyMixin:
             pool = [a for a in obs.affordances if a.channel in ("menu", "window", "keys") and not a.slots]
             flat, _ = arrange(pool, int(self.cfg.get("engine.max_options", 200)) - 1, set())
             options = {"none": "nothing here puts that back"} | {a.id: a.describe() for a in flat}
-            q = (self.cfg.question("revert_which").replace("{action}", change["action"])
-                 .replace("{app}", str(app.get("name") or "")))
+            q = self.cfg.question("revert_which")
+            fills = {"action": change["action"], "app": str(app.get("name") or "")}
             ans = self.gate.decide(self.redactor(task.id),
                                    {"app": app.get("name"), "window": obs.window,
                                     "screen_text": obs.screen_text[:600],
                                     "what_was_done": change["action"], "the_goal_it_was_for": task.goal},
-                                   {"back": choice(q, options)}, task=task.id)
+                                   {"back": choice(q, options, fills=fills)}, task=task.id)
             pick = next((a for a in flat if a.id == (ans.get("back") or {}).get("choice")), None)
             if pick is None:
                 return None
@@ -311,9 +312,10 @@ class TidyMixin:
             pool = [a for a in obs.affordances if a.channel in ("window", "keys", "pointer") and not a.slots and not self._risky(a, ctx)]
             flat, _ = arrange(pool, int(self.cfg.get("engine.max_options", 200)) - 1, set())
             options = {"none": "none of these backs out"} | {a.id: a.describe() for a in flat}
-            q = self.cfg.question(question).replace("{app}", str(app.get("name"))).replace("{window}", window)
+            q = self.cfg.question(question)
+            fills = {"app": str(app.get("name")), "window": window}
             ans = self.gate.decide(self.redactor(task.id), {"app": app.get("name"), "window": obs.window, "screen_text": obs.screen_text[:600]},
-                                   {"back": choice(q, options)}, task=task.id)
+                                   {"back": choice(q, options, fills=fills)}, task=task.id)
             pick = self.vetted(task.id, ctx, next((a for a in flat if a.id == (ans.get("back") or {}).get("choice")), None),
                                obs.window)
             if pick is not None:
