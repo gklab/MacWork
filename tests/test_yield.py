@@ -14,7 +14,8 @@ from macwork.engine import Engine
 from macwork.model import Observation
 from macwork.observe import PROVIDERS, Ctx
 from macwork.store import dump, load
-from tests.test_engine import WINDOW, FakeHelper, ScriptedDecider, cfg
+from tests.english_mac import WINDOW, EnglishMac as FakeHelper
+from tests.test_engine import ScriptedDecider, cfg
 
 TEXTEDIT = {"pid": 42, "name": "TextEdit", "bundle_id": "com.apple.TextEdit"}
 
@@ -148,7 +149,7 @@ def test_a_file_that_changed_since_can_be_read_again(tmp_path):
     def rewrite(state, questions):
         path.write_text("rewritten\nentirely\n", encoding="utf-8")
         os.utime(path, ns=(1, 1))
-        return {"pick": "按钮"}        # anything: the point is the look that follows
+        return {"pick": "Refresh"}     # anything: the point is the look that follows
 
     _, decider, _ = run(tmp_path, [{"pick": "read the text of"}, rewrite, {"pick": "done", "done": 0.95}],
                         f"what does {path} end with?")

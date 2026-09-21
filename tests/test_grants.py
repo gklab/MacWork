@@ -19,16 +19,16 @@ from macwork.engine import Engine
 from macwork.grants import Grants, identity
 from macwork.model import Affordance
 from macwork.server import build
-from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+from tests.english_mac import APP, EnglishMac
+from tests.test_engine import ScriptedDecider, cfg
 
-EXPORT = [{"pick": "PDF"}, {"pick": "done", "done": 0.95}]      # 文件 ▸ 导出 ▸ PDF: the words say "write"
-DELETE = [{"pick": "删除文稿"}, {"pick": "done", "done": 0.95}]
-APP = {"pid": 42, "name": "文本编辑", "bundle_id": "com.apple.TextEdit"}
+EXPORT = [{"pick": "PDF"}, {"pick": "done", "done": 0.95}]      # File ▸ Export ▸ PDF: the words say "write"
+DELETE = [{"pick": "Delete Document"}, {"pick": "done", "done": 0.95}]
 
 
 def fresh(tmp_path, script, decider=ScriptedDecider, **over):
     """A new engine each time, as a new day would be: nothing carries over but what is on disk."""
-    helper = FakeHelper()
+    helper = EnglishMac()
     return Engine(cfg(tmp_path, **over), helper=helper, decider=decider(script)), helper
 
 
@@ -40,13 +40,13 @@ def audit(tmp_path, kind):
 # ----------------------------------------------------------------- the point of it
 def test_the_same_scene_a_second_time_needs_nobody(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
-    asked = eng.do("导出成 PDF")
+    asked = eng.do("export this as a PDF")
     assert asked["status"] == "need_confirm" and asked["pending"]["because"] == ["write"]
     assert asked["pending"]["remember"]["bundle_id"] == "com.apple.TextEdit"
     assert eng.resume(asked["task_id"], confirm=True, remember=True)["status"] == "done"
 
     again, helper = fresh(tmp_path, EXPORT)
-    res = again.do("导出成 PDF")
+    res = again.do("export this as a PDF")
     assert res["status"] == "done", "the person already answered this, for this app"
     assert helper.did("ax.perform"), "and it was really done, not skipped"
     released = [r for r in audit(tmp_path, "floor") if r.get("grant")]
@@ -55,58 +55,58 @@ def test_the_same_scene_a_second_time_needs_nobody(tmp_path):
 
 def test_a_plain_yes_is_for_this_once(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
-    asked = eng.do("导出成 PDF")
+    asked = eng.do("export this as a PDF")
     assert eng.resume(asked["task_id"], confirm=True)["status"] == "done"
-    assert fresh(tmp_path, EXPORT)[0].do("导出成 PDF")["status"] == "need_confirm"
+    assert fresh(tmp_path, EXPORT)[0].do("export this as a PDF")["status"] == "need_confirm"
     assert Grants(eng.cfg).all() == []
 
 
 def test_it_can_be_taken_back_from_another_process(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
-    asked = eng.do("导出成 PDF")
+    asked = eng.do("export this as a PDF")
     eng.resume(asked["task_id"], confirm=True, remember=True)
     running, _ = fresh(tmp_path, EXPORT)
     assert running.grants.all()                       # a long-lived engine has read the file…
     assert Grants(eng.cfg).revoke(asked["pending"]["remember"]["id"][:6]) == 1     # …`macwork grants revoke`, elsewhere
-    assert running.do("导出成 PDF")["status"] == "need_confirm"
+    assert running.do("export this as a PDF")["status"] == "need_confirm"
 
 
 # ----------------------------------------------------------------- what it never does
 def test_deleting_asks_every_time_whatever_was_said_before(tmp_path):
     eng, _ = fresh(tmp_path, DELETE)
-    asked = eng.do("把这个文稿删掉")
+    asked = eng.do("delete this document")
     assert asked["status"] == "need_confirm" and "remember" not in asked["pending"]
     assert eng.resume(asked["task_id"], confirm=True, remember=True)["status"] == "done"
     assert Grants(eng.cfg).all() == [], "remember=true on something that may not be remembered is not an error, and not a grant"
 
     # and a row for it in the file — written by hand, or from before the setting changed — counts for nothing
-    menu = next(a for a in eng.observe()["affordances"] if "删除文稿" in a["label"])
+    menu = next(a for a in eng.observe()["affordances"] if "Delete Document" in a["label"])
     forged = Affordance(menu["id"], menu["channel"], menu["verb"], menu["label"], {}, context=menu.get("context", ""))
     permissive = Grants(cfg(tmp_path, config={"grants": {"never_for": []}}))
     permissive.add(permissive.offer(APP, forged, ["delete"]), "by hand")
-    assert fresh(tmp_path, DELETE)[0].do("把这个文稿删掉")["status"] == "need_confirm"
+    assert fresh(tmp_path, DELETE)[0].do("delete this document")["status"] == "need_confirm"
     # (the row is the right one: with the setting emptied, that same row does release it)
-    assert fresh(tmp_path, DELETE, config={"grants": {"never_for": []}})[0].do("把这个文稿删掉")["status"] == "done"
+    assert fresh(tmp_path, DELETE, config={"grants": {"never_for": []}})[0].do("delete this document")["status"] == "done"
 
 
 def test_a_grant_does_not_make_the_goal_ask_for_it(tmp_path):
     """It answers "may this go ahead without asking me", never "should this be done"."""
     eng, _ = fresh(tmp_path, EXPORT)
-    asked = eng.do("导出成 PDF")
+    asked = eng.do("export this as a PDF")
     eng.resume(asked["task_id"], confirm=True, remember=True)
 
     class Unasked(ScriptedDecider):
         calls_for = 0.0            # the goal gives no reason for this action
 
     other, helper = fresh(tmp_path, EXPORT, decider=Unasked)
-    res = other.do("看看这个文稿")
+    res = other.do("have a look at this document")
     assert "PDF" not in " ".join(res["steps"]) and not helper.did("ax.perform")
 
 
 def test_the_engine_never_gives_one_itself(tmp_path):
     for _ in range(3):             # however often the person says yes
         eng, _ = fresh(tmp_path, EXPORT)
-        eng.resume(eng.do("导出成 PDF")["task_id"], confirm=True)
+        eng.resume(eng.do("export this as a PDF")["task_id"], confirm=True)
     assert Grants(eng.cfg).all() == []
 
 
@@ -114,50 +114,51 @@ def test_an_unreadable_record_grants_nothing_and_is_left_alone(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
     eng.grants.path.parent.mkdir(parents=True, exist_ok=True)
     eng.grants.path.write_text("{ not json", encoding="utf-8")
-    assert eng.do("导出成 PDF")["status"] == "need_confirm"
+    assert eng.do("export this as a PDF")["status"] == "need_confirm"
     assert eng.grants.path.read_text(encoding="utf-8") == "{ not json"
 
 
 def test_it_can_be_switched_off(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
-    eng.resume(eng.do("导出成 PDF")["task_id"], confirm=True, remember=True)
+    eng.resume(eng.do("export this as a PDF")["task_id"], confirm=True, remember=True)
     off, _ = fresh(tmp_path, EXPORT, config={"grants": {"enabled": False}})
-    res = off.do("导出成 PDF")
+    res = off.do("export this as a PDF")
     assert res["status"] == "need_confirm" and "remember" not in res["pending"]
 
 
 def test_the_record_is_private(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
-    eng.resume(eng.do("导出成 PDF")["task_id"], confirm=True, remember=True)
+    eng.resume(eng.do("export this as a PDF")["task_id"], confirm=True, remember=True)
     assert stat.S_IMODE(eng.grants.path.stat().st_mode) == 0o600
 
 
 # ----------------------------------------------------------------- what a grant is for
-def press(label, key="", context="文本编辑 ▸ 文件", channel="menu"):
+def press(label, key="", context="TextEdit ▸ File", channel="menu"):
     return Affordance("m1", channel, "press", label, {}, context=context, key=key)
 
 
 def test_it_is_for_one_action_in_one_app():
-    here = identity(APP, press("menu 文件 ▸ 导出 ▸ PDF"))
-    assert here != identity({**APP, "bundle_id": "com.example.other"}, press("menu 文件 ▸ 导出 ▸ PDF"))
-    assert here != identity(APP, press("menu 文件 ▸ 导出 ▸ Word"))
-    assert here == identity({**APP, "pid": 9, "version": "2.0"}, press("menu 文件 ▸ 导出 ▸ PDF")), "it survives an update and a relaunch"
+    here = identity(APP, press("menu File ▸ Export ▸ PDF"))
+    assert here != identity({**APP, "bundle_id": "com.example.other"}, press("menu File ▸ Export ▸ PDF"))
+    assert here != identity(APP, press("menu File ▸ Export ▸ Word"))
+    assert here == identity({**APP, "pid": 9, "version": "2.0"}, press("menu File ▸ Export ▸ PDF")), "it survives an update and a relaunch"
 
 
 def test_it_survives_the_language_being_changed_where_the_mac_names_the_action():
-    assert identity(APP, press("menu 文件 ▸ 导出 ▸ PDF", key="exportPDF:")) == \
-        identity(APP, press("menu File ▸ Export ▸ PDF", key="exportPDF:", context="TextEdit ▸ File"))
+    # the one place here where another language is the point: the same Mac, switched to German
+    assert identity(APP, press("menu File ▸ Export ▸ PDF", key="exportPDF:")) == \
+        identity(APP, press("menu Ablage ▸ Exportieren ▸ PDF", key="exportPDF:", context="TextEdit ▸ Ablage"))
 
 
 def test_typing_one_thing_is_not_typing_anything():
-    field = "type into 文本栏 「命令」 — typing 「{}」"
-    a = Affordance("w1", "window", "type", field.format("ls"), {}, context="终端")
-    b = Affordance("w1", "window", "type", field.format("rm -rf ~"), {}, context="终端")
+    field = "type into text field 「command」 — typing 「{}」"
+    a = Affordance("w1", "window", "type", field.format("ls"), {}, context="Terminal")
+    b = Affordance("w1", "window", "type", field.format("rm -rf ~"), {}, context="Terminal")
     assert identity(APP, a) != identity(APP, b)
 
 
 def test_what_a_field_holds_right_now_is_not_part_of_it():
-    assert identity(APP, press("type into 文本栏 (now: hello)")) == identity(APP, press("type into 文本栏 (now: goodbye)"))
+    assert identity(APP, press("type into text field (now: hello)")) == identity(APP, press("type into text field (now: goodbye)"))
 
 
 # ----------------------------------------------------------------- who may give one
@@ -170,7 +171,7 @@ def call(server, tool, **args):
 def test_a_model_calling_over_mcp_cannot_give_itself_one(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT)
     server = build(eng.cfg, eng)
-    asked = call(server, "mac_do", goal="导出成 PDF")
+    asked = call(server, "mac_do", goal="export this as a PDF")
     assert "macwork grants allow" in asked["pending"]["remember_how"]
     res = call(server, "mac_resume", task_id=asked["task_id"], confirm=True, remember=True)
     assert res["status"] == "done" and "remember_ignored" in res      # the one action: yes. From now on: not theirs
@@ -180,26 +181,26 @@ def test_a_model_calling_over_mcp_cannot_give_itself_one(tmp_path):
 def test_unless_the_person_turned_that_on(tmp_path):
     eng, _ = fresh(tmp_path, EXPORT, config={"grants": {"from_mcp": True}})
     server = build(eng.cfg, eng)
-    asked = call(server, "mac_do", goal="导出成 PDF")
+    asked = call(server, "mac_do", goal="export this as a PDF")
     res = call(server, "mac_resume", task_id=asked["task_id"], confirm=True, remember=True)
     assert res["outputs"]["remembered"]["ok"] and len(Grants(eng.cfg).all()) == 1
 
 
 def test_the_person_gives_one_from_the_command_line(tmp_path, capsys):
     eng, _ = fresh(tmp_path, EXPORT)
-    asked = eng.do("导出成 PDF")
+    asked = eng.do("export this as a PDF")
     ns = lambda action, id=None: argparse.Namespace(action=action, id=id)   # noqa: E731
 
     assert cmd_grants(eng.cfg, ns("allow", asked["task_id"])) == 0
     assert cmd_grants(eng.cfg, ns("list")) == 0
     shown = capsys.readouterr().out
     assert "PDF" in shown and "because write" in shown and "via cli" in shown
-    assert fresh(tmp_path, EXPORT)[0].do("导出成 PDF")["status"] == "done"
+    assert fresh(tmp_path, EXPORT)[0].do("export this as a PDF")["status"] == "done"
     assert [r["source"] for r in audit(tmp_path, "grant")] == ["cli"]
 
     assert cmd_grants(eng.cfg, ns("allow", "no-such-task")) == 1
     assert cmd_grants(eng.cfg, ns("clear")) == 0
-    assert fresh(tmp_path, EXPORT)[0].do("导出成 PDF")["status"] == "need_confirm"
+    assert fresh(tmp_path, EXPORT)[0].do("export this as a PDF")["status"] == "need_confirm"
 
 
 # ----------------------------------------------------------------- step level

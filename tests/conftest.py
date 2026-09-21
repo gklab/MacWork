@@ -50,7 +50,7 @@ def _no_real_processes(monkeypatch):
 # `test_settings.py`, is four functions producing three hundred cases — one per shipped setting, which is
 # the right shape for naming a dead key and the wrong shape for counting. Printing the breakdown at the end
 # of every run means nobody has to be told twice.
-_STATIC = {"test_settings.py", "test_wiring.py", "test_readme.py", "test_evals.py"}
+_STATIC = {"test_settings.py", "test_wiring.py", "test_readme.py", "test_evals.py", "test_english_first.py"}
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
