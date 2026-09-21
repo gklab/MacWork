@@ -28,6 +28,16 @@ from .skills import Skills
 
 log = logging.getLogger(__name__)
 
+
+def exact_state(sig: str, screen_text: str) -> str:
+    """The screen's structure *and* what it says: `12×` and `12×2` are one structure and two states.
+
+    A stable digest, not `hash()`: that one is salted per process, tasks survive a restart, and a key made
+    with it would quietly never match again.
+    """
+    import zlib
+    return f"{sig}:{zlib.crc32(screen_text.encode('utf-8')):08x}"
+
 Progress = Callable[[str], None]
 
 
@@ -139,6 +149,43 @@ class LoopMixin:
                 return f"this run has spent its budget of ${ceiling:.2f}"
         return ""
 
+    # ------------------------------------------------------------------ choices the task took back
+    def _note_return(self, task: Task, here: str) -> None:
+        """The task is on a screen it has acted from before: what it chose there led back here.
+
+        From a real run of "12×12": on `12×` the decider chose 「2」, saw `12×2`, pressed Clear, was back on
+        `12×` — and chose 「2」 again, because a System-1 model gives the same answer to the same state and
+        nothing in the state said it had been here. `「2」 -> ok` in the history means the button went
+        down, not that it was the right one.
+
+        What is to blame is the action that *left* this state, not the one that came back: the existing
+        circle count records the returning step, which here is the correction. And the state is the exact
+        one — structure plus what the screen says — because a calculator's structure never changes.
+
+        A step that stayed put is `no_effect`, recorded elsewhere; a retraction is a detour of two or more.
+        """
+        if task.memory.retracted_at == len(task.steps):
+            return                                   # this look was already noted; no step since
+        task.memory.retracted_at = len(task.steps)
+        left = [s for s in task.steps if s.before == here and s.ok]
+        if not left or left[-1] is task.steps[-1]:
+            return
+        task.memory.retracted.setdefault(here, []).append(left[-1].action)
+        log.info("back on a screen already acted from: %r was chosen here and did not hold", left[-1].action[:48])
+
+    def _retracted_here(self, task: Task, here: str) -> list[str]:
+        return list(dict.fromkeys(task.memory.retracted.get(here) or []))
+
+    def _withdrawn_here(self, task: Task, here: str) -> set[str]:
+        """Taken back from this exact state often enough that it is no longer offered *from here*.
+
+        Told once, withdrawn at `engine.max_retractions` (2). Only from this state: on `12×` a second 「2」
+        is a mistake, and on `12×1` it is the answer.
+        """
+        limit = int(self.cfg.get("engine.max_retractions", 2))
+        got = task.memory.retracted.get(here) or []
+        return {a for a in set(got) if got.count(a) >= limit}
+
     def _can_continue(self, task: Task, e: dict[str, Any], spent: str) -> bool:
         """Is there anything left to continue *with*? Only this run's share is gone, the task has done
         something, and the last thing it did had an effect — a task going nowhere should stop going."""
@@ -182,6 +229,8 @@ class LoopMixin:
         sig = self._signature(ctx.app, obs)
         dead_before = set(task.memory.no_effect)
         self._learn_from_prev(task, ctx.app, sig, obs)
+        here = exact_state(sig, obs.screen_text)
+        self._note_return(task, here)
         window_key = f"{(ctx.app or {}).get('pid')}|{obs.window}"
         fp_seen = self._fingerprint(ctx) if (task.steps and task.pace.redo < int(self.cfg.get("engine.verify.max_redo", 1))
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
@@ -199,6 +248,7 @@ class LoopMixin:
             if task.memory.circles.count(label) >= going_nowhere:
                 task.memory.declined.add(label)
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
+        dead_here |= {a.label for a in affs if a.label in self._withdrawn_here(task, here)}
         affs = [a for a in affs if a.label not in dead_here and a.label not in task.memory.declined]   # facts: did nothing / not asked for
         if locked:                                # nothing on screen can be operated; keep what works without UI
             affs = [a for a in affs if a.channel in (e.get("locked_channels") or [])]
@@ -206,19 +256,24 @@ class LoopMixin:
                 return self._finish(task, "failed", "the screen is locked")
 
         suggested = {t.get("action") for t in task.tries if t.get("action")}
+        took_back = set(self._retracted_here(task, here))
         pinned = task.memory.expanded | {group_of(a)[0] for a in affs if a.label in suggested or a.id.startswith("t")}
         flat, folded = arrange(affs, int(e.get("max_options", 200)) - 1, pinned, fold_over=int(e.get("fold_groups_over", 60)))
         left_out = len(affs) - len(flat) - sum(len(v[1]) for v in folded.values())
         if left_out > 0:
             look_note = f"{left_out} more actions did not fit and are not listed"
         options = {"done": "done: the goal is accomplished, stop"} | \
-            {a.id: a.describe() + (" — suggested by the planner" if a.label in suggested else "") for a in flat}
+            {a.id: a.describe() + (" — suggested by the planner" if a.label in suggested else "")
+             + (" — chosen from this exact screen before, and the task then came back here" if a.label in took_back else "")
+             for a in flat}
         groups = {f"g{i}": k for i, k in enumerate(folded)}
         options |= {g: folded[k][0] for g, k in groups.items()}
         if len(options) < 2:                      # nothing left to do here that has not been tried
             options["none"] = "none: nothing available here helps"
 
         state = self._state(task, ctx, obs, sig, flat, dead_here, suggested, locked)
+        if took_back:
+            state["chosen_from_this_exact_screen_before_then_came_back"] = sorted(took_back)[:8]
         if left_out > 0:
             state["not_all_actions_listed"] = look_note
         questions = {"action": choice(self.cfg.question("action"), options),
@@ -604,7 +659,7 @@ class LoopMixin:
         if decision.get("timing") is not None:
             decision["timing"].update(getattr(self, "last_timing", {}))
         sig = look.sig if look else None
-        before = f"{sig}:{hash(obs.screen_text)}" if (sig and obs is not None) else None
+        before = exact_state(sig, obs.screen_text) if (sig and obs is not None) else None
         # What the floor judged this action to be, taken from the judgement it already made rather than
         # asked again. Anything but navigating or entering text altered something, and `revert` works back
         # through those — a word list of "which verbs are destructive" would hold in two languages at most.

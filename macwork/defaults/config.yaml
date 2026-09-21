@@ -267,6 +267,9 @@ appmodel:
   max_hints: 8
 
 engine:
+  max_retractions: 2        # a choice the task took back this many times from one exact screen is no longer
+                            # offered from that screen. Once is told to the decider and still offered; twice is
+                            # enough, because a System-1 model answers an unchanged state the same way again
   queue_wait_s: 900         # how long `do` waits its turn before giving up and saying so, rather than hanging
   revert:                   # putting back what a task changed (`macwork revert <task>`), newest first
     max_steps: 8            # how far back to go in one call

@@ -129,6 +129,12 @@ class Memory:
     facts: Any = None                                          # facts.Facts: what this task has actually seen
     serves: dict[str, bool] = field(default_factory=dict)      # "does leaving for X serve the goal", asked once per action
     declined: set[str] = field(default_factory=set)            # floor actions the decider judged the goal never asked for
+    retracted: dict[str, list[str]] = field(default_factory=dict)   # exact state -> choices made from it that the
+                                                               # task then came back from. A System-1 model gives
+                                                               # the same answer to the same state, so without
+                                                               # this it makes the same mistake from the same
+                                                               # screen until it runs out of steps
+    retracted_at: int = -1                                     # len(steps) when the last one was noted (a look can repeat)
 
 
 @dataclass
