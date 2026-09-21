@@ -257,6 +257,7 @@ class FoundationPlanner:
     """Apple's on-device model through the helper (the helper owns the Swift-only FoundationModels API)."""
 
     name = "foundation"
+    local = True      # it says so itself; nothing else should be deciding this from its name
 
     def __init__(self, cfg: Config, helper: Any) -> None:
         self.helper = helper
@@ -334,13 +335,27 @@ class Chain:
 
     def __init__(self, planners: list[Any]) -> None:
         self.planners = planners
+        self.tried: list[str] = []      # who saw the last prompt, in order — a refused one read it too
 
-    def __getattr__(self, attr: str) -> Any:   # name, local, warm…: those of the planner currently in front
+    def __getattr__(self, attr: str) -> Any:   # name, warm…: those of the planner currently in front
         return getattr(self.planners[0], attr)
 
+    @property
+    def members(self) -> list[Any]:
+        """Everyone who could end up answering. `local` on the chain reports only whoever is in front, and
+        the fall-through happens *during* a call, so anything deciding what may be sent has to look at
+        all of them."""
+        return list(self.planners)
+
+    @property
+    def local(self) -> bool:
+        return all(bool(getattr(p, "local", False)) for p in self.planners)
+
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        self.tried = []
         while True:
             head = self.planners[0]
+            self.tried.append(str(getattr(head, "name", "?")))
             try:
                 return head.complete(system, prompt, schema)
             except PlannerError as exc:
@@ -361,16 +376,35 @@ class Planning:
         self.redactor = redactor
         self.audit = audit
         self.max_steps = int(cfg.get("planner.max_steps", 8))
-        self.on_device = bool(getattr(planner, "local", False)) or getattr(planner, "name", "") == "foundation"
+
+    @property
+    def on_device(self) -> bool:
+        """May this prompt stay as it is?
+
+        Worked out per call, and over the whole chain. It used to be settled once in `__init__` from
+        whoever was in front — and a chain drops a planner whose credentials are rejected and lets the
+        next one answer, so a prompt built for a local model went to a cloud model in the clear. The
+        fall-through happens *during* the call, so the only safe reading is "nothing in this chain can
+        reach off the Mac".
+        """
+        # just `local`, and nothing else. It used to also accept `name == "foundation"` — and a Chain
+        # forwards `name` to whoever is in front, so a chain headed by the on-device model reported itself
+        # on-device however many cloud planners stood behind it. A planner says whether it is on this Mac.
+        return bool(getattr(self.p, "local", False))
 
     def _ask(self, prompt_key: str, schema: dict[str, Any], **fields: Any) -> dict[str, Any]:
         if self.redactor is not None and not (self.on_device and self.cfg.get("planner.trust_on_device", True)):
             fields = self.redactor.value(fields)
         system = self.cfg.question("planner_system")
         prompt = self.cfg.question(prompt_key).format(**{k: json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v for k, v in fields.items()})
-        if self.audit is not None:
-            self.audit.record("plan", planner=getattr(self.p, "name", "?"), prompt=prompt)
-        out = self.p.complete(system, prompt, schema)
+        try:
+            out = self.p.complete(system, prompt, schema)
+        finally:
+            # after the call, not before: which planner answered is only known once it has. A refused one
+            # read the prompt before refusing, so it belongs in the record too.
+            if self.audit is not None:
+                tried = list(getattr(self.p, "tried", []) or [str(getattr(self.p, "name", "?"))])
+                self.audit.record("plan", answered_by=tried[-1] if tried else "?", tried=tried, prompt=prompt)
         return self.redactor.restore(out) if self.redactor is not None else out
 
     def plan(self, goal: str, context: dict[str, Any]) -> dict[str, Any]:
