@@ -858,12 +858,34 @@ def sdef(ctx: Ctx, obs: Observation) -> None:
 
 
 # ----------------------------------------------------------------------------- keys
+def named_combo(obs: Observation, combo: str) -> str | None:
+    """What this app calls the key combination, taken from its own menus — or None if it publishes no
+    item with that key equivalent.
+
+    A combination says nothing about itself: `press cmd+s` matches no word in any list, and a classifier
+    reading that label has only the combo to go on, so both guards were blind to the same action at once
+    and a save could be released as an edit. A table of well-known shortcuts is not the answer — that is
+    knowledge about the outside world, and it depends on the app and the keyboard layout. Every app
+    publishes the key equivalent of every menu item, and the menu provider has already read them.
+
+    Never a filter: an app may implement a key with no menu item behind it, and that key still works.
+    """
+    want = combo.replace(" ", "").lower()
+    for a in obs.affordances:
+        if a.channel == "menu" and str(a.target.get("combo", "")).replace(" ", "").lower() == want:
+            return str(a.target.get("path") or a.label)
+    return None
+
+
 @provider("keys")
 def keys(ctx: Ctx, obs: Observation) -> None:
     """Physical keys (Return, Escape, Tab, paging) — the keyboard itself, not any app's commands: those come from
     the app's own menus (with their shortcuts) or are proposed by the planner for this app."""
     for i, combo in enumerate(ctx.cfg.get("observe.keys") or []):
-        obs.affordances.append(Affordance(f"k{i}", "keys", "key", f"press the {combo} key", {"combo": combo}))
+        named = named_combo(obs, combo)      # the app's own name for it, where it has one
+        obs.affordances.append(Affordance(f"k{i}", "keys", "key",
+                                          f"press the {combo} key" + (f" ({named})" if named else ""),
+                                          {"combo": combo}))
 
 
 @provider("focus")

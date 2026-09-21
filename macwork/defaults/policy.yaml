@@ -44,11 +44,18 @@ confirm:
   # the action — where a fact is available it is not the classifier's to overrule.
   release_only_for:
     enter: [type, type_submit]
-    # `edit` covers a document, a calculator entry, a form. Those are reached through the window, the
-    # keyboard, the app's menus or a pointer. The channels left out reach past the window by construction:
-    # file (including moving to the Trash), app (quitting), script and script_cmd (running code), service
-    # (handing content to another app), shortcut, clipboard.
-    edit: [channel:window, channel:keys, channel:menu, channel:pointer]
+    # `edit` covers a document, a calculator entry, a form. An entry here has to be a *fact* about what
+    # the action can touch, and `channel:pointer` was not one: a click is a coordinate, the text OCR read
+    # beside it may be wrong, and what is under it may be Send. It is gone.
+    #
+    # `channel:keys` is kept for a different reason, and only because of it: a combination now carries the
+    # name of the app's own menu item with that key equivalent (`press cmd+s (文件 ▸ 存储…)`), so the words
+    # and the classifier can both see what it does. Before that, `press cmd+s` was invisible to both.
+    #
+    # Left out, because they reach past the window by construction: file (including moving to the Trash),
+    # app (quitting), script and script_cmd (running code), service (handing content to another app),
+    # shortcut, clipboard.
+    edit: [channel:window, channel:keys, channel:menu]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something

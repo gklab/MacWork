@@ -9,7 +9,7 @@ from typing import Any
 
 from .decider import DeciderError, noul
 from .model import Affordance, Observation, Task
-from .observe import Ctx
+from .observe import Ctx, named_combo
 from .planner import Planning, PlannerError, make_planner
 
 log = logging.getLogger(__name__)
@@ -200,7 +200,12 @@ class ConsultMixin:
                           r"|tab|space|delete|backspace|forwarddelete|up|down|left|right|home|end|pageup|pagedown)")
         for i, t in enumerate(task.tries):
             if t.get("keys") and re.fullmatch(rx, t["keys"]):
-                out.append(Affordance(f"t{i}", "keys", "key", self._suggestion_label(t), {"combo": t["keys"].lower()}))
+                # named by the app's own menu item where it has one: a bare combo is invisible to both the
+                # word list and the classifier, which is how a suggested cmd+s was released as an edit
+                named = named_combo(obs, t["keys"]) if obs is not None else None
+                out.append(Affordance(f"t{i}", "keys", "key",
+                                      self._suggestion_label(t) + (f" ({named})" if named else ""),
+                                      {"combo": t["keys"].lower()}))
             elif t.get("type"):
                 out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t), {"text": t["type"]}))
             elif t.get("open_url"):

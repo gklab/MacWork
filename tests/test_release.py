@@ -85,11 +85,19 @@ def test_no_channel_that_reaches_past_the_window_is_released_as_edit(parts, chan
     assert floor(eng, ctx, aff(channel, "run", "做点什么"), "edit") == ["edit"]
 
 
-@pytest.mark.parametrize("channel", ["window", "keys", "menu", "pointer"])
+@pytest.mark.parametrize("channel", ["window", "keys", "menu"])
 def test_editing_inside_the_window_is_still_released(parts, channel):
     """The whole reason `edit` exists: asking about clearing a calculator stopped a real task dead."""
     eng, ctx = parts
     assert floor(eng, ctx, aff(channel, "press", "清除"), "edit") == []
+
+
+def test_a_coordinate_is_not_a_fact_about_what_an_action_touches(parts):
+    """`channel:pointer` was on this allowlist and should not have been. The entries are meant to be facts
+    — "this is the channel that moves files" — and a click is a coordinate: the text OCR read beside it may
+    be wrong, and what is under it may be Send. Retracted after an audit named it."""
+    eng, ctx = parts
+    assert floor(eng, ctx, aff("pointer", "click", "click 「清除」"), "edit") == ["edit"]
 
 
 def test_a_verdict_that_is_not_a_release_still_asks(parts):
