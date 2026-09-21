@@ -37,7 +37,7 @@ helper:
 observe:
   # Providers turn the Mac into affordances, listed in this order (nothing is ranked by guessed relevance).
   providers: [window, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
-              focus, typing, apps, shortcuts, files, clipboard, skills, readall, wheel, drag]
+              focus, typing, apps, shortcuts, files, clipboard, skills, readall, wheel, controls, drag]
               # focus before typing: "type at the cursor" is labelled with where the cursor turned out to be
               # drag last: it needs the frames
   ax:
@@ -138,6 +138,14 @@ observe:
   # The physical keys — the one fixed list this engine is allowed, because these are not knowledge about any
   # app. App commands come from the app's own menus, or from the planner.
   keys: [return, escape, tab, space, delete, up, down, left, right, home, end, pageup, pagedown]
+  controls:                      # input that lasts — keys and buttons held, the pointer moved by an amount — for
+                                 # what is steered rather than operated (a game, a map, a 3D view). Nothing is
+                                 # offered unless somebody declared it: the caller in `inputs.controls`, or you here
+    enabled: true
+    max_ms: 5000                 # the longest single hold offered. A budget: the decider acts again after it. The
+                                 # helper has its own ceiling (10 s) whatever is asked
+    apps: {}                     # <bundle id>: {<name>: {keys: [w], ms: [300, 1200]}, <name>: {move: {dx: -200}, ms: 150},
+                                 #               <name>: {buttons: [left], ms: 100}}
   wheel:                         # the scroll wheel over the window being worked in: two options, no threshold
     enabled: true                # not gated on "is this a canvas" — see the provider on why that cannot be judged
     lines: 5                     # wheel lines, the unit a real wheel reports, so apps scroll their own distance

@@ -676,6 +676,79 @@ def _right_click_by_name(ctx: Ctx, obs: Observation, vc: dict[str, Any], boxes: 
         slots={"what": Slot("text", "the text on screen to aim at")}, context=(ctx.app or {}).get("name", "")))
 
 
+def parse_controls(declared: Any, max_ms: int) -> tuple[list[dict[str, Any]], list[str]]:
+    """Controls as someone declared them -> (what can be offered, what was wrong with the rest).
+
+        move forward: {keys: [w], ms: [300, 1200]}
+        sprint:       {keys: [shift, w], ms: 1000}
+        look left:    {move: {dx: -200}, ms: 150}
+        attack:       {buttons: [left], ms: 100}
+
+    One entry per length: "for 0.3 s" and "for 1.2 s" are different actions with different consequences, and
+    choosing between stated lengths is a choice the decider can make — producing a number is not.
+    """
+    good: list[dict[str, Any]] = []
+    bad: list[str] = []
+    for name, spec in (declared.items() if isinstance(declared, dict) else []):
+        if not isinstance(spec, dict):
+            bad.append(f"{name}: not a mapping")
+            continue
+        keys = [str(k) for k in spec.get("keys") or []] if isinstance(spec.get("keys"), (list, tuple)) else []
+        buttons = [str(b) for b in spec.get("buttons") or []] if isinstance(spec.get("buttons"), (list, tuple)) else []
+        move = spec.get("move") if isinstance(spec.get("move"), dict) else {}
+        try:
+            move = {k: int(move.get(k) or 0) for k in ("dx", "dy")}
+            lengths = [int(x) for x in (spec["ms"] if isinstance(spec.get("ms"), (list, tuple)) else [spec["ms"]])]
+        except (KeyError, TypeError, ValueError):
+            bad.append(f"{name}: needs ms, a length in milliseconds (or a list of them)")
+            continue
+        if not (keys or buttons or any(move.values())) or any(x < 0 for x in lengths):
+            bad.append(f"{name}: needs keys, buttons or move, and lengths that are not negative")
+            continue
+        for ms in dict.fromkeys(min(x, max_ms) for x in lengths):     # the ceiling is applied before the label is
+            good.append({"name": str(name), "keys": keys, "buttons": buttons,   # written, so the label stays true
+                         "move": move if any(move.values()) else {}, "ms": ms})
+    return good, bad
+
+
+@provider("controls")
+def controls(ctx: Ctx, obs: Observation) -> None:
+    """Controls someone declared for what is in front: keys to hold, buttons to hold, the pointer to move.
+
+    A view that is steered rather than operated — a game, a map, a 3D scene — tells Accessibility nothing
+    about what its keys do, and nothing in this repository may know it either. Somebody does: the caller
+    (`inputs.controls`), or the person, per app, in their own config (`observe.controls.apps.<bundle id>`).
+    This turns what they said into options and adds no knowledge of its own. A plugin that knows one
+    particular game is the same thing through `macwork.providers`.
+
+    Each option states what will physically happen and for how long, because that is all that is known:
+    "move forward — hold w for 1.2 s". What it does in the world is the name its author gave it.
+    """
+    cc = ctx.cfg.section("observe.controls")
+    if not cc.get("enabled", True):
+        return
+    declared: dict[str, Any] = {}
+    per_app = (cc.get("apps") or {}).get((ctx.app or {}).get("bundle_id") or "")
+    if isinstance(per_app, dict):
+        declared.update(per_app)
+    if isinstance(ctx.inputs.get("controls"), dict):
+        declared.update(ctx.inputs["controls"])          # the caller's word for this task wins
+        obs.notes["inputs_used"] = [*(obs.notes.get("inputs_used") or []), "controls"]
+    good, bad = parse_controls(declared, int(cc.get("max_ms", 5000)))
+    if bad:
+        obs.notes["controls_rejected"] = bad
+    where = (ctx.app or {}).get("name", "")
+    for i, c in enumerate(good):
+        parts = []
+        if c["keys"] or c["buttons"]:
+            parts.append("hold " + " + ".join(c["keys"] + [f"the {b} mouse button" for b in c["buttons"]]))
+        if c["move"]:
+            parts.append(f"move the pointer by ({c['move']['dx']}, {c['move']['dy']})")
+        label = f"{c['name']} — {' and '.join(parts)} {'for' if c['keys'] or c['buttons'] else 'over'} {c['ms'] / 1000:g} s"
+        obs.affordances.append(Affordance(f"h{i}", "hold", "hold", label, c, context=where,
+                                          key=f"control:{c['name']}:{c['ms']}"))
+
+
 @provider("wheel")
 def wheel(ctx: Ctx, obs: Observation) -> None:
     """The scroll wheel, over whichever window is being worked in.

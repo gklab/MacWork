@@ -60,6 +60,10 @@ dispatcher.register("input.key", inputKey)
 dispatcher.register("input.type", inputType)
 dispatcher.register("input.click", inputClick)
 dispatcher.register("input.idle", inputIdle)
+// off the main thread: a hold blocks for as long as it lasts, and `input.release_all` on a second
+// connection has to be able to get in and end it
+dispatcher.register("input.hold", offMain: true, inputHold)
+dispatcher.register("input.release_all", offMain: true, inputReleaseAll)
 dispatcher.register("services.perform", servicesPerform)
 dispatcher.register("file.read_text", offMain: true, fileReadText)
 dispatcher.register("file.trash", offMain: true, fileTrash)
@@ -83,6 +87,15 @@ dispatcher.register("llm.generate", offMain: true, llmGenerate)
 // A client that goes away mid-reply must not take the helper with it: the default action for SIGPIPE is
 // to terminate the process, and every reply is a write to a socket somebody else owns.
 signal(SIGPIPE, SIG_IGN)
+// Nothing is left held, whichever way this process ends (see Hold.swift).
+atexit { holds.releaseAll() }
+private let endings = [SIGTERM, SIGINT, SIGHUP].map { sig -> DispatchSourceSignal in
+    signal(sig, SIG_IGN)
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+    src.setEventHandler { holds.releaseAll(); exit(0) }
+    src.resume()
+    return src
+}
 AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)  // one hung app must not hang us
 NSApplication.shared.setActivationPolicy(.prohibited)
 
@@ -95,6 +108,6 @@ if let i = args.firstIndex(of: "--socket"), i + 1 < args.count {
     let server = SocketServer(path: args[i + 1], dispatcher: dispatcher)
     do { try server.start() } catch { FileHandle.standardError.write(Data("\(error)\n".utf8)); exit(1) }
 } else {
-    Connection(input: .standardInput, output: .standardOutput, dispatcher: dispatcher, onClose: { exit(0) }).start()
+    Connection(input: .standardInput, output: .standardOutput, dispatcher: dispatcher, onClose: { holds.releaseAll(); exit(0) }).start()
 }
 RunLoop.main.run()

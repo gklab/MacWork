@@ -21,7 +21,7 @@ need_continue: the task is making progress but used this turn's step or time bud
 arguments to carry on (it keeps everything it has learned, and stops for good at its whole-task ceiling).
 need_input: call mac_resume with inputs for the listed keys (the decider cannot write text, so text to type,
 search queries and file names always come from you; pass them up front in `inputs` when you know them —
-common keys: text, query, url, file). need_confirm: ask the user, then mac_resume(confirm=true/false). If pending.remember is present, also tell them they can have this remembered for that app (pending.remember_how) — that choice is theirs, never yours.
+common keys: text, query, url, file). For something steered rather than operated (a game, a map, a 3D view), declare its controls in inputs.controls — {"move forward": {"keys": ["w"], "ms": [300, 1200]}, "look left": {"move": {"dx": -200}, "ms": 150}, "attack": {"buttons": ["left"], "ms": 100}} — and each becomes an option held for exactly that long. need_confirm: ask the user, then mac_resume(confirm=true/false). If pending.remember is present, also tell them they can have this remembered for that app (pending.remember_how) — that choice is theirs, never yours.
 ambiguous: mac_resume(choice=<id>) with one of the offered ids. To drive step by step yourself, call
 mac_observe then mac_act with an affordance id from that observation."""
 
@@ -99,10 +99,12 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         return eng.cancel(task_id)
 
     @mcp.tool()
-    async def mac_observe(app: str | None = None, goal: str = "", limit: int = 120) -> dict[str, Any]:
+    async def mac_observe(app: str | None = None, goal: str = "", limit: int = 120,
+                          inputs: dict[str, Any] | None = None) -> dict[str, Any]:
         """What can be done right now: affordances (menus, buttons, fields, apps, keys…) of `app` (default frontmost),
-        in a fixed provider order (window, menus, keys, apps…), plus the readable screen text."""
-        return await anyio.to_thread.run_sync(lambda: eng.observe(app, goal, None, limit))
+        in a fixed provider order (window, menus, keys, apps…), plus the readable screen text. `inputs` is what
+        mac_do takes: a path in it is offered for opening, `controls` become holdable options."""
+        return await anyio.to_thread.run_sync(lambda: eng.observe(app, goal, inputs, limit))
 
     @mcp.tool()
     async def mac_act(affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False,

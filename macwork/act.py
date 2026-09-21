@@ -28,6 +28,7 @@ class Outcome:
     error: str | None = None
     wait: bool = True                    # False: the effect is not a UI change worth waiting for
     final: bool = False                  # the result itself answers the goal (e.g. web research)
+    unseen: bool = False                 # its effect may not show in an observation (see Step.unseen)
 
 
 Channel = Callable[[Ctx, Affordance, dict[str, Any]], Outcome]
@@ -277,6 +278,40 @@ def keys_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
     ctx.helper.call("input.key", combo=a.target["combo"])
     return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+
+
+@channel("hold")
+def hold_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    """Input that lasts: keys or a mouse button held for a stated time, the pointer moved *by* an amount.
+
+    For whatever is steered rather than operated — a game, a map, a 3D view. The helper carries out the
+    whole hold inside one call and releases on every way out of it, so there is no "down" without its "up"
+    for a crash or a timeout to come between (see Hold.swift). The length is part of the action, stated in
+    its label, and the ceiling is the helper's whatever is asked.
+
+    What a hold did usually cannot be read back: the view draws itself and says nothing to Accessibility.
+    That is reported (`unseen`), so an unchanged screen is not taken as "it did nothing".
+    """
+    if ctx.app:
+        _bring_forward(ctx, ctx.app["pid"])
+    t = a.target
+    ms = int(t.get("ms", 0))
+    try:
+        got = ctx.helper.call("input.hold", timeout=ms / 1000 + 10, ms=ms,
+                              keys=list(t.get("keys") or []), buttons=list(t.get("buttons") or []),
+                              move=dict(t.get("move") or {}),
+                              # outside an exclusive run the Mac is the person's: touching it ends the hold at once
+                              yield_to_user=str(ctx.cfg.get("engine.mode", "yield")) == "yield")
+    except HelperError as exc:
+        if exc.code != "no_method":
+            raise
+        # the helper is installed separately and may be older than the engine that is talking to it
+        return Outcome(False, error="the installed helper cannot hold input yet: run `macwork helper install`", wait=False)
+    held = {"control": t.get("name") or a.label, "ms": got.get("held_ms"), "ended": got.get("ended")}
+    if got.get("ended") == "user":
+        return Outcome(False, error=f"the person reached for the Mac: released after {got.get('held_ms')} ms",
+                       output={"held": held}, wait=False, unseen=True)
+    return Outcome(True, watch_pid=(ctx.app or {}).get("pid"), output={"held": held}, wait=False, unseen=True)
 
 
 @channel("shortcut")

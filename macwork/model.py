@@ -93,6 +93,10 @@ class Step:
                                                  # full, what a Shortcut returned. Such a step raises no
                                                  # Accessibility event, and "did anything happen" used to
                                                  # be a count of those alone
+    unseen: bool = False                         # what it does may not show in anything the engine observes (a
+                                                 # key held in a view that draws itself). "The screen looks the
+                                                 # same" is then not evidence of anything, and nothing that
+                                                 # concludes from it may count this step
     effect: str = ""                             # the floor's category for it: navigate | enter | delete | send | …
                                                  # "" = nobody judged it. This is what `revert` reads to know
                                                  # which steps changed something, rather than judging again

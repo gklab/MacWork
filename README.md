@@ -152,6 +152,7 @@ One Mac, one keyboard: tasks run one at a time, in a queue the caller can see an
 | whole documents | the window or the file read in full, not just the part on screen |
 | the person's own automations | `shortcuts`, with what the shortcut returns |
 | files | UTType hierarchy, `NSDataDetector`, PDFKit; which file a window is showing (`AXDocument`) |
+| what is steered, not operated | controls the caller or the person declared: keys and buttons held for a stated time, the pointer moved by an amount — [docs/controls.md](docs/controls.md) |
 | events to wake on | NSWorkspace · `com.apple.screenIsLocked` · FSEvents · pasteboard change count |
 
 An app the engine has never seen is handled by the same surfaces, plus a model learned while operating it
@@ -277,7 +278,8 @@ Any that speak MCP over stdio or streamable HTTP — Claude Code, Claude Desktop
 **Early.** Accuracy on your own tasks is something to measure, not assume.
 
 Open: repeats on the eval suite and a committed baseline · the must-not category at 2/4 · drag-and-drop
-beyond named endpoints, and precise gestures · held keys and relative mouse input (games) · name tagging for
+beyond named endpoints, and precise gestures · held input ([docs/controls.md](docs/controls.md)) is built and tested against a fake
+world but not yet exercised on a real game · name tagging for
 five languages the on-device tagger does not support · App Intents, for which macOS offers no public API to
 third-party processes (a Shortcut the person built is the route that works).
 

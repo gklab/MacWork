@@ -217,6 +217,8 @@ class LoopMixin:
         left = [s for s in task.steps if s.before == here and s.ok]
         if not left or left[-1] is task.steps[-1]:
             return
+        if any(s.unseen for s in task.steps[task.steps.index(left[-1]):]):
+            return      # "back in the same state" is a claim about the screen, and these steps do not show on it
         task.memory.retracted.setdefault(here, []).append(left[-1].action)
         log.info("back on a screen already acted from: %r was chosen here and did not hold", left[-1].action[:48])
 
@@ -357,7 +359,9 @@ class LoopMixin:
                suggested: set[str | None], locked: bool) -> dict[str, Any]:
         """What the decider is shown. goal and inputs come from the user; everything else is what the Mac shows."""
         hist = self._history(task)
-        state: dict[str, Any] = {"goal": task.goal, "inputs": dict(task.inputs), "screen_locked": locked,
+        state: dict[str, Any] = {"goal": task.goal, "screen_locked": locked,
+                                 # what a provider turned into options is already in front of the decider as options
+                                 "inputs": {k: v for k, v in task.inputs.items() if k not in (obs.notes.get("inputs_used") or [])},
                                  "app": (ctx.app or {}).get("name"), "window": obs.window, "screen_text": obs.screen_text,
                                  "history": hist, **self._evidence(obs)}
         if dead_here:
@@ -410,7 +414,9 @@ class LoopMixin:
         """
         out: dict[str, int] = {}
         for st in task.steps:
-            if st.before and st.before.split(":")[0] == sig:
+            # a step whose effect cannot be seen leaves "the same screen" behind every time: walking forward
+            # four times is not being stuck
+            if st.before and st.before.split(":")[0] == sig and not st.unseen:
                 out[st.action] = out.get(st.action, 0) + 1
         return out
 
@@ -426,6 +432,8 @@ class LoopMixin:
                 # the app did react, only not in any text the engine can read — saying "nothing changed"
                 # here would be telling the decider something false
                 return f"{s.action} -> ok{reacted}, no text on screen changed"
+            if s.unseen:     # "(no ui change)" would be read as "it did nothing", and nobody knows that
+                return f"{s.action} -> carried out; what it did does not show in anything the engine can read"
             return f"{s.action} -> ok" + (reacted or " (no ui change)")
         return [line(s) for s in task.steps[-int(self.cfg.get("engine.history", 6)):]]
 
@@ -738,14 +746,15 @@ class LoopMixin:
         task.steps.append(Step(len(task.steps), chosen.label, chosen.id, out.ok, events, decision,
                                round((time.monotonic() - t0) * 1000), out.error, chosen.channel, chosen.verb,
                                chosen.context, sorted(params), before, key=chosen.key, effect=effect,
-                               produced=bool(out.output)))
+                               produced=bool(out.output), unseen=bool(out.unseen)))
         if out.ok and effect not in ("", "navigate", "enter") and ctx.app:
             task.changed.append({"n": len(task.steps) - 1, "action": chosen.label, "effect": effect,
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
         task.prev = {"sig": sig, "label": chosen.label, "ok": out.ok, "events": events, "app": ctx.app,
-                     "screen": obs.screen_text if obs else None, "window": obs.window if obs else None}
+                     "screen": obs.screen_text if obs else None, "window": obs.window if obs else None,
+                     "unseen": bool(out.unseen)}
         task.updated = time.time()
         if out.output:
             task.outputs.update(out.output)
@@ -826,7 +835,9 @@ class LoopMixin:
             # as it was when it failed (asking again there gets the same failure), and offered again once
             # anything on it has changed. `engine.max_repeats` still ends it for good.
             task.memory.failed[key] = exact_state(prev["sig"], prev.get("screen") or "")
-        elif not changed:                         # nothing happened: never offered again from this screen in this task
+        elif not changed and not prev.get("unseen"):
+            # nothing happened: never offered again from this screen in this task. Unless what it does is
+            # something the engine has no way to see — then "nothing changed" is a fact about the observer
             task.memory.no_effect.add(key)
 
     # ------------------------------------------------------------------ routines
