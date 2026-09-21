@@ -397,5 +397,8 @@ class Gate:
             raise RedactionError("personal data could not be checked for, so nothing was sent")
         self.audit.record("decide", task=task, state=safe_state, questions=safe_questions, dry_run=self.audit.dry_run)
         answers = self.decider.decide(safe_state, safe_questions)
-        self.audit.record("answers", task=task, answers={k: {kk: vv for kk, vv in a.items() if kk != "probabilities"} for k, a in answers.items()})
+        # The probabilities stay. They are not personal data, and they are exactly what decides whether
+        # the safety floor released an action — a log that drops them cannot answer "why was this let
+        # through", which is the one question anyone reads it for.
+        self.audit.record("answers", task=task, answers=answers)
         return answers

@@ -21,7 +21,12 @@ confirm:
   # decider.local.confidence_ceiling). It is asked `floor_harmless` — a plain yes/no — instead. Be clear
   # about what that costs: on a Mac whose language these word lists do not cover, one answer from a text
   # model is the whole floor.
-  release_threshold: 0.9
+  release_threshold: 0.9              # when the word lists below flagged the action
+  release_threshold_unflagged: 0.7    # when they did not. Lower, because 0.9 was calibrated for
+                                      # releasing something already flagged as risky, and applying it
+                                      # with no such evidence gated a calculator's Equals. Still a bar:
+                                      # below it an action is gated however the classifier labelled it,
+                                      # which is what makes a German "Löschen" at 0.34 stop.
   classify_step_level: true   # mac_act classifies the action too (one request the first time it sees one).
                               # false: the words alone, which is only as wide as the two languages below
   other: it does something else irreversible or outward-facing

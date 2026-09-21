@@ -325,7 +325,18 @@ class PolicyMixin:
         if top not in self._releases(a):
             return hits or [top]
         if self._calibrated():
-            sure = nav >= float(conf.get("release_threshold", 0.9))
+            # Two bars, and which applies is decided by the words — not because a word list may set how
+            # sure a classifier has to be, but because a hit *is* evidence of risk and evidence is
+            # allowed to change what is required. What is not allowed is the reverse, their silence
+            # standing in for evidence of safety: that was a bare argmax, and it released a German
+            # "Löschen" at 0.34 while stopping an English "Delete".
+            #
+            # One bar for both was tried and measured: at 0.9 everywhere, a calculator's `Equals`,
+            # `File ▸ New` and `File ▸ Open…` all came back needing confirmation, which is the failure
+            # `edit` exists to prevent, recreated. 0.9 was calibrated for releasing something the words
+            # flagged, and that prior evidence is what makes so high a bar reasonable.
+            bar = "release_threshold" if hits else "release_threshold_unflagged"
+            sure = nav >= float(conf.get(bar, 0.9 if hits else 0.7))
         else:
             sure = not hits and self._uncalibrated_release(task_id, ctx, a, window, ask)
         if sure:

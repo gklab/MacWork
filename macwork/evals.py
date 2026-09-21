@@ -123,7 +123,7 @@ def _sub(value: Any, eval_dir: str) -> Any:
 
 
 def _sandbox(engine: Engine, task: dict[str, Any]) -> Path:
-    root = Path(str(engine.cfg.get("evals.sandbox", "~/Library/Caches/macwork-eval"))).expanduser()
+    root = Path(str(engine.cfg.get("evals.sandbox", "~/Library/Caches/macwork-sandbox"))).expanduser()
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
     for f in task.get("fixtures") or []:
@@ -339,7 +339,7 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
         conf = engine.cfg.docs["config"]
         conf["observe"]["providers"] = [p for p in conf["observe"].get("providers", []) if p != "skills"]
         conf.setdefault("skills", {})["record"] = False
-        conf.setdefault("appmodel", {})["dir"] = tempfile.mkdtemp(prefix="macwork-eval-apps-")
+        conf.setdefault("appmodel", {})["dir"] = tempfile.mkdtemp(prefix="macwork-sandbox-apps-")
         from .appmodel import AppModels
         engine.models = AppModels(engine.cfg)
         engine.cache["appmodels"] = engine.models
@@ -387,7 +387,7 @@ def _forget(engine: Engine) -> None:
         import tempfile
 
         from .appmodel import AppModels
-        engine.cfg.docs["config"]["appmodel"]["dir"] = tempfile.mkdtemp(prefix="macwork-eval-apps-")
+        engine.cfg.docs["config"]["appmodel"]["dir"] = tempfile.mkdtemp(prefix="macwork-sandbox-apps-")
         engine.models = AppModels(engine.cfg)
         engine.cache["appmodels"] = engine.models
 

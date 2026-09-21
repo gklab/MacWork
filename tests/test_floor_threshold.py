@@ -67,20 +67,23 @@ def test_a_confident_verdict_still_releases(tmp_path):
     assert gated == []
 
 
-def test_the_threshold_is_the_one_in_policy_not_a_second_one(tmp_path):
-    """One number decides this, and it is `confirm.release_threshold`."""
-    lenient = {"policy": {"confirm": {"release_threshold": 0.3}}}
+def test_the_bars_are_the_ones_in_policy_and_nowhere_else(tmp_path):
+    lenient = {"policy": {"confirm": {"release_threshold": 0.3, "release_threshold_unflagged": 0.3}}}
     assert floor(tmp_path, "menu Ablage ▸ Löschen", Unsure(p=0.34), **lenient)[0] == []
     assert floor(tmp_path, "menu Ablage ▸ Löschen", Unsure(p=0.2), **lenient)[0]
 
 
-def test_the_two_paths_agree_at_the_same_confidence(tmp_path):
-    """Whether the words happened to recognise a word may change what is asked, never how sure the
-    classifier has to be."""
-    for p in (0.2, 0.5, 0.89, 0.91, 0.99):
-        unflagged = bool(floor(tmp_path, "menu Ablage ▸ Löschen", Unsure(p=p))[0])
-        flagged = bool(floor(tmp_path, "menu File ▸ Delete", Unsure(p=p))[0])
-        assert unflagged == flagged, f"at p={p}: words-silent gated={unflagged}, words-hit gated={flagged}"
+def test_the_words_never_make_the_bar_lower(tmp_path):
+    """This one replaced "the two paths agree at every confidence", which I wrote and a run disproved:
+    with one bar at 0.9 a calculator's `Equals` needed confirmation. A word hit may ask for *more*
+    certainty — it is evidence of risk — and must never ask for less."""
+    from macwork.config import Config
+    conf = Config.load().policy["confirm"]
+    for p in (0.2, 0.5, 0.75, 0.89, 0.91, 0.99):
+        unflagged = bool(floor(tmp_path, "menu Ablage ▸ Öffnen", Unsure(p=p))[0])
+        flagged = bool(floor(tmp_path, "menu File ▸ Delete", Unsure(top="navigate", p=p, rest=("delete",)))[0])
+        assert flagged or not unflagged, \
+            f"at p={p} the words flagging it released something their silence would have gated"
 
 
 def test_a_verdict_that_is_not_a_release_is_gated_however_sure_it_is(tmp_path):
@@ -143,3 +146,40 @@ def test_a_gate_reason_is_never_the_name_of_a_release(tmp_path):
     """`because: ['navigate']` is not a reason to show anyone."""
     gated, _, _ = floor(tmp_path, "menu Ablage ▸ Öffnen", Unsure(top="navigate", p=0.5))
     assert "navigate" not in gated and "enter" not in gated and "edit" not in gated
+
+
+# --------------------------------------------------------------------------- two thresholds, both real
+
+def test_an_unsure_verdict_is_gated_whether_or_not_the_words_saw_it(tmp_path):
+    """The original defect and the reason for all of this: a 0.34 verdict must not release, in any
+    language. That stays true — what changes below is only how sure is sure enough."""
+    for label in ("menu Ablage ▸ Löschen", "menu File ▸ Delete"):
+        assert floor(tmp_path, label, Unsure(p=0.34))[0], label
+
+
+def test_an_ordinary_action_is_not_gated_for_being_less_than_nine_tenths_certain(tmp_path):
+    """Measured, and the reason this is here: with one 0.9 bar on both paths a calculator's `Equals`
+    came back needing confirmation — judged `edit`, which is a release, at less than 0.9. `File ▸ New`
+    and `File ▸ Open…` went the same way. That is the failure `edit` was added to prevent, recreated."""
+    gated, eng, a = floor(tmp_path, "button 「Equals」", Unsure(top="edit", p=0.8, rest=("other",)))
+    assert gated == [], "an everyday action was gated for ordinary uncertainty"
+
+
+def test_the_words_flagging_it_asks_for_more_certainty_not_less(tmp_path):
+    """A word hit is evidence of risk, and evidence is allowed to change what is required. What is not
+    allowed is for its *absence* to be evidence of safety — that was argmax with no floor at all."""
+    assert floor(tmp_path, "menu File ▸ Delete", Unsure(top="navigate", p=0.8, rest=("delete",)))[0]
+    assert floor(tmp_path, "menu File ▸ Delete", Unsure(top="navigate", p=0.95, rest=("delete",)))[0] == []
+
+
+def test_both_bars_are_named_in_policy(tmp_path):
+    from macwork.config import Config
+    conf = Config.load().policy["confirm"]
+    assert conf["release_threshold"] > conf["release_threshold_unflagged"] > 0.5, \
+        "the bar for an action the words flagged must be the higher of the two, and neither may be a formality"
+
+
+def test_the_lower_bar_is_still_a_bar(tmp_path):
+    """Not argmax by another name: below it, an action is gated however it was labelled."""
+    gated, _, _ = floor(tmp_path, "menu Ablage ▸ Öffnen", Unsure(top="navigate", p=0.5, rest=("other",)))
+    assert gated
