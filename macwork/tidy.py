@@ -210,6 +210,9 @@ class TidyMixin:
             time.sleep(0.05)
 
     def _quit(self, task: Task, app: dict[str, Any]) -> bool:
+        if not self.still_the_app(app):
+            log.info("not quitting pid %s: it is no longer %s", app.get("pid"), app.get("bundle_id") or app.get("name"))
+            return False
         r = self.helper.call("apps.quit", pid=app["pid"], timeout_ms=int(self.cfg.get("engine.quit_wait_ms", 3000)), timeout=15)
         if r.get("terminated"):
             return True

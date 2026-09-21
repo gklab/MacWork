@@ -146,11 +146,26 @@ class Redactor:
         self._protected_rx = re.compile("|".join(map(re.escape, names)), re.I) if names else None
 
     def _is_protected(self, t: str) -> bool:
+        """Is this the Mac's own vocabulary rather than somebody's name?
+
+        It used to ask whether the text is a *substring* of any installed app's name, so "Mai" was taken
+        for "Mail", "Nu" for "Numbers", "Bo" for "Books" — and anyone called those was never redacted.
+        Short names in scripts without capitals are exactly the ones the tagger is least sure about, so
+        the substring rule was silently strongest where the redaction was weakest.
+
+        A whole app name, or a whole word of a multi-word one ("Activity Monitor" also protects
+        "Monitor"). Nothing shorter: a fragment is not a name.
+        """
         if t in self.keep:
             return True
         self._load_protected()
-        low = t.casefold()
-        return any(low in name for name in self._protected or [])
+        low = t.casefold().strip()
+        if not low:
+            return False
+        for name in self._protected or []:
+            if low == name or (len(low) >= 3 and low in re.split(r"[^\w]+", name)):
+                return True
+        return False
 
     def _worth_tagging(self, clause: str) -> bool:
         """Skip clauses made only of this Mac's own vocabulary: nothing name-like is left once app names are removed."""

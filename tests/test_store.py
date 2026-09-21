@@ -40,10 +40,17 @@ def test_a_task_comes_back_whole(tmp_path):
     assert after.approved == {"menu 文件 ▸ 存储"}
     assert after.memory.no_effect == {"sig|menu 文件 ▸ 导出"}
     assert after.memory.declined == {"switch to app 访达"}
-    assert after.desktop.initial_pids == {1, 2}
-    assert after.desktop.initial_windows == {1: {10, 11}}, "what tidying needs to touch only its own doing"
-    assert after.desktop.opened == {42: {"name": "计算器"}}
+    assert after.desktop.opened == {42: {"name": "计算器"}}, "what tidying needs to touch only its own doing"
     assert after.pace.replans == 2 and after.spent_s == 12.5
+
+
+def test_the_machine_as_it_was_does_not_come_back(tmp_path):
+    """The module's own promise, which `dump` did not keep: pids and window numbers describe a machine
+    that has moved on, and macOS reuses pids. `desktop.opened` stays because tidying needs it, and is
+    checked against the running process before anything is done with it."""
+    after = load(dump(_rich()))
+    assert after.desktop.initial_pids is None
+    assert after.desktop.initial_windows is None
 
 
 def test_what_the_task_saw_comes_back_as_facts(tmp_path):

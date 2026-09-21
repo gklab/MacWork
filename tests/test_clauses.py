@@ -116,3 +116,32 @@ def test_what_was_refused_says_why(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="macwork.privacy"):
         r.value(many(50))
     assert "600" not in caplog.text and ("more than" in caplog.text or "ceiling" in caplog.text)
+
+
+# --------------------------------------------------------------------------- app names, and people called them
+
+def protector(apps):
+    from macwork.config import Config
+    from macwork.privacy import Redactor
+    return Redactor(Config.load(), protect=lambda: apps)
+
+
+APPS = ["Mail", "Preview", "Numbers", "Pages", "Music", "Notes", "Maps", "Books", "Photos", "Reminders"]
+
+
+@pytest.mark.parametrize("name", ["Mai", "Nu", "Ma", "Bo", "Note", "Photo", "Rem", "Pag"])
+def test_a_person_is_not_protected_for_being_part_of_an_app_name(name):
+    """`_is_protected` asked whether the name is a *substring* of any installed app's name, so anyone
+    called Mai, Nu or Bo was never redacted — and short names in scripts without capitals are exactly the
+    ones the tagger is least sure about."""
+    assert not protector(APPS)._is_protected(name), f"{name!r} was taken for an app name"
+
+
+@pytest.mark.parametrize("name", ["Mail", "mail", "Activity Monitor", "Monitor"])
+def test_an_app_name_is_still_protected(name):
+    """The point of the list: the decider has to see "switch to Mail" as an app, not ⟦PERSON_3⟧."""
+    assert protector(APPS + ["Activity Monitor"])._is_protected(name)
+
+
+def test_a_bundle_id_still_protects_its_own_app():
+    assert protector(["com.apple.mail"])._is_protected("com.apple.mail")

@@ -70,8 +70,21 @@ def dump(task: Task) -> str:
     return json.dumps(state, ensure_ascii=False, default=str)
 
 
+# Handles to a machine that has moved on. The module docstring has always said these are left behind;
+# `dump` stores every field but `held`, so they were not. macOS reuses pids, so a resumed task carrying
+# one can act on whatever process holds that number now. `desktop.opened` stays — it is the only record
+# that lets tidying touch this task's own doing — and what makes it safe is the check at the moment of
+# acting (`PolicyMixin.still_the_app`), not its absence from disk.
+_STALE = {"desktop": ("initial_pids", "initial_windows"), "target": ("pid",)}
+
+
 def load(text: str) -> Task:
     state = json.loads(text)
+    for field_, keys in _STALE.items():
+        got = state.get(field_)
+        if isinstance(got, dict):
+            for k in keys:
+                got[k] = None
     task = Task(goal=state.get("goal", ""))
     for f in fields(Task):
         if f.name not in state or f.name == "held":

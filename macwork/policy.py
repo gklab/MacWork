@@ -16,6 +16,7 @@ import re
 from typing import Any, Callable
 
 from .decider import DeciderError, choice, noul
+from .helper import HelperError
 from .model import Affordance, Task
 from .observe import Ctx
 from .privacy import Redactor
@@ -147,6 +148,22 @@ class PolicyMixin:
             self.audit.record("floor", task=task_id, action=pick.label, released=False, words=gated, where="off-loop")
             return None
         return pick
+
+    def still_the_app(self, app: dict[str, Any]) -> bool:
+        """Is the process at that pid still the app this task opened?
+
+        A pid is a handle to a process that was running then. It survives a restart in the store, macOS
+        reuses the numbers, and `tidy` quits by pid — so a resumed task could quit whatever now holds the
+        number its app had. An entry with no bundle id cannot be checked, and is therefore not acted on.
+        """
+        pid, bundle = app.get("pid"), app.get("bundle_id")
+        if not pid or not bundle:
+            return False
+        try:
+            running = self.helper.call("apps.running")
+        except HelperError:
+            return False
+        return any(a.get("pid") == pid and a.get("bundle_id") == bundle for a in running)
 
     def _calibrated(self) -> bool:
         """Does the decider's confidence mean a frequency? Every threshold in `config.yaml` assumes so."""
