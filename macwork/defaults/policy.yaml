@@ -12,6 +12,15 @@
 # With no decider reachable at all, the words are the only fallback left, and that is logged too.
 confirm:
   mode: caller              # caller: return need_confirm | never: act without asking (not recommended)
+  # A cut-off on a *calibrated* probability, applied to BOTH paths — whether the word lists below happened
+  # to recognise a word may change what the classifier is asked about, never how sure it has to be. It used
+  # to apply only where the words hit, so the same unsure verdict released on a German or Japanese Mac and
+  # stopped on an English one: the same language-dependence batch 2 removed, pointing the other way.
+  #
+  # A decider that reports itself uncalibrated can never reach this and is not measured against it (see
+  # decider.local.confidence_ceiling). It is asked `floor_harmless` — a plain yes/no — instead. Be clear
+  # about what that costs: on a Mac whose language these word lists do not cover, one answer from a text
+  # model is the whole floor.
   release_threshold: 0.9
   classify_step_level: true   # mac_act classifies the action too (one request the first time it sees one).
                               # false: the words alone, which is only as wide as the two languages below

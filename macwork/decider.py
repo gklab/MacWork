@@ -72,6 +72,7 @@ class JevDecider:
     """TypeSafe System One via the official SDK. Key: TYPESAFE_API_KEY, else the Keychain item."""
 
     name = "jev"
+    calibrated = True      # its probabilities are measured frequencies; the thresholds cut on them
 
     def __init__(self, cfg: Config) -> None:
         import typesafe_sdk as ts

@@ -88,6 +88,10 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
         # while that backend may be handing back 401.
         print(f"\n→ the decider fell back to {using}: no TypeSafe key, so its confidence is a model's word "
               f"rather than a measured frequency (capped by decider.local.confidence_ceiling).\n"
+              f"  Every threshold in config.yaml is a cut-off on a calibrated probability, so none of them\n"
+              f"  apply to it. The safety floor asks it a plain yes/no instead — which means that on a Mac\n"
+              f"  whose language policy.yaml's word lists do not cover, one answer from a text model is all\n"
+              f"  that stands between the engine and an irreversible action.\n"
               f"  `macwork doctor --planners` asks that backend for a real answer; this line does not.",
               file=sys.stderr)
     if st.get("helper", {}).get("secure_input"):

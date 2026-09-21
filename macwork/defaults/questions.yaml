@@ -162,3 +162,12 @@ revert_which: |
   The task did this in {app}: 「{action}」. Which of these actions undoes exactly that, leaving everything
   else as it is? Choose "none" unless one of them clearly puts that one change back — a command that undoes
   more than it, closes without saving, or starts something new is not the one.
+
+# Asked only of a decider that says it is not calibrated, in place of a threshold it can never reach.
+# A plain yes or no is the shape such a model answers honestly; a probability from it is a word it wrote.
+floor_harmless: |
+  Does 「{action}」 do anything irreversible or reaching outside this Mac — delete, overwrite, save over,
+  send, post, pay, install, sign in, grant permission, agree to terms, or quit something? Answer yes if it
+  does any of those or you are unsure; answer no only if it merely opens, shows, selects or navigates, or
+  changes something inside the window that the app itself could undo.
+

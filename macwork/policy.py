@@ -124,6 +124,35 @@ class PolicyMixin:
                 out[name] = str(conf[name]).strip()
         return out or {"navigate": "it only opens, shows or navigates to something"}
 
+    def _calibrated(self) -> bool:
+        """Does the decider's confidence mean a frequency? Every threshold in `config.yaml` assumes so."""
+        return bool(getattr(self.decider, "calibrated", True))
+
+    def _uncalibrated_release(self, task_id: str, ctx: Ctx, a: Affordance, window: str | None, ask: bool) -> bool:
+        """Ask a decider that cannot be thresholded the question it *can* answer: yes or no.
+
+        Cached with the verdict, so this costs one question the first time an action is seen and nothing
+        afterwards. It is asked with no screen text, like the classification it backs up, so content on a
+        page cannot answer it.
+        """
+        key = f"noul|{self._floor_key(ctx, a)}"
+        cache: dict[str, bool] = self.cache.setdefault("floor.harmless", {})
+        if key in cache:
+            return cache[key]
+        if not ask or getattr(ctx, "gate", None) is None:
+            return False
+        state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
+                 "where": a.context, "kind": f"{a.channel} {a.verb}"}
+        q = self.cfg.question("floor_harmless").replace("{action}", a.label)
+        try:
+            ans = ctx.gate.decide(self.redactor(task_id), state, {"harmless": noul(q)}, task=task_id)
+        except DeciderError as exc:
+            log.info("floor: no second opinion for %r (%s)", a.label[:40], exc)
+            return False
+        got = (ans.get("harmless") or {}).get("noul")
+        cache[key] = got is not None and float(got) < 0.5      # "does it do something irreversible?" -> no
+        return cache[key]
+
     def _scored(self, a: Affordance, verdict: tuple[str, Any]) -> tuple[str, float]:
         """(what it was judged to be, how much of that judgement counts as a release *for this action*).
 
@@ -234,12 +263,34 @@ class PolicyMixin:
             return hits
         top, nav = verdict
         self.cache["floor.last_category"] = top     # what it was judged to be, for the step to record
-        if hits:
-            if nav >= float(conf.get("release_threshold", 0.9)):
-                self.audit.record("floor", task=task_id, action=a.label, released=True, navigate=round(nav, 3), words=hits)
-                return []
+        if top == "":
             return hits
-        return [] if top in self._releases(a) or top == "" else [top]
+        # One threshold, both paths. Batch 2 removed a word list that read a miss as "safe"; what replaced
+        # it required near-certainty to release an action the words flagged and took the classifier's bare
+        # argmax for one they did not — so the same unsure verdict released on a German or Japanese Mac and
+        # stopped on an English one. The words may still decide *what* is asked about; how sure the
+        # classifier has to be is not theirs to set.
+        #
+        # The threshold is a cut-off on a *calibrated* probability. A decider that says it is not
+        # calibrated (`localdecider`, capped at `confidence_ceiling` precisely because its numbers are
+        # words it wrote) can never reach it, and gating every action including scrolling is not a safer
+        # engine, it is an unusable one. Such a decider is asked the question it can answer instead — a
+        # plain yes or no about this action — and the ceiling still keeps it from releasing what the words
+        # flagged. See `_uncalibrated_release`.
+        if top not in self._releases(a):
+            return hits or [top]
+        if self._calibrated():
+            sure = nav >= float(conf.get("release_threshold", 0.9))
+        else:
+            sure = not hits and self._uncalibrated_release(task_id, ctx, a, window, ask)
+        if sure:
+            self.audit.record("floor", task=task_id, action=a.label, released=True,
+                              navigate=round(nav, 3), words=hits, verdict=top,
+                              calibrated=self._calibrated())
+            return []
+        # Gated, but not under the name of a release: "because: ['navigate']" is not a reason to show
+        # anyone. The words' own categories if they had any, else that nobody could vouch for it.
+        return hits or ["unclassified"]
 
     def _risky(self, a: Affordance, ctx: Ctx | None = None) -> bool:
         """A cheap read for the places that filter a whole pool of actions before a decider question picks one

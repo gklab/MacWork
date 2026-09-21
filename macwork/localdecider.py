@@ -60,7 +60,14 @@ def _describe(questions: dict[str, dict[str, Any]]) -> str:
 
 
 class LocalDecider:
-    """Answers through a planner backend. ``decider.kind: local``."""
+    """Answers through a planner backend. ``decider.kind: local``.
+
+    ``calibrated = False`` is the load-bearing part: every threshold in `config.yaml` is a cut-off on a
+    measured frequency, and nothing here produces one. The floor reads this and asks a yes/no question
+    instead of comparing a number it cannot trust.
+    """
+
+    calibrated = False
 
     def __init__(self, cfg: Config, helper: Any = None, backend: Any = None) -> None:
         from .planner import make_planner
