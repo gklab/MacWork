@@ -112,6 +112,12 @@ final class EventLog {
     func watch(path: String) throws {
         let full = (path as NSString).expandingTildeInPath
         guard streams[full] == nil else { return }
+        // FSEvents will happily watch a path that does not exist, waiting for it to appear. For a trigger
+        // that is indistinguishable from a typo, and a rule that never fires because of a typo is the
+        // failure this whole subsystem is least able to notice.
+        guard FileManager.default.fileExists(atPath: full) else {
+            throw RPCError("no_such_path", "\(full) does not exist, so nothing would ever be reported for it")
+        }
         var context = FSEventStreamContext(version: 0, info: nil, retain: nil, release: nil, copyDescription: nil)
         // `kFSEventStreamCreateFlagUseCFTypes` is what makes `paths` a CFArray. Without it the callback is
         // handed a C `char **`, and reading that as an NSArray is undefined behaviour — it took the whole

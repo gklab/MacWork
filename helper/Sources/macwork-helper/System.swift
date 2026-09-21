@@ -477,8 +477,10 @@ func fileReadText(_ p: Params) throws -> Any {
     let readable: [UTType] = [.text, .pdf, .compositeContent]
     let declared = type.map { t in readable.contains(where: { t.conforms(to: $0) }) } ?? false
     // an extension nobody registered gets a made-up type that conforms to nothing (a .toml, say), so an
-    // unknown type is not a "no" — it is a "find out", and finding out means the bytes really decoding
-    let unknown = type?.isDynamic ?? true
+    // unknown type is not a "no" — it is a "find out", and finding out means the bytes really decoding.
+    // `public.data` is the same situation said differently: it is what a file with no extension at all
+    // gets, which is README, Makefile and every dotfile, and those were being refused outright.
+    let unknown = type.map { $0.isDynamic || $0 == .data } ?? true
     guard declared || unknown else {
         throw RPCError("not_text", "\(url.lastPathComponent) is a \(type?.localizedDescription ?? "file"), not something with text in it")
     }
@@ -487,11 +489,13 @@ func fileReadText(_ p: Params) throws -> Any {
         return ["text": String((doc.string ?? "").prefix(limit)), "kind": kind, "pages": doc.pageCount]
     }
     // only for a type that says it holds text: this reader is lenient enough to turn an icon into mojibake
+    // `truncated` because a prefix that does not say so reads as the whole file, and what a task read is
+    // what it is then allowed to write back
     if declared, let s = try? NSAttributedString(url: url, options: [:], documentAttributes: nil) {
-        return ["text": String(s.string.prefix(limit)), "kind": kind]
+        return ["text": String(s.string.prefix(limit)), "kind": kind, "truncated": s.string.count > limit]
     }
     if let data = try? Data(contentsOf: url), let s = String(data: data.prefix(limit * 4), encoding: .utf8) {
-        return ["text": String(s.prefix(limit)), "kind": kind]
+        return ["text": String(s.prefix(limit)), "kind": kind, "truncated": s.count > limit]
     }
     throw RPCError("not_text", "\(url.lastPathComponent) could not be read as text")
 }

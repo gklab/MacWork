@@ -90,8 +90,15 @@ final class Connection {
                     let line = buffer[buffer.startIndex..<nl]
                     buffer.removeSubrange(buffer.startIndex...nl)
                     if line.isEmpty { continue }
-                    // handle() hops to the main thread itself, for every method that needs it
-                    self.output.write(self.dispatcher.handle(line: Data(line)))
+                    // handle() hops to the main thread itself, for every method that needs it.
+                    // `write(contentsOf:)`, not `write(_:)`: the old one raises an ObjC exception on a
+                    // broken pipe rather than throwing, so a client that went away mid-reply took the
+                    // helper with it. (SIGPIPE is ignored in main.swift for the same reason.)
+                    do {
+                        try self.output.write(contentsOf: self.dispatcher.handle(line: Data(line)))
+                    } catch {
+                        break      // the other end is gone; this connection is over, the helper is not
+                    }
                 }
             }
             DispatchQueue.main.async { self.onClose() }

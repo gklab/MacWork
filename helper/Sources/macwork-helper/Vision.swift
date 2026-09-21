@@ -6,15 +6,35 @@ import Vision
 /// read it on-device (Vision OCR). Pixels never leave this process unless a caller asks for a PNG on disk.
 
 /// Run async work from the (blocking) main thread by spinning the run loop until it finishes.
+/// Wait for an async call from a synchronous handler.
+///
+/// This used to spin: `while result == nil { CFRunLoopRunInMode(.defaultMode, 0.01, true) }`. On the main
+/// thread that at least pumped a run loop. Since the slow captures became `offMain` the caller is a
+/// connection's reader thread, which has no run loop — `CFRunLoopRunInMode` makes one, finds nothing to
+/// do and returns at once, so it burned a core for the whole timeout. The write and the read of `result`
+/// were also unsynchronised across two threads, which is a data race whatever it appears to do.
+///
+/// A semaphore is the whole of it: it blocks without spinning, it works on any thread, and it is the
+/// handshake the two sides actually need.
 func runAsync<T>(timeout: Double, _ body: @escaping () async throws -> T) throws -> T {
-    var result: Result<T, Error>?
+    let done = DispatchSemaphore(value: 0)
+    let box = Box<Result<T, Error>>()
     Task.detached {
-        do { result = .success(try await body()) } catch { result = .failure(error) }
+        do { box.set(.success(try await body())) } catch { box.set(.failure(error)) }
+        done.signal()
     }
-    let deadline = Date().addingTimeInterval(timeout)
-    while result == nil && Date() < deadline { CFRunLoopRunInMode(.defaultMode, 0.01, true) }
-    guard let r = result else { throw RPCError("timeout", "capture timed out") }
+    guard done.wait(timeout: .now() + timeout) == .success, let r = box.get() else {
+        throw RPCError("timeout", "capture timed out")
+    }
     return try r.get()
+}
+
+/// One value, handed from the task that produced it to the thread waiting for it.
+private final class Box<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T?
+    func set(_ v: T) { lock.lock(); value = v; lock.unlock() }
+    func get() -> T? { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 private func frameParam(_ p: Params, _ key: String) -> CGRect? {

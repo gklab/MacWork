@@ -80,6 +80,9 @@ dispatcher.register("events.poll", eventsPoll)
 dispatcher.register("llm.available", llmAvailable)
 dispatcher.register("llm.generate", offMain: true, llmGenerate)
 
+// A client that goes away mid-reply must not take the helper with it: the default action for SIGPIPE is
+// to terminate the process, and every reply is a write to a socket somebody else owns.
+signal(SIGPIPE, SIG_IGN)
 AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)  // one hung app must not hang us
 NSApplication.shared.setActivationPolicy(.prohibited)
 
