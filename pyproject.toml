@@ -5,10 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "macwork"
 version = "0.1.0"
-description = "Take over a Mac through native interfaces (menus, Accessibility, apps, files, web) with TypeSafe Jev making the fast decisions."
+description = "Open-source computer-use agent and MCP server for macOS: operates any app through the Accessibility API and native interfaces instead of screenshots."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
+keywords = ["macos", "computer-use", "ai-agent", "gui-automation", "desktop-automation", "accessibility",
+            "accessibility-api", "mcp", "mcp-server", "model-context-protocol", "claude", "llm-agent", "typesafe", "jev"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Desktop Environment",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "typesafe-sdk>=0.7",
     "mcp>=2.0",
@@ -17,6 +29,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://macwork.org"
+Repository = "https://github.com/gklab/MacWork"
+Documentation = "https://github.com/gklab/MacWork/blob/main/docs/design-v4.md"
+Issues = "https://github.com/gklab/MacWork/issues"
 
 [project.scripts]
 macwork = "macwork.cli:main"
