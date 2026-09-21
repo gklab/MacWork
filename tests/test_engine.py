@@ -343,7 +343,20 @@ def test_do_ambiguous_returns_choices_and_resumes_with_one(tmp_path):
     assert res["status"] == "ambiguous"
     ids = [o["id"] for o in res["pending"]["choose_one_of"]]
     assert len(ids) >= 2
-    res = eng.resume(res["task_id"], choice_id=ids[0])
+    # exporting is a floor category, and this action has never been classified — the engine returned
+    # `ambiguous` before it got that far. Picking an option says which one, not that it is safe.
+    asked = eng.resume(res["task_id"], choice_id=ids[0])
+    assert asked["status"] == "need_confirm"
+    res = eng.resume(res["task_id"], confirm=True)
+    assert res["status"] == "done" and "PDF" in res["steps"][0]
+
+
+def test_a_caller_can_answer_which_one_and_whether_in_one_call(tmp_path):
+    probs = lambda q: {k: (0.3 if "PDF" in v else 0.25 if "新建" in v else 0.0) for k, v in q["action"]["criteria"].items()}  # noqa: E731
+    eng = engine(tmp_path, [lambda s, q: {"pick": "PDF", "move": "ask_user", "probs": probs(q)}, {"pick": "done"}])
+    res = eng.do("导出")
+    ids = [o["id"] for o in res["pending"]["choose_one_of"]]
+    res = eng.resume(res["task_id"], choice_id=ids[0], confirm=True)
     assert res["status"] == "done" and "PDF" in res["steps"][0]
 
 

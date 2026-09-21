@@ -298,8 +298,10 @@ class TidyMixin:
             return None
 
     def _back_out(self, task: Task, app: dict[str, Any], question: str, window: str = "") -> None:
-        """The decider picks, among what the app shows, the control that backs out and keeps everything as it
-        is (never one the safety floor gates)."""
+        """The decider picks, among what the app shows, the control that backs out and keeps everything as
+        it is. The floor then gates that pick like any other action — it used to say so and not do it, and
+        this runs on exactly the screens where the dangerous buttons are (a "save changes?" sheet reached
+        while tidying up)."""
         try:
             ctx = self._ctx(task.goal, task.inputs, {"pid": app["pid"], "name": app.get("name"), "bundle_id": app.get("bundle_id")}, task.id)
             obs = observe(ctx)
@@ -309,7 +311,8 @@ class TidyMixin:
             q = self.cfg.question(question).replace("{app}", str(app.get("name"))).replace("{window}", window)
             ans = self.gate.decide(self.redactor(task.id), {"app": app.get("name"), "window": obs.window, "screen_text": obs.screen_text[:600]},
                                    {"back": choice(q, options)}, task=task.id)
-            pick = next((a for a in flat if a.id == (ans.get("back") or {}).get("choice")), None)
+            pick = self.vetted(task.id, ctx, next((a for a in flat if a.id == (ans.get("back") or {}).get("choice")), None),
+                               obs.window)
             if pick is not None:
                 self._execute(ctx, pick, {})
         except (HelperError, DeciderError) as exc:

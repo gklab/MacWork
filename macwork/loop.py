@@ -534,6 +534,17 @@ class LoopMixin:
             self._replay(task, chosen.target["skill"], progress)
             return None
         obs = look.obs if look else None
+        # A held action skipped the floor entirely, because `_floor` lives in `_judge` and a held action
+        # does not go through it. That is right for one of the three ways an action gets held — the caller
+        # has just confirmed *that* action, and asking again is asking twice — and wrong for the other two:
+        # resuming from `ambiguous` says which option, never that it is safe, and resuming from
+        # `need_input` supplies text for an action nobody has classified.
+        if look is None and chosen.label not in task.approved:
+            gated = self._floor(task.id, ctx, chosen, (obs.window if obs else None) or (task.target or {}).get("window"))
+            if gated:
+                task.held = chosen
+                return self._finish(task, "need_confirm", "this action is irreversible or outward-facing",
+                                    {"confirm": chosen.public(), "because": gated})
         params = {k: task.inputs[k] for k in chosen.slots if k in task.inputs}
         for carried in ("text", "url"):   # a planner suggestion carries its own text or link
             if carried in chosen.target and chosen.id.startswith("t"):

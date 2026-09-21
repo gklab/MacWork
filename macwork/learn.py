@@ -74,7 +74,7 @@ class LearnMixin:
                 for _ in range(int(lc.get("max_back_steps", 2))):   # undo: the decider picks what gets back
                     if sig2 == base:
                         break
-                    back = self._way_back(ctx2, obs2, base_window, a.label)
+                    back = self.vetted("learn", ctx2, self._way_back(ctx2, obs2, base_window, a.label), obs2.window)
                     if back is None:
                         break
                     progress(f"back: {back.label}")
@@ -92,8 +92,11 @@ class LearnMixin:
                 "seconds": round(time.monotonic() - t0, 1)}
 
     def _way_back(self, ctx: Ctx, obs: Observation, window: str | None, done: str) -> Affordance | None:
-        """After exploring, which action on this screen returns to where we were, changing nothing? The decider
-        chooses among what is there (keys included); the safety floor still excludes anything risky."""
+        """After exploring, which action on this screen returns to where we were, changing nothing?
+
+        The decider chooses among what is there (keys included). `_risky` narrows the pool cheaply, but it
+        does not ask the decider and falls back to a word list two languages wide — so the *pick* is gated
+        by the floor proper at the call site (`vetted`), not only the pool."""
         extra = Observation(app=obs.app, window=obs.window, affordances=[])
         keys_provider = get_provider("keys")
         if keys_provider:

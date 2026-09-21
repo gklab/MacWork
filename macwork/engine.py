@@ -309,6 +309,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             held = task.options.get(choice_id or "")
             if held is None:
                 return {**task.result(), "error": f"choose one of {list(task.options)}"}
+            # Which one and whether it is safe are two questions, and picking an option answers only the
+            # first — so a chosen action still meets the floor. A caller that already knows can answer both
+            # at once by passing `confirm` with the choice, rather than being asked twice in a row.
+            if confirm:
+                task.approved.add(held.label)
         task.status, task.pending, task.options = "running", {}, {}
         task.held = held
         return self._run_queued(task, progress, None)

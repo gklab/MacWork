@@ -124,6 +124,30 @@ class PolicyMixin:
                 out[name] = str(conf[name]).strip()
         return out or {"navigate": "it only opens, shows or navigates to something"}
 
+    def vetted(self, task_id: str, ctx: Ctx, pick: Affordance | None, window: str | None = None) -> Affordance | None:
+        """The pick, or None if the safety floor gates it.
+
+        For the paths that choose an action outside the main loop — backing out of a dialog, undoing an
+        exploration step, resuming a caller's choice. Each of those used `_risky` at most, which does not
+        ask the decider and falls back to a word list two languages wide, while their own docstrings said
+        the floor covered them. They also choose with `screen_text` in front of the decider, unlike the
+        floor, which is deliberately blind to it — so they had the most influence from page text and the
+        least gating.
+        """
+        if pick is None:
+            return None
+        if getattr(ctx, "gate", None) is None:
+            # These callers build their own Ctx and ask through `self.gate` directly, so `ctx.gate` was
+            # None — and `_floor` with nobody to ask degrades to the word list, which is the degradation
+            # this guard exists to prevent. A guard must not be switched off by a caller forgetting.
+            ctx.gate = self.gate
+        gated = self._floor(task_id, ctx, pick, window)
+        if gated:
+            log.info("not doing %r unasked: the floor calls it %s", pick.label[:60], gated)
+            self.audit.record("floor", task=task_id, action=pick.label, released=False, words=gated, where="off-loop")
+            return None
+        return pick
+
     def _calibrated(self) -> bool:
         """Does the decider's confidence mean a frequency? Every threshold in `config.yaml` assumes so."""
         return bool(getattr(self.decider, "calibrated", True))

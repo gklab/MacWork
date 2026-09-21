@@ -67,7 +67,9 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
     @mcp.tool()
     async def mac_resume(task_id: str, inputs: dict[str, Any] | None = None, confirm: bool | None = None,
                          choice: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
-        """Continue a task that returned need_input (pass inputs), need_confirm (pass confirm) or ambiguous (pass choice)."""
+        """Continue a task that returned need_input (pass inputs), need_confirm (pass confirm) or ambiguous
+        (pass choice). A chosen option still meets the safety floor — picking one says which, not whether —
+        so pass confirm=true alongside choice to answer both at once."""
         return await anyio.to_thread.run_sync(lambda: eng.resume(task_id, inputs, confirm, choice, reporter(ctx)))
 
     @mcp.tool()
