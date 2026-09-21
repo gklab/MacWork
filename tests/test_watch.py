@@ -56,8 +56,8 @@ def cfg_with(tmp_path, doc) -> Config:
 # --------------------------------------------------------------------------- the rules are the person's
 
 def test_rules_come_from_a_file_that_is_not_shipped(tmp_path):
-    cfg = cfg_with(tmp_path, {"triggers": [{"when": "screen.unlocked", "do": "看一眼日历"}]})
-    assert [t.goal for t in load_triggers(cfg)] == ["看一眼日历"]
+    cfg = cfg_with(tmp_path, {"triggers": [{"when": "screen.unlocked", "do": "glance at the calendar"}]})
+    assert [t.goal for t in load_triggers(cfg)] == ["glance at the calendar"]
 
 
 def test_no_file_is_no_triggers_rather_than_an_error():
@@ -83,7 +83,7 @@ def test_the_kind_of_event_can_be_a_pattern():
 
 def test_a_folder_is_matched_as_a_glob_so_a_subtree_needs_no_new_syntax():
     t = rules({"when": {"event": "file.changed", "path": "~/D/*.pdf"}, "do": "x"})[0]
-    assert t.matches({"kind": "file.changed", "path": "~/D/发票.pdf"})
+    assert t.matches({"kind": "file.changed", "path": "~/D/invoice.pdf"})
     assert not t.matches({"kind": "file.changed", "path": "~/D/notes.txt"})
 
 
@@ -121,21 +121,21 @@ def test_a_glob_in_the_path_is_cut_back_to_the_folder_to_watch():
 # --------------------------------------------------------------------------- firing
 
 def test_a_matching_event_hands_work_to_the_engine(tmp_path):
-    eng = Engine([{"seq": 1, "kind": "app.launched", "app": "计算器"}])
-    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": "app.launched", "do": "记一笔"}]}))
+    eng = Engine([{"seq": 1, "kind": "app.launched", "app": "Calculator"}])
+    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": "app.launched", "do": "note it down"}]}))
     w.start()
     w.seq = 0
-    assert [f["trigger"] for f in w.tick()] and eng.submitted[0][0] == "记一笔"
+    assert [f["trigger"] for f in w.tick()] and eng.submitted[0][0] == "note it down"
 
 
 def test_what_happened_is_handed_over_as_an_input(tmp_path):
     """It is text from outside like any other, and takes the same road through redaction."""
-    eng = Engine([{"seq": 1, "kind": "file.changed", "path": "/tmp/发票.pdf"}])
-    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": "file.changed", "do": "归档"}]}))
+    eng = Engine([{"seq": 1, "kind": "file.changed", "path": "/tmp/invoice.pdf"}])
+    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": "file.changed", "do": "archive"}]}))
     w.start()
     w.seq = 0
     w.tick()
-    assert eng.submitted[0][1]["event"]["path"] == "/tmp/发票.pdf"
+    assert eng.submitted[0][1]["event"]["path"] == "/tmp/invoice.pdf"
 
 
 def test_nothing_matching_starts_nothing(tmp_path):
@@ -148,7 +148,7 @@ def test_nothing_matching_starts_nothing(tmp_path):
 
 def test_a_folder_being_written_to_does_not_start_one_task_per_file(tmp_path):
     eng = Engine([{"seq": i, "kind": "file.changed", "path": f"/tmp/{i}.pdf"} for i in range(1, 6)])
-    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": "file.changed", "do": "归档", "debounce_s": 60}]}))
+    w = Watcher(eng, cfg_with(tmp_path, {"triggers": [{"when": "file.changed", "do": "archive", "debounce_s": 60}]}))
     w.start()
     w.seq = 0
     assert len(w.tick()) == 1
@@ -193,15 +193,15 @@ def test_the_example_in_the_docs_actually_fires(tmp_path):
     the folder, so the events come back as `/Users/<you>/Downloads/x.pdf` — and the matcher compared that
     against the unexpanded pattern. The watch was set on the right folder and nothing ever matched."""
     import os
-    t = rules({"when": {"event": "file.changed", "path": "~/Downloads/*.pdf"}, "do": "归档"})[0]
-    real = os.path.expanduser("~/Downloads/发票.pdf")
+    t = rules({"when": {"event": "file.changed", "path": "~/Downloads/*.pdf"}, "do": "archive"})[0]
+    real = os.path.expanduser("~/Downloads/invoice.pdf")
     assert t.matches({"kind": "file.changed", "path": real})
 
 
 def test_it_still_does_not_match_a_different_folder(tmp_path):
     import os
     t = rules({"when": {"event": "file.changed", "path": "~/Downloads/*.pdf"}, "do": "x"})[0]
-    assert not t.matches({"kind": "file.changed", "path": os.path.expanduser("~/Documents/发票.pdf")})
+    assert not t.matches({"kind": "file.changed", "path": os.path.expanduser("~/Documents/invoice.pdf")})
     assert not t.matches({"kind": "file.changed", "path": os.path.expanduser("~/Downloads/notes.txt")})
 
 

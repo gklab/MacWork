@@ -28,19 +28,17 @@ CODE = {
 # verdict; the address pattern recognises a Chinese postal address.
 DEFAULTS = {"policy.yaml", "privacy.yaml"}
 
-# Tests written before the rule. They simulate the Chinese-language Mac the project began on, and they stay
-# as that case. The list may shrink. It does not grow: a new test is written in English (tests/english_mac.py
-# is the fake Mac for it) unless another language is the very thing it tests — then name the language here.
-LEGACY_TESTS = {
-    "test_approval.py", "test_apps.py", "test_canvas.py", "test_capability.py", "test_combos.py", "test_engine.py",
-    "test_evals.py", "test_facts.py", "test_flex.py", "test_focus.py", "test_identity.py", "test_lifecycle.py",
-    "test_localdecider.py", "test_overlays.py", "test_paths.py", "test_privacy.py", "test_provenance.py",
-    "test_queue.py", "test_release.py", "test_retraction.py", "test_revert.py", "test_store.py",
-    "test_surfaces.py", "test_ungated.py", "test_watch.py",
-}
+# A test is written in English (tests/english_mac.py and tests/test_engine.py are the fake Macs for it) unless
+# another language or script is the very thing it tests. Each such file is named here with what it tests.
 LANGUAGE_IS_THE_SUBJECT = {
-    "test_floor.py": "the safety floor in German, Japanese, French and Russian",
-    "test_floor_threshold.py": "the same verdict on a German, a Japanese and an English Mac",
+    "test_floor.py": "the safety floor in German, Chinese, Japanese, French and Russian",
+    "test_floor_threshold.py": "the same verdict on a German, a Japanese, a Russian, a Chinese and an English Mac",
+    "test_privacy.py": "redaction of names, addresses and numbers written in other scripts",
+    "test_scripts.py": "names tagged through a carrier in their own script; selections counted in UTF-16 units",
+    "test_paths.py": "file names in other scripts, and sentences whose particles attach to a path without a space",
+    "test_facts.py": "splitting text into words where there are no spaces",
+    "test_apps.py": "an app whose displayed name is localized and whose file name is not",
+    "test_evals.py": "app names carrying a localized suffix",
     "test_english_first.py": "this file names the scripts it looks for",
 }
 
@@ -80,15 +78,14 @@ def test_what_ships_as_a_default_is_in_english(path):
     assert not lines, f"{path.name}:{lines[0]} is not in English"
 
 
-def test_a_new_test_is_written_in_english():
-    allowed = LEGACY_TESTS | set(LANGUAGE_IS_THE_SUBJECT)
-    new = sorted(p.name for p in pathlib.Path("tests").glob("*.py")
-                 if p.name not in allowed and OTHER_SCRIPT.search(p.read_text(encoding="utf-8")))
-    assert not new, (f"{new} hold text in another language. Write them against tests/english_mac.py — or, if the language "
-                     f"is what is being tested, say so in LANGUAGE_IS_THE_SUBJECT")
+def test_a_test_is_written_in_english():
+    other = sorted(p.name for p in pathlib.Path("tests").glob("*.py")
+                   if p.name not in LANGUAGE_IS_THE_SUBJECT and OTHER_SCRIPT.search(p.read_text(encoding="utf-8")))
+    assert not other, (f"{other} hold text in another language. Write them in English — or, if the language is what "
+                       f"is being tested, say so in LANGUAGE_IS_THE_SUBJECT")
 
 
-def test_the_legacy_list_only_shrinks():
-    gone = sorted(n for n in LEGACY_TESTS if not pathlib.Path("tests", n).exists()
-                  or not OTHER_SCRIPT.search(pathlib.Path("tests", n).read_text(encoding="utf-8")))
-    assert not gone, f"{gone} are in English now (or gone): take them off LEGACY_TESTS"
+def test_the_exceptions_among_tests_are_still_exceptions():
+    stale = sorted(n for n in LANGUAGE_IS_THE_SUBJECT if not pathlib.Path("tests", n).exists()
+                   or not OTHER_SCRIPT.search(pathlib.Path("tests", n).read_text(encoding="utf-8")))
+    assert not stale, f"{stale} hold no such text any more: take them off LANGUAGE_IS_THE_SUBJECT"

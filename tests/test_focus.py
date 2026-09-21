@@ -20,8 +20,8 @@ class Helper:
     mode = "fake"
 
     def __init__(self, **focus: Any) -> None:
-        self.focus = {"focused": {"role": "AXTextArea", "rdesc": "文本", "ref": "f1", "value": ""},
-                      "pid": 42, "app": "文本编辑", "bundle_id": "com.apple.TextEdit", "secure_input": False} | focus
+        self.focus = {"focused": {"role": "AXTextArea", "rdesc": "text", "ref": "f1", "value": ""},
+                      "pid": 42, "app": "TextEdit", "bundle_id": "com.apple.TextEdit", "secure_input": False} | focus
         self.calls: list[str] = []
 
     def call(self, method: str, timeout: float = 30.0, **p: Any) -> Any:
@@ -40,8 +40,8 @@ class Out:
 
 def ctx(helper: Helper, cfg: Any = None) -> Ctx:
     from macwork.config import Config
-    return Ctx(cfg=cfg or Config.load(), helper=helper, app={"pid": 42, "name": "文本编辑"},
-               goal="", inputs={"text": "会议改到周四"}, task="t", gate=None, cache={})
+    return Ctx(cfg=cfg or Config.load(), helper=helper, app={"pid": 42, "name": "TextEdit"},
+               goal="", inputs={"text": "meeting moved to Thursday"}, task="t", gate=None, cache={})
 
 
 def look(helper: Helper) -> Observation:
@@ -57,20 +57,20 @@ def look(helper: Helper) -> Observation:
 def test_the_cursor_s_whereabouts_reach_the_label():
     obs = look(Helper())
     assert obs.focused and obs.focused["role"] == "AXTextArea"
-    assert any("光标" in a.label or "cursor is in" in a.label for a in obs.affordances), \
+    assert any("cursor" in a.label or "cursor is in" in a.label for a in obs.affordances), \
         [a.label for a in obs.affordances]
 
 
 def test_a_cursor_in_another_app_is_said_so_because_the_text_would_land_there():
-    obs = look(Helper(pid=999, app="访达"))
+    obs = look(Helper(pid=999, app="Finder"))
     typing = [a for a in obs.affordances if a.verb == "type"]
-    assert typing and "访达" in typing[0].label, typing[0].label if typing else "no typing affordance"
+    assert typing and "Finder" in typing[0].label, typing[0].label if typing else "no typing affordance"
 
 
 def test_secure_input_is_reported_rather_than_typed_into():
     obs = look(Helper(secure_input=True))
     typing = [a for a in obs.affordances if a.verb == "type"]
-    assert typing and ("password" in typing[0].label or "密码" in typing[0].label)
+    assert typing and ("password" in typing[0].label or "Password" in typing[0].label)
 
 
 def test_what_the_focused_element_holds_is_never_put_in_an_affordance():
@@ -91,15 +91,15 @@ def typed(text: str, helper: Helper, ref: str | None = None) -> tuple[bool | Non
 
 def test_text_typed_at_the_cursor_is_now_checked():
     helper = Helper()
-    helper.focus["focused"]["value"] = "会议改到周四"
-    ok, why = typed("会议改到周四", helper)
+    helper.focus["focused"]["value"] = "meeting moved to Thursday"
+    ok, why = typed("meeting moved to Thursday", helper)
     assert ok is True and "ax.focused" in helper.calls, why
 
 
 def test_typing_into_the_wrong_place_is_caught():
     helper = Helper()
     helper.focus["focused"]["value"] = "something else entirely"
-    ok, why = typed("会议改到周四", helper)
+    ok, why = typed("meeting moved to Thursday", helper)
     assert ok is False, why
 
 
@@ -107,7 +107,7 @@ def test_a_document_longer_than_the_readback_is_unverified_not_failed():
     """The worse mistake is calling a long file wrong because the typed line sits past the cut."""
     helper = Helper()
     helper.focus["focused"]["value"] = "x" * 5000
-    ok, why = typed("会议改到周四", helper)
+    ok, why = typed("meeting moved to Thursday", helper)
     assert ok is None, why
 
 
@@ -127,7 +127,7 @@ def test_a_field_with_a_ref_is_still_read_through_that_ref():
 @pytest.mark.parametrize("focused", [None, {}])
 def test_nothing_focused_is_not_a_failure(focused):
     helper = Helper(focused=focused)
-    ok, _ = typed("会议改到周四", helper)
+    ok, _ = typed("meeting moved to Thursday", helper)
     assert ok is None
 
 

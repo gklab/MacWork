@@ -1,10 +1,8 @@
-"""The fake Mac new tests are written against: an English one.
+"""A small English fake Mac whose window text can be changed mid-task.
 
-`tests/test_engine.py` simulates a Chinese-language Mac, because that is the machine the project began on.
-It stays — a Mac that is not in English is a case the engine has to keep passing — but it is a case, not
-the default: the project is written in English, and a test should read without knowing another language
-unless the language is what it is testing (see `test_floor.py` for German, `test_floor_threshold.py` for
-Japanese).
+`tests/test_engine.py` holds the fake Mac most tests use. This one adds a knob — `text`, what the window says —
+for tests about a screen that changes while a task runs. Both are in English: a test should read without
+knowing another language unless the language is what it tests (see test_english_first.py).
 """
 
 import copy

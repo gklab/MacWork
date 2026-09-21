@@ -2,7 +2,7 @@
 
 `task.approved` was a set of bare labels. Two consequences, both reachable in one task:
 
-  * Labels repeat constantly — 「删除」, "OK", "Send", "Don't Save". Confirming one dialog's button
+  * Labels repeat constantly — 「Delete」, "OK", "Send", "Don't Save". Confirming one dialog's button
     released every later action anywhere in the task that happened to be called the same thing, in any app.
   * It also switched off the re-judge of text: `_perform` classifies an action again once the text to be
     typed is known, because typed text can change what the action does — and skipped that entirely when
@@ -33,10 +33,10 @@ def aff(label, context="", key="", channel="window", verb="press"):
 def test_confirming_one_action_does_not_release_the_next_one_called_the_same(tmp_path):
     e = eng(tmp_path)
     task = Task(goal="x", id="t1")
-    here = aff("press 「删除」", context="对话框 A")
+    here = aff("press 「Delete」", context="dialog A")
     e.approve(task, here)
     assert not e._needs_confirm(here, 0.0, task.approved, floor=["delete"])
-    later = aff("press 「删除」", context="另一个窗口 B")
+    later = aff("press 「Delete」", context="another window B")
     assert e._needs_confirm(later, 0.0, task.approved, floor=["delete"]), \
         "a button somewhere else with the same name went through on an earlier confirmation"
 
@@ -44,7 +44,7 @@ def test_confirming_one_action_does_not_release_the_next_one_called_the_same(tmp
 def test_an_approval_is_spent_when_its_action_runs(tmp_path):
     e = eng(tmp_path)
     task = Task(goal="x", id="t2")
-    a = aff("press 「删除」", context="对话框 A")
+    a = aff("press 「Delete」", context="dialog A")
     e.approve(task, a)
     assert not e._needs_confirm(a, 0.0, task.approved, floor=["delete"])
     e.spend(task, a)
@@ -57,7 +57,7 @@ def test_the_identity_is_the_language_independent_one_where_there_is_one(tmp_pat
     under it, which is what `Affordance.key` is for."""
     e = eng(tmp_path)
     task = Task(goal="x", id="t3")
-    e.approve(task, aff("press 「删除」", context="c", key="axid:deleteButton"))
+    e.approve(task, aff("press 「Delete」", context="c", key="axid:deleteButton"))
     assert not e._needs_confirm(aff("press 「Delete」", context="c", key="axid:deleteButton"),
                                 0.0, task.approved, floor=["delete"])
 
@@ -65,8 +65,8 @@ def test_the_identity_is_the_language_independent_one_where_there_is_one(tmp_pat
 def test_a_different_button_in_the_same_place_is_not_covered(tmp_path):
     e = eng(tmp_path)
     task = Task(goal="x", id="t4")
-    e.approve(task, aff("press 「删除」", context="c", key="axid:deleteButton"))
-    assert e._needs_confirm(aff("press 「全部删除」", context="c", key="axid:deleteAllButton"),
+    e.approve(task, aff("press 「Delete」", context="c", key="axid:deleteButton"))
+    assert e._needs_confirm(aff("press 「Delete All」", context="c", key="axid:deleteAllButton"),
                             0.0, task.approved, floor=["delete"])
 
 
@@ -99,7 +99,7 @@ def test_an_approval_round_trips_through_the_store(tmp_path):
     from macwork.config import Config
     e = eng(tmp_path)
     task = Task(goal="x", id="t5")
-    a = aff("press 「删除」", context="c")
+    a = aff("press 「Delete」", context="c")
     e.approve(task, a)
     store = Store(Config.load(overrides={"config": {"store": {"path": str(tmp_path / "s.db")}}}))
     store.save(task)
@@ -113,8 +113,8 @@ def test_confirming_the_text_re_judge_actually_gets_past_it(tmp_path):
     from macwork.model import Task
     e = eng(tmp_path)
     task = Task(goal="x", id="t6")
-    typed = aff("type at the cursor — typing 「rm -rf /」", context="终端", channel="keys", verb="type")
-    task.held = aff("type at the cursor", context="终端", channel="keys", verb="type")
+    typed = aff("type at the cursor — typing 「rm -rf /」", context="Terminal", channel="keys", verb="type")
+    task.held = aff("type at the cursor", context="Terminal", channel="keys", verb="type")
     task.confirm_key = e.approval_key(typed)
     e.resume_approval(task)
     assert not e._needs_confirm(typed, 0.0, task.approved, floor=["execute"])
@@ -124,7 +124,7 @@ def test_without_one_the_held_action_itself_is_what_gets_approved(tmp_path):
     from macwork.model import Task
     e = eng(tmp_path)
     task = Task(goal="x", id="t7")
-    a = aff("press 「删除」", context="c")
+    a = aff("press 「Delete」", context="c")
     task.held = a
     e.resume_approval(task)
     assert not e._needs_confirm(a, 0.0, task.approved, floor=["delete"])
@@ -145,7 +145,7 @@ def test_the_caller_is_not_asked_the_same_question_twice_in_a_row(tmp_path):
                 if q.get("type") == "noul":
                     out[k] = {"type": "noul", "noul": 0.9, "confidence": 0.95}
                 elif k == "action":
-                    pick = next((c for c, v in crit.items() if "cursor" in v or "光标" in v), "done")
+                    pick = next((c for c, v in crit.items() if "cursor" in v or "cursor" in v), "done")
                     out[k] = {"type": "choice", "choice": pick, "probabilities": {pick: 0.95}}
                 elif k == "move":
                     out[k] = {"type": "choice", "choice": "act", "probabilities": {"act": 0.95}}
@@ -157,7 +157,7 @@ def test_the_caller_is_not_asked_the_same_question_twice_in_a_row(tmp_path):
 
     e = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "keys", "typing"]}}),
                helper=FakeHelper(), decider=Decide([]))
-    res = e.do("把这段命令敲进去", inputs={"text": "rm -rf /tmp/x"})
+    res = e.do("type this command in", inputs={"text": "rm -rf /tmp/x"})
     assert res["status"] == "need_confirm", f"a shell command was typed without asking: {res['status']}"
     asked = 1
     while res["status"] == "need_confirm" and asked < 4:

@@ -39,7 +39,7 @@ def test_a_task_stops_instead_of_deciding_on_withheld_text(tmp_path):
     engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([{"pick": "done", "done": 0.95}]))
     engine._entities = lambda texts: 1 / 0            # on-device tagging is unavailable
 
-    result = engine.do("看看屏幕上写了什么")
+    result = engine.do("see what the screen says")
     assert result["status"] == "failed"
     assert "nothing could be sent" in result["reason"]
 
@@ -61,7 +61,7 @@ def test_the_audit_log_is_private_and_rotates(tmp_path):
 def test_one_pseudonym_table_survives_two_threads(tmp_path):
     """The floor thread and the main loop share the task's redactor."""
     redactor = Redactor(cfg(tmp_path), entities=names_in)
-    texts = [f"张伟 的第 {n} 条记录，还有 Safari" for n in range(200)]
+    texts = [f"record {n} of Zhang Wei, and Safari as well" for n in range(200)]
     errors: list[BaseException] = []
 
     def hammer() -> None:
@@ -78,7 +78,7 @@ def test_one_pseudonym_table_survives_two_threads(tmp_path):
     for t in threads:
         t.join()
     assert not errors, errors[0]
-    assert redactor.text("张伟") == redactor.text("张伟"), "the same person keeps the same token"
+    assert redactor.text("Zhang Wei") == redactor.text("Zhang Wei"), "the same person keeps the same token"
 
 
 # --- what is redacted, in languages the patterns were never written for --------------------------------
@@ -87,7 +87,7 @@ def test_phone_numbers_are_found_wherever_they_are_from(tmp_path):
     """The hand-written pattern knew mainland-Chinese mobiles and North American numbers, and nothing else."""
     from macwork.privacy import Redactor
 
-    numbers = {"+49 30 901820": "德国", "03-1234-5678": "日本", "+55 11 91234-5678": "巴西"}
+    numbers = {"+49 30 901820": "Germany", "03-1234-5678": "Japan", "+55 11 91234-5678": "Brazil"}
 
     def detector(texts):   # what NSDataDetector returns for these, checked against the real one
         return [[{"type": "PHONE", "text": n} for n in numbers if n in t] for t in texts]
@@ -95,7 +95,7 @@ def test_phone_numbers_are_found_wherever_they_are_from(tmp_path):
     redactor = Redactor(cfg(tmp_path), entities=names_in, detect=detector)
     for number, where in numbers.items():
         sent = redactor.text(f"Call {number} about it")
-        assert number not in sent, f"{where} 的号码泄漏了: {sent}"
+        assert number not in sent, f"the number from {where} leaked: {sent}"
 
 
 def test_the_patterns_still_catch_what_the_detector_misses(tmp_path):

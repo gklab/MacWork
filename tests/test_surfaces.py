@@ -38,8 +38,8 @@ def test_an_apps_own_url_schemes_become_actions(tmp_path):
 
 
 def test_an_app_that_declares_no_scheme_offers_nothing(tmp_path):
-    obs = Observation(app={"pid": 1, "name": "计算器"}, window=None, affordances=[])
-    schemes(Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 1, "name": "计算器"},
+    obs = Observation(app={"pid": 1, "name": "Calculator"}, window=None, affordances=[])
+    schemes(Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 1, "name": "Calculator"},
                 cache={"appmodels": Models(url_schemes=[])}), obs)
     assert obs.affordances == []
 
@@ -47,13 +47,13 @@ def test_an_app_that_declares_no_scheme_offers_nothing(tmp_path):
 def test_the_planner_can_propose_a_link_and_it_is_gated_by_what_the_link_is(tmp_path):
     """A link can be a mailto: as easily as an app's own "do this" URL. The suggestion carries the whole link
     in its label, so the floor judges it before it is ever chosen."""
-    decider = ScriptedDecider([{"pick": "新建文稿", "move": "rethink"}, {"pick": "open the link"}])
+    decider = ScriptedDecider([{"pick": "New Document", "move": "rethink"}, {"pick": "open the link"}])
     decider.what, decider.what_when = {"send": 0.95}, "mailto:"
     engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=decider)
-    engine._planner = FakeBackend([{"steps": ["写封邮件"], "inputs": {},
+    engine._planner = FakeBackend([{"steps": ["write an email"], "inputs": {},
                                     "try": [{"open_url": "mailto:someone@example.com?subject=hi"}]}])
 
-    result = engine.do("给他发封邮件")
+    result = engine.do("send him an email")
     assert result["status"] == "need_confirm"
     assert result["pending"]["because"] == ["send"]
     assert "mailto:someone@example.com" in result["pending"]["confirm"]["label"]
@@ -73,7 +73,7 @@ def test_a_link_the_caller_supplied_is_judged_with_the_link_in_it(tmp_path):
                     helper=FakeHelper(), decider=decider)
     engine.models = engine.cache["appmodels"] = Declares(engine.cfg)
 
-    result = engine.do("清一下待办", inputs={"url": "things:///remove?id=42"})
+    result = engine.do("clear the to-dos", inputs={"url": "things:///remove?id=42"})
     assert result["status"] == "need_confirm"
     assert result["pending"]["because"] == ["delete"]
     assert "things:///remove" in result["pending"]["confirm"]["text"]
@@ -91,7 +91,7 @@ def test_app_intents_are_read_from_the_bundles_own_metadata(tmp_path):
 
 def test_declared_actions_reach_the_planner(tmp_path):
     engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
-    app = {"bundle_id": "com.apple.TextEdit", "name": "文本编辑", "path": "/System/Applications/Preview.app"}
+    app = {"bundle_id": "com.apple.TextEdit", "name": "TextEdit", "path": "/System/Applications/Preview.app"}
     brief = engine.models.brief(app)
 
     if parse_app_intents(app["path"]):
@@ -141,7 +141,7 @@ def test_the_menu_bars_status_items_become_actions(tmp_path):
     labels = [a["label"] for a in res["affordances"]]
     assert any("Wi‑Fi" in label for label in labels), labels
     assert any("Clock" in label for label in labels)
-    assert all("菜单栏" in a["context"] or "menu bar" in a["context"] for a in res["affordances"])
+    assert all("menu bar" in a["context"] or "menu bar" in a["context"] for a in res["affordances"])
 
 
 def test_the_owners_scan_never_holds_up_a_look(tmp_path):
@@ -186,14 +186,14 @@ class HasServices(FakeHelper):
     def call(self, method, timeout=30.0, **p):
         if method == "apps.installed":
             self.calls.append((method, p))
-            return [{"name": "文本编辑", "path": "/System/Applications/TextEdit.app", "bundle_id": "com.apple.TextEdit"}]
+            return [{"name": "TextEdit", "path": "/System/Applications/TextEdit.app", "bundle_id": "com.apple.TextEdit"}]
         if method == "services.perform":
             self.calls.append((method, p))
             self.performed.append(p)
             return {"ok": True}
         if method == "file.read_text":
             self.calls.append((method, p))
-            return {"text": "会议定在周四 15:00", "kind": "public.plain-text"}
+            return {"text": "the meeting is set for Thursday 15:00", "kind": "public.plain-text"}
         return super().call(method, timeout, **p)
 
 
@@ -212,7 +212,7 @@ def test_a_service_becomes_an_action_and_runs_on_its_own_pasteboard(tmp_path):
     offered = [a for a in res["affordances"] if a["channel"] == "service"]
     if not offered:
         return
-    assert "文本编辑" in offered[0]["label"]
+    assert "TextEdit" in offered[0]["label"]
 
     from macwork.observe import Ctx
     ctx = Ctx(engine.cfg, engine.helper, app={"pid": 42})
@@ -224,23 +224,23 @@ def test_a_service_becomes_an_action_and_runs_on_its_own_pasteboard(tmp_path):
 
 def test_dragging_is_one_action_that_takes_both_ends_by_name(tmp_path):
     """macOS never says which elements can be dragged, so offering a drag per element would be a guess."""
-    obs = Observation(app={"pid": 42, "name": "文本编辑"}, window=None, affordances=[
-        Affordance("w0", "window", "press", "文件 A", {"ref": "r0", "pid": 42, "frame": [10, 10, 100, 20]}),
-        Affordance("w1", "window", "press", "文件夹 B", {"ref": "r1", "pid": 42, "frame": [10, 200, 100, 20]}),
+    obs = Observation(app={"pid": 42, "name": "TextEdit"}, window=None, affordances=[
+        Affordance("w0", "window", "press", "File A", {"ref": "r0", "pid": 42, "frame": [10, 10, 100, 20]}),
+        Affordance("w1", "window", "press", "folder B", {"ref": "r1", "pid": 42, "frame": [10, 200, 100, 20]}),
     ])
-    ctx = Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 42, "name": "文本编辑"})
+    ctx = Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 42, "name": "TextEdit"})
     drag(ctx, obs)
 
     dragger = obs.affordances[-1]
     assert dragger.verb == "drag_named" and set(dragger.slots) == {"from", "onto"}
 
-    out = get_channel("pointer")(ctx, dragger, {"from": "文件 A", "onto": "文件夹 B"})
+    out = get_channel("pointer")(ctx, dragger, {"from": "File A", "onto": "folder B"})
     assert out.ok
     asked = ctx.helper.did("input.drag")[0]
     assert (asked["x1"], asked["y1"]) == (60, 20) and (asked["x2"], asked["y2"]) == (60, 210)
 
-    missed = get_channel("pointer")(ctx, dragger, {"from": "文件 A", "onto": "不在屏幕上"})
-    assert not missed.ok and "不在屏幕上" in missed.error
+    missed = get_channel("pointer")(ctx, dragger, {"from": "File A", "onto": "not on screen"})
+    assert not missed.ok and "not on screen" in missed.error
 
 
 def test_reading_a_file_gives_the_task_something_it_may_write(tmp_path):
@@ -250,13 +250,13 @@ def test_reading_a_file_gives_the_task_something_it_may_write(tmp_path):
 
     ctx = Ctx(cfg(tmp_path), HasServices(), app={"pid": 42})
     out = file_channel(ctx, Affordance("R0", "file", "read", "read the text of 「notes.txt」", {"path": "/tmp/notes.txt"}), {})
-    assert out.ok and out.output["file_read"]["text"].startswith("会议")
+    assert out.ok and out.output["file_read"]["text"].startswith("the meeting")
 
-    facts = Facts(inputs={}, goal="会议什么时候")
-    assert facts.source_of("周四 15:00") is None
+    facts = Facts(inputs={}, goal="when is the meeting")
+    assert facts.source_of("Thursday 15:00") is None
     read = out.output["file_read"]
     facts.record(read["path"].rsplit("/", 1)[-1], read["kind"], read["text"], 0)
-    assert facts.source_of("周四 15:00") is not None
+    assert facts.source_of("Thursday 15:00") is not None
 
 
 def test_the_ui_without_a_dock_icon_can_be_worked_in(tmp_path):

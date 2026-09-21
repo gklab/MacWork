@@ -29,7 +29,7 @@ class Helper:
         if method == "ax.fingerprint":
             return {"fingerprint": "same-every-time"}     # what a canvas looks like: nothing in the tree moves
         if method == "apps.frontmost":
-            return {"app": {"pid": 1, "name": "画布"}}     # pointing at a window means bringing it forward first
+            return {"app": {"pid": 1, "name": "Canvas"}}     # pointing at a window means bringing it forward first
         if method in ("input.scroll", "input.click", "apps.activate"):
             return {"ok": True}
         raise AssertionError(method)
@@ -44,12 +44,12 @@ def box(text: str, x: int, y: int) -> dict[str, Any]:
 
 def ctx(helper: Helper, cache: dict[str, Any] | None = None, **over: Any) -> Ctx:
     cfg = Config.load(overrides={"config": {"observe": over}} if over else None)
-    return Ctx(cfg=cfg, helper=helper, app={"pid": 1, "name": "画布"}, goal="", inputs={}, task="t",
+    return Ctx(cfg=cfg, helper=helper, app={"pid": 1, "name": "Canvas"}, goal="", inputs={}, task="t",
                gate=None, cache=cache if cache is not None else {})
 
 
 def obs_with(frame: list[int] | None = None, actionable: int = 0) -> Observation:
-    o = Observation(app={"pid": 1, "name": "画布"}, window="w", affordances=[])
+    o = Observation(app={"pid": 1, "name": "Canvas"}, window="w", affordances=[])
     o.notes["window_actionable"] = actionable
     o.notes["open_windows"] = ["w"]
     if frame:
@@ -98,22 +98,22 @@ def test_it_aims_at_the_window_rather_than_wherever_the_pointer_was_left():
 
 def test_text_no_element_covers_becomes_a_target():
     o = obs_with(frame=[0, 0, 400, 400])
-    get_provider("vision")(ctx(Helper([box("开始", 10, 10), box("设置", 10, 30)]), vision={"mode": "always"}), o)
+    get_provider("vision")(ctx(Helper([box("Start", 10, 10), box("Settings", 10, 30)]), vision={"mode": "always"}), o)
     assert [a.verb for a in o.affordances if a.channel == "pointer"].count("click") == 2
 
 
 def test_text_the_tree_already_reaches_is_not_offered_twice():
     o = obs_with(frame=[0, 0, 400, 400])
-    o.affordances.append(Affordance("t", "window", "press", "开始", {"frame": [8, 8, 64, 18]}))
-    get_provider("vision")(ctx(Helper([box("开始", 10, 10), box("设置", 10, 300)]), vision={"mode": "always"}), o)
+    o.affordances.append(Affordance("t", "window", "press", "Start", {"frame": [8, 8, 64, 18]}))
+    get_provider("vision")(ctx(Helper([box("Start", 10, 10), box("Settings", 10, 300)]), vision={"mode": "always"}), o)
     clicks = [a.label for a in o.affordances if a.channel == "pointer" and a.verb == "click"]
-    assert len(clicks) == 1 and "设置" in clicks[0]
+    assert len(clicks) == 1 and "Settings" in clicks[0]
 
 
 def test_the_secondary_button_is_one_option_aimed_by_name():
     """Per-spot would double a canvas window's options against the budget that is already the scarce thing."""
     o = obs_with(frame=[0, 0, 400, 400])
-    get_provider("vision")(ctx(Helper([box(f"项目{i}", 10, i * 20) for i in range(12)]), vision={"mode": "always"}), o)
+    get_provider("vision")(ctx(Helper([box(f"Items{i}", 10, i * 20) for i in range(12)]), vision={"mode": "always"}), o)
     named = [a for a in o.affordances if a.verb == "click_named"]
     assert len(named) == 1 and "what" in named[0].slots
 
@@ -121,8 +121,8 @@ def test_the_secondary_button_is_one_option_aimed_by_name():
 def test_aiming_at_something_that_is_no_longer_there_fails_rather_than_clicking_anyway():
     from macwork.act import get_channel
     helper = Helper()
-    a = Affordance("p", "pointer", "click_named", "context menu", {"spots": {"开始": [0, 0, 10, 10]}, "button": "right"})
-    out = get_channel("pointer")(ctx(helper), a, {"what": "不存在的东西"})
+    a = Affordance("p", "pointer", "click_named", "context menu", {"spots": {"Start": [0, 0, 10, 10]}, "button": "right"})
+    out = get_channel("pointer")(ctx(helper), a, {"what": "something that is not there"})
     assert not out.ok and not helper.did("input.click")
 
 
@@ -131,7 +131,7 @@ def test_aiming_at_something_that_is_no_longer_there_fails_rather_than_clicking_
 def test_a_canvas_is_read_again_after_the_engine_acts():
     """Scrolling a canvas changes everything on screen and not one Accessibility node, so keying the read on
     the tree's fingerprint would have handed back the text from before the scroll."""
-    helper, cache = Helper([box("一", 10, 10 + i * 20) for i in range(8)]), {}
+    helper, cache = Helper([box("I", 10, 10 + i * 20) for i in range(8)]), {}
     c = ctx(helper, cache, vision={"mode": "always"})
     get_provider("vision")(c, obs_with(frame=[0, 0, 400, 400]))
     get_provider("vision")(c, obs_with(frame=[0, 0, 400, 400]))
@@ -142,10 +142,10 @@ def test_a_canvas_is_read_again_after_the_engine_acts():
 
 
 def test_a_window_the_tree_does_describe_keeps_its_cache_across_actions():
-    helper, cache = Helper([box("一", 10, 10)]), {}
+    helper, cache = Helper([box("I", 10, 10)]), {}
     c = ctx(helper, cache, vision={"mode": "always"})
     o = obs_with(frame=[0, 0, 400, 400], actionable=400)
-    o.affordances.append(Affordance("t", "window", "press", "一", {"frame": [0, 0, 400, 400]}))
+    o.affordances.append(Affordance("t", "window", "press", "I", {"frame": [0, 0, 400, 400]}))
     get_provider("vision")(c, o)
     cache["actions_done"] = 1
     get_provider("vision")(c, obs_with(frame=[0, 0, 400, 400], actionable=400))
@@ -171,13 +171,13 @@ def test_a_shortcut_s_result_is_not_dropped_on_the_floor(monkeypatch, tmp_path):
     def fake_run(cmd, **kw):
         seen["cmd"] = cmd
         out = cmd[cmd.index("--output-path") + 1]
-        open(out, "w", encoding="utf-8").write("今天 22°C，多云")
+        open(out, "w", encoding="utf-8").write("Today 22°C，Cloudy")
         return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
     monkeypatch.setattr(sp, "run", fake_run)
 
-    a = Affordance("s0", "shortcut", "run", "run shortcut 「今天天气」", {"name": "今天天气"})
-    out = get_channel("shortcut")(ctx(Helper()), a, {"input": "北京"})
-    assert out.ok and out.output["shortcut_result"]["text"] == "今天 22°C，多云"
+    a = Affordance("s0", "shortcut", "run", "run shortcut 「Weather today」", {"name": "Weather today"})
+    out = get_channel("shortcut")(ctx(Helper()), a, {"input": "Beijing"})
+    assert out.ok and out.output["shortcut_result"]["text"] == "Today 22°C，Cloudy"
     assert "--input-path" in seen["cmd"] and "--output-path" in seen["cmd"]
 
 

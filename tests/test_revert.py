@@ -26,8 +26,8 @@ class Eng(Engine):
         super().__init__(*a, **k)
         self.performed: list[str] = []
         self.offers = offers if offers is not None else [
-            Affordance("m1", "menu", "press", "撤销键入", {}, context="编辑"),
-            Affordance("m2", "menu", "press", "全部删除", {}, context="编辑"),
+            Affordance("m1", "menu", "press", "Undo Typing", {}, context="Edit"),
+            Affordance("m2", "menu", "press", "Delete All", {}, context="Edit"),
         ]
 
     def _ctx(self, goal, inputs, app, key):          # type: ignore[no-untyped-def]
@@ -48,13 +48,13 @@ def parts(tmp_path, monkeypatch):
     eng = Eng(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
 
     def fake_observe(ctx):
-        o = Observation(app=ctx.app, window="文稿", affordances=list(eng.offers))
+        o = Observation(app=ctx.app, window="Document", affordances=list(eng.offers))
         return o
     monkeypatch.setattr(tidy, "observe", fake_observe)
 
-    task = Task(goal="把会议时间改一下", id="t1")
-    task.changed = [{"n": 0, "action": "type 「周四 15:40」", "effect": "write",
-                     "app": {"pid": 42, "name": "文本编辑", "bundle_id": "com.apple.TextEdit"}}]
+    task = Task(goal="change the meeting time", id="t1")
+    task.changed = [{"n": 0, "action": "type 「Thursday 15:40」", "effect": "write",
+                     "app": {"pid": 42, "name": "TextEdit", "bundle_id": "com.apple.TextEdit"}}]
     eng.tasks[task.id] = task
     return eng, task
 
@@ -82,7 +82,7 @@ def answer(eng, pick):
 
 def test_navigating_is_not_a_change_to_put_back():
     from macwork.model import Step
-    assert Step(0, "open the 编辑 menu", effect="navigate").effect == "navigate"
+    assert Step(0, "open the Edit menu", effect="navigate").effect == "navigate"
 
 
 def test_a_task_that_changed_nothing_has_nothing_to_revert(parts):
@@ -100,9 +100,9 @@ def test_an_unknown_task_is_said_so(parts):
 
 def test_the_app_s_own_undo_is_what_gets_performed(parts):
     eng, task = parts
-    answer(eng, "撤销")
+    answer(eng, "Undo")
     res = eng.revert(task.id)
-    assert res["ok"] and eng.performed == ["撤销键入"]
+    assert res["ok"] and eng.performed == ["Undo Typing"]
 
 
 def test_the_choice_is_never_made_by_reading_the_label():
@@ -118,7 +118,7 @@ def test_the_choice_is_never_made_by_reading_the_label():
     src = pathlib.Path("macwork/tidy.py").read_text()
     tree = ast.parse(src)
     for node in ast.walk(tree):
-        # `"某个词" in a.label`, `a.label == "某个词"`, `a.label.startswith("…")`
+        # `"some word" in a.label`, `a.label == "some word"`, `a.label.startswith("…")`
         if isinstance(node, ast.Compare) and isinstance(node.left, ast.Constant):
             targets = ast.unparse(node.comparators[0])
             assert "label" not in targets and "title" not in targets, f"reads a label: {ast.unparse(node)}"
@@ -137,7 +137,7 @@ def test_it_stops_rather_than_guessing_when_nothing_puts_it_back(parts):
 def test_it_works_backwards_from_the_most_recent_change(parts):
     eng, task = parts
     task.changed = [dict(task.changed[0], action="first"), dict(task.changed[0], action="second")]
-    answer(eng, "撤销")
+    answer(eng, "Undo")
     eng.revert(task.id)
     assert [s["what_was_done"] for s in eng.seen] == ["second", "first"]
 
@@ -145,7 +145,7 @@ def test_it_works_backwards_from_the_most_recent_change(parts):
 def test_how_far_back_it_goes_is_bounded(parts):
     eng, task = parts
     task.changed = [dict(task.changed[0], action=f"change {i}") for i in range(20)]
-    answer(eng, "撤销")
+    answer(eng, "Undo")
     assert len(eng.revert(task.id, max_steps=3)["reverted"]) == 3
 
 
@@ -162,7 +162,7 @@ def test_it_refuses_while_someone_is_using_the_mac(parts):
 def test_an_undo_meets_the_safety_floor_like_anything_else(parts, monkeypatch):
     """Putting something back by deleting it is not a quieter thing to do than what it undid."""
     eng, task = parts
-    answer(eng, "全部删除")
-    monkeypatch.setattr(Eng, "_floor", lambda self, tid, ctx, a, w=None, ask=True: ["delete"] if "删除" in a.label else [])
+    answer(eng, "Delete All")
+    monkeypatch.setattr(Eng, "_floor", lambda self, tid, ctx, a, w=None, ask=True: ["delete"] if "Delete" in a.label else [])
     res = eng.revert(task.id)
     assert res["ok"] is False and eng.performed == []

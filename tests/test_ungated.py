@@ -25,13 +25,13 @@ from tests.test_engine import FakeHelper, ScriptedDecider, cfg
 
 
 class Floor(ScriptedDecider):
-    """Classifies anything whose label contains 删 or Delete as a delete; everything else navigates."""
+    """Classifies anything whose label contains Delete as a delete; everything else navigates."""
 
     def decide(self, state, questions):
         out = {}
         for k, q in questions.items():
             text = str(q.get("instructions", "")) + str(q.get("criteria", ""))
-            bad = "删" in text or "Delete" in text or "Löschen" in text
+            bad = "Delete" in text or "Löschen" in text
             if q.get("type") == "noul":
                 out[k] = {"type": "noul", "noul": 0.9 if bad else 0.1, "confidence": 0.95}
             else:
@@ -48,8 +48,8 @@ def engine(tmp_path, **over):
 
 def test_choosing_which_option_is_not_saying_it_is_safe(tmp_path):
     eng = engine(tmp_path)
-    task = Task(goal="整理一下", id="t1")
-    task.status, task.options = "ambiguous", {"o1": Affordance("o1", "window", "press", "删除全部", {})}
+    task = Task(goal="tidy this up", id="t1")
+    task.status, task.options = "ambiguous", {"o1": Affordance("o1", "window", "press", "Delete All", {})}
     eng.tasks[task.id] = task
     res = eng.resume(task.id, choice_id="o1")
     assert res["status"] == "need_confirm", f"an ambiguous pick ran ungated: {res['status']}"
@@ -57,9 +57,9 @@ def test_choosing_which_option_is_not_saying_it_is_safe(tmp_path):
 
 def test_an_action_the_caller_did_confirm_is_not_asked_about_twice(tmp_path):
     eng = engine(tmp_path)
-    task = Task(goal="删掉它", id="t2")
+    task = Task(goal="delete it", id="t2")
     task.status = "need_confirm"
-    task.held = Affordance("w1", "window", "press", "删除全部", {})
+    task.held = Affordance("w1", "window", "press", "Delete All", {})
     eng.tasks[task.id] = task
     res = eng.resume(task.id, confirm=True)
     assert res["status"] != "need_confirm", "asked again about the very action just confirmed"
@@ -67,8 +67,8 @@ def test_an_action_the_caller_did_confirm_is_not_asked_about_twice(tmp_path):
 
 def test_a_harmless_ambiguous_pick_is_not_stopped(tmp_path):
     eng = engine(tmp_path)
-    task = Task(goal="打开它", id="t3")
-    task.status, task.options = "ambiguous", {"o1": Affordance("o1", "window", "press", "打开文稿", {})}
+    task = Task(goal="open it", id="t3")
+    task.status, task.options = "ambiguous", {"o1": Affordance("o1", "window", "press", "Open Document", {})}
     eng.tasks[task.id] = task
     assert eng.resume(task.id, choice_id="o1")["status"] != "need_confirm"
 
@@ -85,7 +85,7 @@ def fake_gate(monkeypatch, eng, wants: str):
             if q.get("type") == "noul":
                 out[name] = {"type": "noul", "noul": 0.9 if "Löschen" in text else 0.1, "confidence": 0.95}
             elif name in ("what",):                     # the floor classifying one action
-                bad = "Löschen" in text or "删" in text
+                bad = "Löschen" in text or "Delete" in text
                 pick = "delete" if bad else "navigate"
                 out[name] = {"type": "choice", "choice": pick, "probabilities": {pick: 0.99}}
             else:                                        # the caller's own "which of these"
@@ -114,7 +114,7 @@ def gated_pick(monkeypatch, eng, module, offers, wants="Löschen"):
 
 
 # German, on purpose: `_risky` — the only filter these paths had — falls back to policy.yaml's word list,
-# which is English and Chinese. "删除全部" would be caught by the words and hide the hole entirely.
+# which is English and Chinese. "Delete All" would be caught by the words and hide the hole entirely.
 DESTRUCTIVE = [Affordance("a1", "window", "press", "Alles Löschen", {}),
                Affordance("a2", "window", "press", "Abbrechen", {})]
 
@@ -125,7 +125,7 @@ def test_tidy_does_not_press_a_button_the_floor_never_saw(tmp_path, monkeypatch)
     ran = gated_pick(monkeypatch, eng, tidy, DESTRUCTIVE)
     task = Task(goal="x", id="t4")
     eng.tasks[task.id] = task
-    eng._back_out(task, {"pid": 42, "name": "文本编辑"}, "cancel_quit")
+    eng._back_out(task, {"pid": 42, "name": "TextEdit"}, "cancel_quit")
     assert ran == [], f"tidy ran an ungated action: {ran}"
 
 
@@ -135,10 +135,10 @@ def test_learn_does_not_press_one_either(tmp_path, monkeypatch):
     ran = gated_pick(monkeypatch, eng, learn, DESTRUCTIVE)
     task = Task(goal="x", id="t5")
     eng.tasks[task.id] = task
-    ctx = eng._ctx("", {}, {"pid": 42, "name": "文本编辑"}, task.id)
+    ctx = eng._ctx("", {}, {"pid": 42, "name": "TextEdit"}, task.id)
     ctx.gate = eng.gate
     obs = Observation(app=ctx.app, window="w", affordances=list(DESTRUCTIVE))
-    pick = eng._way_back(ctx, obs, "w", "了什么")
+    pick = eng._way_back(ctx, obs, "w", "what")
     assert pick is not None, "the decider did pick the destructive one; the test is not exercising the gate"
     assert eng.vetted("learn", ctx, pick, "w") is None, "learn would have run an ungated action"
     assert ran == []
@@ -152,5 +152,5 @@ def test_backing_out_of_something_harmless_still_works(tmp_path, monkeypatch):
     ran = gated_pick(monkeypatch, eng, tidy, offers, wants="Abbrechen")
     task = Task(goal="x", id="t6")
     eng.tasks[task.id] = task
-    eng._back_out(task, {"pid": 42, "name": "文本编辑"}, "cancel_quit")
+    eng._back_out(task, {"pid": 42, "name": "TextEdit"}, "cancel_quit")
     assert ran == ["Abbrechen"]

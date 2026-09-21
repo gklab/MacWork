@@ -1,6 +1,6 @@
 """A choice the decider made, and then took back itself.
 
-From a real run — "用计算器依次算出 12×12 …", nine steps where three would do:
+From a real run — "use the calculator to work out 12×12 …", nine steps where three would do:
 
     screen 12×    chose 「2」        wrong: the next digit of 12×12 is 1
     screen 12×2   chose 「Clear」    it saw that, and took it back

@@ -12,19 +12,19 @@ from macwork.store import Store, dump, load
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg
 
 
-def _rich(goal: str = "把这封邮件发出去") -> Task:
+def _rich(goal: str = "send this email") -> Task:
     from macwork.facts import Facts
     task = Task(goal=goal, inputs={"text": "hello"})
     task.memory.facts = Facts(inputs=task.inputs, goal=goal)
-    task.steps = [Step(0, "menu 文件 ▸ 新建文稿", channel="menu", verb="press", key="ax|AXMenuItem|_new:")]
+    task.steps = [Step(0, "menu File ▸ New Document", channel="menu", verb="press", key="ax|AXMenuItem|_new:")]
     task.status, task.reason = "need_confirm", "this action is irreversible"
-    task.approved.add("menu 文件 ▸ 存储")
-    task.memory.no_effect.add("sig|menu 文件 ▸ 导出")
-    task.memory.declined.add("switch to app 访达")
-    task.memory.facts.record("文本编辑", "未命名", "会议定在周四", 0)
+    task.approved.add("menu File ▸ Save")
+    task.memory.no_effect.add("sig|menu File ▸ Export")
+    task.memory.declined.add("switch to app Finder")
+    task.memory.facts.record("TextEdit", "Untitled", "the meeting is set for Thursday", 0)
     task.desktop.initial_pids = {1, 2}
     task.desktop.initial_windows = {1: {10, 11}}
-    task.desktop.opened = {42: {"name": "计算器"}}
+    task.desktop.opened = {42: {"name": "Calculator"}}
     task.pace.replans = 2
     task.spent_s = 12.5
     return task
@@ -37,10 +37,10 @@ def test_a_task_comes_back_whole(tmp_path):
     assert after.goal == before.goal and after.status == "need_confirm"
     assert [s.action for s in after.steps] == [s.action for s in before.steps]
     assert after.steps[0].key == "ax|AXMenuItem|_new:", "the language-independent identity comes back too"
-    assert after.approved == {"menu 文件 ▸ 存储"}
-    assert after.memory.no_effect == {"sig|menu 文件 ▸ 导出"}
-    assert after.memory.declined == {"switch to app 访达"}
-    assert after.desktop.opened == {42: {"name": "计算器"}}, "what tidying needs to touch only its own doing"
+    assert after.approved == {"menu File ▸ Save"}
+    assert after.memory.no_effect == {"sig|menu File ▸ Export"}
+    assert after.memory.declined == {"switch to app Finder"}
+    assert after.desktop.opened == {42: {"name": "Calculator"}}, "what tidying needs to touch only its own doing"
     assert after.pace.replans == 2 and after.spent_s == 12.5
 
 
@@ -56,8 +56,8 @@ def test_the_machine_as_it_was_does_not_come_back(tmp_path):
 def test_what_the_task_saw_comes_back_as_facts(tmp_path):
     """Facts are what the task may write; losing them would let a resumed task invent values."""
     after = load(dump(_rich()))
-    assert after.memory.facts.source_of("周四") == "文本编辑 (未命名)"
-    assert after.memory.facts.source_of("从没见过的东西") is None
+    assert after.memory.facts.source_of("Thursday") == "TextEdit (Untitled)"
+    assert after.memory.facts.source_of("something never seen before") is None
 
 
 def test_live_handles_are_deliberately_left_behind(tmp_path):

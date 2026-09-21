@@ -39,28 +39,28 @@ def eng(tmp_path):
 
 def test_handing_in_work_comes_back_at_once_with_an_id(eng):
     eng.hold.clear()
-    out = eng.submit("第一件事")
+    out = eng.submit("the first thing")
     assert out["status"] == "queued" and out["task_id"] and out["position"] == 1
 
 
 def test_the_position_is_the_answer_to_when(eng):
     """How many are ahead of me — the one that already has the Mac counts."""
     eng.hold.clear()
-    eng.submit("一")
+    eng.submit("first")
     time.sleep(0.05)
-    assert eng.submit("二")["position"] == 2
+    assert eng.submit("second")["position"] == 2
 
 
 def test_they_run_in_the_order_they_were_handed_in(eng):
     eng.hold.clear()
-    for n in ("一", "二", "三"):
+    for n in ("first", "second", "third"):
         eng.submit(n)
     eng.hold.set()
     for _ in range(200):
         if len(eng.ran) == 3:
             break
         time.sleep(0.01)
-    assert eng.ran == ["一", "二", "三"]
+    assert eng.ran == ["first", "second", "third"]
 
 
 def test_only_one_runs_at_a_time(eng):
@@ -82,27 +82,27 @@ def test_only_one_runs_at_a_time(eng):
 
 def test_waiting_for_a_turn_is_visible(eng):
     eng.hold.clear()
-    eng.submit("一")
-    eng.submit("二")
+    eng.submit("first")
+    eng.submit("second")
     time.sleep(0.05)
     shown = eng.queue()
-    assert [q["goal"] for q in shown] == ["一", "二"]
+    assert [q["goal"] for q in shown] == ["first", "second"]
     assert shown[0].get("running") and shown[1]["position"] == 2
 
 
 def test_something_still_waiting_can_be_taken_back(eng):
     eng.hold.clear()
-    eng.submit("一")
-    second = eng.submit("二")["task_id"]
+    eng.submit("first")
+    second = eng.submit("second")["task_id"]
     out = eng.cancel(second)
     eng.hold.set()
     time.sleep(0.3)
-    assert out["was_queued"] and "二" not in eng.ran
+    assert out["was_queued"] and "second" not in eng.ran
 
 
 def test_a_cancelled_one_does_not_run_even_if_the_worker_reached_it(eng):
     eng.hold.clear()
-    first = eng.submit("一")["task_id"]
+    first = eng.submit("first")["task_id"]
     eng._cancelled.add(first)
     eng.hold.set()
     time.sleep(0.3)
@@ -112,14 +112,14 @@ def test_a_cancelled_one_does_not_run_even_if_the_worker_reached_it(eng):
 def test_do_waits_its_turn_like_everything_else(eng):
     """Otherwise a caller jumps the queue by choosing a different method."""
     eng.hold.clear()
-    eng.submit("排在前面的")
+    eng.submit("the one in front")
     result: dict = {}
-    t = threading.Thread(target=lambda: result.update(eng.do("后来的")))
+    t = threading.Thread(target=lambda: result.update(eng.do("the later one")))
     t.start()
     time.sleep(0.05)
     eng.hold.set()
     t.join(5)
-    assert eng.ran == ["排在前面的", "后来的"] and result.get("status") == "done"
+    assert eng.ran == ["the one in front", "the later one"] and result.get("status") == "done"
 
 
 def test_one_task_blowing_up_does_not_take_the_queue_with_it(eng):
@@ -127,26 +127,26 @@ def test_one_task_blowing_up_does_not_take_the_queue_with_it(eng):
 
     def loop(task, progress):
         calls.append(task.goal)
-        if task.goal == "坏的":
+        if task.goal == "the bad one":
             raise RuntimeError("something the loop never expected")
         task.status = "done"
     eng._loop = loop            # type: ignore[assignment]
-    eng.submit("坏的")
-    eng.submit("好的")
+    eng.submit("the bad one")
+    eng.submit("the good one")
     time.sleep(0.4)
-    assert calls == ["坏的", "好的"] and eng.tasks[[t for t in eng.tasks][0]].status == "failed"
+    assert calls == ["the bad one", "the good one"] and eng.tasks[[t for t in eng.tasks][0]].status == "failed"
 
 
 def test_giving_up_waiting_says_so_rather_than_hanging_forever(eng):
     eng.hold.clear()
-    eng.submit("永远不结束的")
-    out = eng._run_queued(eng._new_task("我的", None, None), None, timeout=0.2)
+    eng.submit("the one that never ends")
+    out = eng._run_queued(eng._new_task("mine", None, None), None, timeout=0.2)
     assert out["status"] == "failed" and "waiting" in out["reason"]
 
 
 def test_the_worker_is_not_left_behind_when_there_is_nothing_to_do(eng):
     """An engine used for one `observe` should not leave a thread running."""
-    eng.submit("一件事")
+    eng.submit("one thing")
     for _ in range(200):
         if eng._worker is None:
             break

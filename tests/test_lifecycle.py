@@ -20,7 +20,7 @@ def test_a_resumed_task_gets_a_fresh_budget_but_a_total_ceiling(tmp_path):
     engine = Engine(cfg(tmp_path, config={"engine": {"budget_s": 60, "max_steps": 3, "total_steps": 5}}),
                     helper=FakeHelper(), decider=ScriptedDecider([]))
     budget = engine.cfg.section("engine")
-    task = Task(goal="把这封邮件发出去")
+    task = Task(goal="send this email")
     task.steps = [Step(n, f"step {n}") for n in range(3)]     # a first run that used its whole step budget
     task.spent_s = 20.0                                       # 20 s of work so far
     task.started = time.monotonic() - 3600                    # and then the caller thought about it for an hour
@@ -38,7 +38,7 @@ def test_a_resumed_task_gets_a_fresh_budget_but_a_total_ceiling(tmp_path):
 
 def test_the_run_budget_still_ends_a_run_that_overruns(tmp_path):
     engine = Engine(cfg(tmp_path, config={"engine": {"budget_s": 0}}), helper=FakeHelper(), decider=ScriptedDecider([]))
-    result = engine.do("做点什么")
+    result = engine.do("do something")
     assert result["status"] == "failed"
     assert "time budget" in result["reason"]
     assert engine.decider.calls == 0, "it should not have asked anything before noticing"
@@ -70,8 +70,8 @@ def test_cancelling_an_id_nobody_knows_says_so(tmp_path):
 
 def test_a_restarted_helper_takes_its_stale_references_with_it(tmp_path):
     engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
-    engine.cache.update({"menu.snap": ("key", 0, {"nodes": []}), "ambient": {"42|窗口"},
-                         "vision.ocr": {"x": 1}, "installed": [{"name": "计算器"}]})
+    engine.cache.update({"menu.snap": ("key", 0, {"nodes": []}), "ambient": {"42|Window"},
+                         "vision.ocr": {"x": 1}, "installed": [{"name": "Calculator"}]})
     engine.observe()
     assert engine._last is not None
 

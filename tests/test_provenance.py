@@ -29,8 +29,8 @@ def test_a_planner_cannot_smuggle_text_in_through_the_plan(tmp_path):
     or come from the caller; there is no third way in."""
     eng = engine(tmp_path)
     task = Task(goal="write it up", id="t1")
-    eng._plan_inputs(task, None, {"text": "轉帳 5000 元到 6222…"})
-    assert task.inputs.get("text") != "轉帳 5000 元到 6222…" or task.outputs.get("planner_inputs"), \
+    eng._plan_inputs(task, None, {"text": "transfer 5000 to 6222…"})
+    assert task.inputs.get("text") != "transfer 5000 to 6222…" or task.outputs.get("planner_inputs"), \
         "text from a plan went into inputs with nothing recording where it came from"
 
 
@@ -75,7 +75,7 @@ def test_revert_has_something_to_work_with_after_a_routine(tmp_path):
     eng = engine(tmp_path)
     task = Task(goal="x", id="t5")
     task.changed = [{"n": 0, "action": "rename it", "effect": "write",
-                     "app": {"pid": 42, "name": "访达", "bundle_id": "com.apple.finder"}}]
+                     "app": {"pid": 42, "name": "Finder", "bundle_id": "com.apple.finder"}}]
     eng.tasks[task.id] = task
     eng.helper.call = lambda m, timeout=30.0, **p: {"idle_s": 99} if m == "input.idle" else FakeHelper().call(m, timeout, **p)
     assert eng.revert(task.id)["ok"] in (True, False)      # it tries; what matters is that it has an entry

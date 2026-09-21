@@ -26,58 +26,58 @@ def _offer(tmp_path, nodes, **window):
 
 def test_a_control_with_an_unlisted_role_can_still_be_typed_into(tmp_path):
     """A web input reports AXGroup and would never have been offered."""
-    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXGroup", "rdesc": "group", "title": "消息",
+    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXGroup", "rdesc": "group", "title": "Message",
                                  "editable": True, "parent": "w.0"}])
-    assert any(verb == "type" and "消息" in label for verb, label in offered)
+    assert any(verb == "type" and "Message" in label for verb, label in offered)
 
 
 def test_a_listed_role_is_still_offered_when_the_app_says_it_is_not_settable(tmp_path):
     """The engine focuses the field and types; a refused attribute set is not the last word."""
-    node = {"ref": "w.1", "role": "AXTextField", "rdesc": "文本栏", "title": "收件人", "parent": "w.0"}
+    node = {"ref": "w.1", "role": "AXTextField", "rdesc": "text field", "title": "Recipient", "parent": "w.0"}
     assert any(verb == "type" for verb, _ in _offer(tmp_path, [node]))
 
 
 def test_a_settable_number_is_not_a_typing_target(tmp_path):
     """A scroll bar's position is settable too — it offered "type into the scroll bar (now: 0)"."""
-    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXScrollBar", "rdesc": "滚动条", "value": "0",
+    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXScrollBar", "rdesc": "scroll bar", "value": "0",
                                  "parent": "w.0"}])
     assert not any(verb.startswith("type") for verb, _ in offered)
 
 
 def test_selecting_works_from_either_source(tmp_path):
-    capability = _offer(tmp_path, [{"ref": "w.1", "role": "AXCell", "rdesc": "单元格", "title": "第一项",
+    capability = _offer(tmp_path, [{"ref": "w.1", "role": "AXCell", "rdesc": "cell", "title": "First Item",
                                     "selectable": True, "parent": "w.0"}])
-    assert any(verb == "select" and "第一项" in label for verb, label in capability)
+    assert any(verb == "select" and "First Item" in label for verb, label in capability)
 
-    by_role = _offer(tmp_path, [{"ref": "w.1", "role": "AXRow", "rdesc": "表格行", "title": "第二项", "parent": "w.0"}])
-    assert any(verb == "select" and "第二项" in label for verb, label in by_role)
+    by_role = _offer(tmp_path, [{"ref": "w.1", "role": "AXRow", "rdesc": "table row", "title": "Second Item", "parent": "w.0"}])
+    assert any(verb == "select" and "Second Item" in label for verb, label in by_role)
 
 
 def test_an_action_outside_the_table_is_offered_under_the_apps_own_name(tmp_path):
-    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXWindow", "rdesc": "窗口", "title": "文稿",
-                                 "actions": ["AXRaise"], "action_desc": {"AXRaise": "移到最前"}, "parent": "w.0"}])
-    assert any("移到最前" in label for _, label in offered), offered
+    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXWindow", "rdesc": "Window", "title": "Document",
+                                 "actions": ["AXRaise"], "action_desc": {"AXRaise": "Bring To Front"}, "parent": "w.0"}])
+    assert any("Bring To Front" in label for _, label in offered), offered
 
 
 def test_an_extra_action_is_not_offered_where_a_named_one_already_reaches_the_element(tmp_path):
     """AXScrollToVisible sat on 428 of 441 elements that all had AXPress: 428 more options, no more ability."""
-    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXButton", "rdesc": "按钮", "title": "发送",
+    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXButton", "rdesc": "button", "title": "Send",
                                  "actions": ["AXPress", "AXScrollToVisible"],
-                                 "action_desc": {"AXScrollToVisible": "滚动到可见"}, "parent": "w.0"}])
-    assert any(verb == "press" and "发送" in label for verb, label in offered)
-    assert not any("滚动到可见" in label for _, label in offered)
+                                 "action_desc": {"AXScrollToVisible": "Scroll To Visible"}, "parent": "w.0"}])
+    assert any(verb == "press" and "Send" in label for verb, label in offered)
+    assert not any("Scroll To Visible" in label for _, label in offered)
 
 
 def test_an_element_that_both_takes_text_and_has_actions_offers_both(tmp_path):
     """A table cell takes text and has a context menu; finding more typing targets must not remove actions."""
-    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXCell", "rdesc": "单元格", "title": "备注",
+    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXCell", "rdesc": "cell", "title": "Notes",
                                  "editable": True, "actions": ["AXShowMenu"], "parent": "w.0"}])
     assert any(verb == "type" for verb, _ in offered)
     assert any("context menu" in label for _, label in offered)
 
 
 def test_the_old_behaviour_is_one_setting_away(tmp_path):
-    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXGroup", "rdesc": "group", "title": "消息",
+    offered = _offer(tmp_path, [{"ref": "w.1", "role": "AXGroup", "rdesc": "group", "title": "Message",
                                  "editable": True, "parent": "w.0"}], by_capability=False)
     assert not any(verb == "type" for verb, _ in offered)
 
@@ -135,7 +135,7 @@ def test_the_whole_window_can_be_read_into_facts(tmp_path):
     from macwork.model import Affordance
 
     long_page = [{"ref": "w.0", "role": "AXWindow", "depth": 0}] + [
-        {"ref": f"w.{i}", "role": "AXStaticText", "value": f"段落 {i} 的内容", "parent": "w.0"} for i in range(1, 40)]
+        {"ref": f"w.{i}", "role": "AXStaticText", "value": f"paragraph {i} contents", "parent": "w.0"} for i in range(1, 40)]
 
     class Paged(FakeHelper):
         def call(self, method, timeout=30.0, **p):
@@ -144,10 +144,10 @@ def test_the_whole_window_can_be_read_into_facts(tmp_path):
                 return {"nodes": long_page}
             return super().call(method, timeout, **p)
 
-    ctx = Ctx(cfg(tmp_path), Paged(), app={"pid": 42, "name": "读书"})
+    ctx = Ctx(cfg(tmp_path), Paged(), app={"pid": 42, "name": "Reading"})
     out = get_channel("window")(ctx, Affordance("t0", "window", "read_all", "read all", {"pid": 42}), {})
 
-    assert out.ok and "段落 39 的内容" in out.output["read_window"]["text"]
+    assert out.ok and "paragraph 39 contents" in out.output["read_window"]["text"]
     asked = ctx.helper.did("ax.snapshot")[0]
     assert asked["visible_only"] is False, "what is scrolled away is the point"
     assert asked["actions"] is False, "it is being read, not operated"
@@ -175,7 +175,7 @@ def test_a_path_the_goal_names_can_be_opened_read_or_shown(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "keep.txt").write_text("keep me", encoding="utf-8")
     obs = Observation(app=None, window=None, affordances=[])
-    ctx = Ctx(cfg(tmp_path), FakeHelper(), goal=f"删除 {tmp_path}/keep.txt", running=[])
+    ctx = Ctx(cfg(tmp_path), FakeHelper(), goal=f"Delete {tmp_path}/keep.txt", running=[])
     PROVIDERS["files"](ctx, obs)
 
     verbs = {a.verb for a in obs.affordances}
@@ -191,10 +191,10 @@ def test_the_apps_the_system_says_can_open_it_are_offered_by_name(tmp_path):
 
     (tmp_path / "news.html").write_text("<title>Morning News</title>", encoding="utf-8")
     helper = FakeHelper()
-    helper.openers = [{"name": "Safari浏览器", "bundle_id": "com.apple.Safari", "path": "/Applications/Safari.app"},
+    helper.openers = [{"name": "Safari", "bundle_id": "com.apple.Safari", "path": "/Applications/Safari.app"},
                       {"name": "Chrome", "bundle_id": "com.google.Chrome", "path": "/Applications/Chrome.app"}]
     obs = Observation(app=None, window=None, affordances=[])
-    PROVIDERS["files"](Ctx(cfg(tmp_path), helper, goal=f"在 Safari 里打开 {tmp_path}/news.html", running=[]), obs)
+    PROVIDERS["files"](Ctx(cfg(tmp_path), helper, goal=f"open in Safari: {tmp_path}/news.html", running=[]), obs)
 
     with_safari = next(a for a in obs.affordances if "Safari" in a.label)
     assert with_safari.target["app"] == "/Applications/Safari.app"
@@ -205,7 +205,7 @@ def test_a_path_that_is_not_there_is_not_offered(tmp_path):
     from macwork.observe import PROVIDERS
 
     obs = Observation(app=None, window=None, affordances=[])
-    PROVIDERS["files"](Ctx(cfg(tmp_path), FakeHelper(), goal=f"打开 {tmp_path}/nope.txt", running=[]), obs)
+    PROVIDERS["files"](Ctx(cfg(tmp_path), FakeHelper(), goal=f"Open {tmp_path}/nope.txt", running=[]), obs)
     assert obs.affordances == []
 
 
@@ -214,6 +214,6 @@ def test_a_folder_the_goal_names_is_offered_without_a_way_to_read_it(tmp_path):
 
     (tmp_path / "docs").mkdir()
     obs = Observation(app=None, window=None, affordances=[])
-    PROVIDERS["files"](Ctx(cfg(tmp_path), FakeHelper(), goal=f"{tmp_path}/docs 里有几个文件？", running=[]), obs)
+    PROVIDERS["files"](Ctx(cfg(tmp_path), FakeHelper(), goal=f"{tmp_path}/docs how many files are in it？", running=[]), obs)
     assert {a.verb for a in obs.affordances} == {"open", "reveal", "trash"}   # a folder has no text to read
     assert any("folder" in a.label for a in obs.affordances)

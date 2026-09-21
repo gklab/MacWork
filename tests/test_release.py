@@ -42,7 +42,7 @@ class Says(ScriptedDecider):
 @pytest.fixture
 def parts(tmp_path):
     eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
-    ctx = eng._ctx("", {}, {"pid": 1, "name": "编辑器", "bundle_id": "com.example.editor"}, "t")
+    ctx = eng._ctx("", {}, {"pid": 1, "name": "Editor", "bundle_id": "com.example.editor"}, "t")
     return eng, ctx
 
 
@@ -50,11 +50,11 @@ def floor(eng: Engine, ctx: Ctx, a: Affordance, verdict: str, confidence: float 
     eng._decider = Says(verdict, confidence)
     ctx.gate = eng.gate            # built from the decider just set; without one nothing is classified at all
     eng.cache.pop("floor.verdicts", None)
-    return eng._floor("t", ctx, a, "窗口")
+    return eng._floor("t", ctx, a, "Window")
 
 
 def aff(channel: str, verb: str, label: str) -> Affordance:
-    return Affordance("x", channel, verb, label, {}, context="编辑器")
+    return Affordance("x", channel, verb, label, {}, context="Editor")
 
 
 # --------------------------------------------------------------------------- the rule that was never enforced
@@ -62,7 +62,7 @@ def aff(channel: str, verb: str, label: str) -> Affordance:
 def test_enter_does_not_release_something_that_is_not_typing(parts):
     """policy.yaml has said `enter: [type, type_submit]` all along; nothing checked it."""
     eng, ctx = parts
-    assert floor(eng, ctx, aff("menu", "press", "点一下这个"), "enter") == ["enter"]
+    assert floor(eng, ctx, aff("menu", "press", "click this one"), "enter") == ["enter"]
 
 
 def test_enter_still_releases_typing(parts):
@@ -82,14 +82,14 @@ def test_edit_does_not_release_the_channel_that_moves_files(parts):
 @pytest.mark.parametrize("channel", ["file", "app", "script", "script_cmd", "service", "shortcut", "clipboard"])
 def test_no_channel_that_reaches_past_the_window_is_released_as_edit(parts, channel):
     eng, ctx = parts
-    assert floor(eng, ctx, aff(channel, "run", "做点什么"), "edit") == ["edit"]
+    assert floor(eng, ctx, aff(channel, "run", "do something"), "edit") == ["edit"]
 
 
 @pytest.mark.parametrize("channel", ["window", "keys", "menu"])
 def test_editing_inside_the_window_is_still_released(parts, channel):
     """The whole reason `edit` exists: asking about clearing a calculator stopped a real task dead."""
     eng, ctx = parts
-    assert floor(eng, ctx, aff(channel, "press", "清除"), "edit") == []
+    assert floor(eng, ctx, aff(channel, "press", "Clear"), "edit") == []
 
 
 def test_a_coordinate_is_not_a_fact_about_what_an_action_touches(parts):
@@ -97,12 +97,12 @@ def test_a_coordinate_is_not_a_fact_about_what_an_action_touches(parts):
     — "this is the channel that moves files" — and a click is a coordinate: the text OCR read beside it may
     be wrong, and what is under it may be Send. Retracted after an audit named it."""
     eng, ctx = parts
-    assert floor(eng, ctx, aff("pointer", "click", "click 「清除」"), "edit") == ["edit"]
+    assert floor(eng, ctx, aff("pointer", "click", "click 「Clear」"), "edit") == ["edit"]
 
 
 def test_a_verdict_that_is_not_a_release_still_asks(parts):
     eng, ctx = parts
-    assert floor(eng, ctx, aff("window", "press", "删除文件"), "delete") == ["delete"]
+    assert floor(eng, ctx, aff("window", "press", "Delete File"), "delete") == ["delete"]
 
 
 # --------------------------------------------------------------------------- the score, not just the choice
@@ -119,22 +119,22 @@ def test_the_same_label_on_two_channels_does_not_share_one_score(parts):
     eng, ctx = parts
     # the same label and the same place, so the same cache key — but not the same action. Neither trips a
     # word pattern, so what gates the second one can only be the verdict being scored for it.
-    inside = aff("window", "press", "清除")
-    outside = Affordance("y", "file", "open", "清除", {}, context="编辑器")
+    inside = aff("window", "press", "Clear")
+    outside = Affordance("y", "file", "open", "Clear", {}, context="Editor")
     eng._decider = Says("edit", 1.0)
     ctx.gate = eng.gate
     eng.cache.pop("floor.verdicts", None)
-    assert eng._floor("t", ctx, inside, "窗口") == []          # caches the verdict under label+context
-    assert eng._floor("t", ctx, outside, "窗口") == ["edit"]   # same key, different action
+    assert eng._floor("t", ctx, inside, "Window") == []          # caches the verdict under label+context
+    assert eng._floor("t", ctx, outside, "Window") == ["edit"]   # same key, different action
 
 
 def test_a_score_cached_by_an_older_run_is_not_thrown_away(parts):
     """Verdicts used to be cached as a number. Losing them on upgrade would re-ask for every action."""
     eng, ctx = parts
-    a = aff("window", "press", "清除")
+    a = aff("window", "press", "Clear")
     ctx.gate = eng.gate
     eng.cache["floor.verdicts"] = {eng._floor_key(ctx, a): ("edit", 1.0)}
-    assert eng._floor("t", ctx, a, "窗口") == []
+    assert eng._floor("t", ctx, a, "Window") == []
 
 
 # --------------------------------------------------------------------------- what the classifier is even offered
@@ -146,5 +146,5 @@ def test_a_verdict_it_may_not_have_is_not_put_on_the_menu(parts):
     eng._decider = said
     ctx.gate = eng.gate
     eng.cache.pop("floor.verdicts", None)
-    eng._floor("t", ctx, aff("file", "trash", "move 「old」 to the Trash"), "窗口")
+    eng._floor("t", ctx, aff("file", "trash", "move 「old」 to the Trash"), "Window")
     assert said.offered and "edit" not in said.offered[0] and "enter" not in said.offered[0]

@@ -112,8 +112,8 @@ def test_a_routine_recorded_before_identities_still_replays(tmp_path):
 
 def test_a_control_the_app_gives_no_identity_for_falls_back_to_its_label(tmp_path):
     """Most window controls carry no identifier. That is a limit of what the Mac exposes, not a choice."""
-    plain = Affordance("w0", "window", "press", "按钮 「发送」", {"ref": "r0", "pid": 1})
-    assert plain.key == "" and plain.identity() == "按钮 「发送」"
+    plain = Affordance("w0", "window", "press", "button 「Send」", {"ref": "r0", "pid": 1})
+    assert plain.key == "" and plain.identity() == "button 「Send」"
 
     obs = Observation(app=None, window=None, affordances=[plain])
-    assert Skills.find({"channel": "window", "verb": "press", "label": "按钮 「发送」", "inputs": []}, obs) is plain
+    assert Skills.find({"channel": "window", "verb": "press", "label": "button 「Send」", "inputs": []}, obs) is plain

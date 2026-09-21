@@ -88,8 +88,8 @@ def test_a_release_is_written_to_the_audit_log(tmp_path):
         def _classify(self, q):
             return {"type": "choice", "choice": "navigate", "probabilities": {"navigate": 1.0}}
 
-    engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=Navigates([{"pick": "删除文稿"}, {"pick": "done", "done": 0.95}]))
-    engine.do("打开删除文稿这个视图")
+    engine = Engine(cfg(tmp_path), helper=FakeHelper(), decider=Navigates([{"pick": "Delete Document"}, {"pick": "done", "done": 0.95}]))
+    engine.do("open the Delete Document view")
 
     log = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     released = [r for r in log if r["kind"] == "floor" and r["released"]]
