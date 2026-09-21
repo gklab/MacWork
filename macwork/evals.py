@@ -509,10 +509,17 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
     for r in valid:
         cats.setdefault(r.get("category") or "-", []).append(r)
     secs = sorted(r["seconds"] for r in valid)
+    # The headline interval is over *tasks*, not over runs. Three runs of one task are the most correlated
+    # observations in the set — same task, same app, same screen — and counting them as three independent
+    # trials narrowed the reported interval by about the square root of the repeat count, for nothing. A
+    # task counts once, as whichever way most of its runs went.
+    per_task = [sum(rs_) * 2 > len(rs_) for rs_ in ([r["passed"] for r in rs] for rs in by_task.values())]
+    lo, hi = wilson(sum(per_task), len(per_task))
     summary = {"suite": str(suite_path), "suite_sha256": hashlib.sha256(raw).hexdigest()[:16], "repeat": runs,
                "tasks": len({r["id"] for r in rows}), "runs": len(rows), "valid": len(valid),
                "invalid": sum(r["status"] == "invalid" for r in rows), "errors": sum(r["status"] == "error" for r in rows),
                **_rate(valid),
+               "passed_tasks": sum(per_task), "ci95": [round(lo, 3), round(hi, 3)], "ci95_over": "tasks",
                "pass_all": sum(all(r["passed"] for r in rs) for rs in by_task.values()),   # pass^N: passed every time
                "success_rate": round(sum(r["passed"] for r in valid) / (len(valid) or 1), 3),
                "median_seconds": secs[len(secs) // 2] if secs else 0, "p90_seconds": secs[int(len(secs) * 0.9)] if secs else 0,
@@ -527,7 +534,8 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
         (out_dir / f"{stamp}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
         s = summary
         md = [f"# {suite_path.name} — {s['at']} (sha256 {s['suite_sha256']}, ×{runs})", "",
-              f"**{s['passed']}/{s['runs'] - s['invalid'] - s['errors']} runs passed ({s['rate']:.0%}, 95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%})**; "
+              f"**{s['passed_tasks']}/{s['tasks']} tasks passed (95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%}, over tasks — "
+              f"repeats of one task are not independent trials)**; {s['passed']}/{s['runs'] - s['invalid'] - s['errors']} runs ({s['rate']:.0%}); "
               f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
               f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors", "",
               "| category | passed | rate | 95% CI |", "|---|---|---|---|"]
@@ -567,6 +575,10 @@ def _outcomes(report: dict[str, Any]) -> dict[str, list[bool]]:
         if r.get("valid", True) and r.get("status") not in ("error", "invalid"):
             out.setdefault(r["id"], []).append(bool(r.get("passed")))
     return out
+
+
+def _categories(report: dict[str, Any]) -> dict[str, str]:
+    return {r["id"]: r.get("category") or "-" for r in report.get("rows") or []}
 
 
 def _majority(runs: list[bool]) -> bool:
@@ -612,6 +624,20 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
                 changed_rate.append({"id": tid, "before": f"{sum(b_runs[tid])}/{len(b_runs[tid])}",
                                      "after": f"{sum(a_runs[tid])}/{len(a_runs[tid])}"})
 
+    # Per category as well as pooled. Four must-not tasks breaking inside twenty-nine is exactly what a
+    # pooled test cannot see: the totals can improve while the half that matters gets worse.
+    cats = _categories(after) | _categories(before)
+    by_category: dict[str, dict[str, Any]] = {}
+    for tid in shared:
+        c = by_category.setdefault(cats.get(tid, "-"), {"tasks": 0, "fixed": 0, "broke": 0})
+        c["tasks"] += 1
+        was, now = _majority(b_runs[tid]), _majority(a_runs[tid])
+        if was != now:
+            c["broke" if was else "fixed"] += 1
+    for c in by_category.values():
+        c["p_mcnemar"] = round(mcnemar(c["fixed"], c["broke"]), 4)
+    hurt = sorted(name for name, c in by_category.items() if c["broke"] > c["fixed"])
+
     p = mcnemar(len(fixed), len(broke))
     b_pass = sum(_majority(b_runs[t]) for t in shared)
     a_pass = sum(_majority(a_runs[t]) for t in shared)
@@ -621,9 +647,12 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
                + (f"too few to tell from chance (exact McNemar p={p:.2f}; "
                   f"{len(fixed) + len(broke)} tasks moved, and {p:.0%} of the time chance alone does at least this)"
                   if p > 0.05 else f"more than chance would give (exact McNemar p={p:.3f})"))
+    if hurt:
+        verdict += ". Worse in " + ", ".join(f"{n} ({by_category[n]['broke']} broken)" for n in hurt)
     return {"tasks": n, "before": {"passed": b_pass, "of": n, "ci95": [round(x, 3) for x in wilson(b_pass, n)]},
             "after": {"passed": a_pass, "of": n, "ci95": [round(x, 3) for x in wilson(a_pass, n)]},
             "fixed": fixed, "broke": broke, "p_mcnemar": round(p, 4), "verdict": verdict,
+            "by_category": by_category, "worse_in": hurt,
             "rate_moved": changed_rate, "warnings": warnings,
             "repeats": {"before": b_sum.get("repeat", 1), "after": a_sum.get("repeat", 1)}}
 
@@ -642,6 +671,9 @@ def format_compare(c: dict[str, Any]) -> str:
         lines.append(f"  fixed:  {', '.join(c['fixed'])}")
     if c["broke"]:
         lines.append(f"  broke:  {', '.join(c['broke'])}")
+    for name in c.get("worse_in") or []:
+        v = c["by_category"][name]
+        lines.append(f"  worse:  {name} — {v['broke']} broken, {v['fixed']} fixed of {v['tasks']}")
     for m in c["rate_moved"]:
         lines.append(f"  rate:   {m['id']} {m['before']} → {m['after']}")
     lines += [f"  ! {w}" for w in c["warnings"]]
