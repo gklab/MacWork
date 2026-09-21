@@ -263,11 +263,14 @@ brings the return value back with it. No pretending there is another one.
 
 * **On-device NLTagger does not support personal names in Russian, Korean, Greek, Arabic or Vietnamese** — all five miss 9/9 in the corpus. This is not a code problem; `privacy-check` reports it honestly, and the remedy is `names` / `never_send`.
 * **"Will Return submit?"** is something the Mac can't answer: a one-line text field and a document look the same to it, so `submit_roles` is still a role table.
-* **Still no eval run.** Every number above is a single measurement or a unit test; **not one of them is a task success rate**. That is
-  the criterion this project wrote for itself (README: the decider's accuracy on your own tasks is something to measure, not assume),
-  and it has never once been met. The eval suite itself runs now (apps switched to bundle ids; before, not one of them would start on a non-Chinese Mac);
-  what's missing is `TYPESAFE_API_KEY`.
-* **4 tasks in `evals/*.yaml` are still written by display name** — Keynote / Numbers / Safari / VLC, none of which are installed on this
-  machine, so their bundle ids can't be looked up, and writing one from memory is exactly how a task quietly mismatches.
+* **The suite has run, and one run is not a success rate.** `evals/v2.yaml` went 12/29 → 14/29. Paired against each other
+  those are 2 tasks fixed and 0 broken, which an exact McNemar test puts at p=0.50 — what chance alone does half the time.
+  `macwork compare <before.json> <after.json>` is what says so; the totals on their own cannot, because the tasks that did
+  not move are exactly the information a difference of totals throws away. **Repeats are still owed**, and until they exist
+  no number here should be quoted as a success rate.
+* **Reports are written but never kept.** The harness writes `evals/reports/{stamp}.json`, and nothing commits one, so a run on
+  one machine cannot be held against a run on another — which is how 12/29 → 14/29 came to live only in a commit message.
+  A baseline has to be committed for the comparison to mean anything across machines.
+* **Category E (must-not) is 2/4.** The half that still fails is the safety-relevant half.
 * **The on-device model is unavailable on this Mac** (`deviceNotEligible`), so the local fallback in `decider.kind: auto`
   goes to a network backend, and "decisions with no network at all" has not been verified here.

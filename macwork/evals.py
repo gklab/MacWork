@@ -500,3 +500,108 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
         (out_dir / f"{stamp}.md").write_text("\n".join(md) + "\n", encoding="utf-8")
         report["files"] = [str(out_dir / f"{stamp}.json"), str(out_dir / f"{stamp}.md")]
     return report
+
+
+# ----------------------------------------------------------------------------- comparing two runs
+def mcnemar(b: int, c: int) -> float:
+    """Two-sided exact McNemar p for paired before/after outcomes on the same tasks.
+
+    `b` tasks went fail -> pass and `c` went pass -> fail; tasks that did not change carry no information
+    about whether anything changed, which is the whole point of the test and the reason a bare "12 -> 14"
+    says nothing. Under "the change did nothing", each of the b + c tasks that moved was equally likely to
+    move either way, so this is a sign test on them.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) * (0.5 ** n)
+    return min(1.0, 2 * tail)
+
+
+def _outcomes(report: dict[str, Any]) -> dict[str, list[bool]]:
+    """Per task, whether each valid run of it passed. Invalid runs and errors are not outcomes."""
+    out: dict[str, list[bool]] = {}
+    for r in report.get("rows") or []:
+        if r.get("valid", True) and r.get("status") not in ("error", "invalid"):
+            out.setdefault(r["id"], []).append(bool(r.get("passed")))
+    return out
+
+
+def _majority(runs: list[bool]) -> bool:
+    return sum(runs) * 2 > len(runs)
+
+
+def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Did anything actually change between two runs of the same suite?
+
+    A single run of 29 tasks that goes from 12 to 14 is the kind of number that reads like progress and is
+    not evidence of any: two tasks flipping one way and none the other is a different thing from five
+    flipping one way and three the other, and the totals cannot tell them apart. So this pairs the tasks by
+    id, names what moved in each direction, and tests the ones that moved.
+
+    It also refuses to compare quietly across things that make a comparison meaningless: a different suite,
+    or a different decider answering.
+    """
+    b_sum, a_sum = before.get("summary") or {}, after.get("summary") or {}
+    b_runs, a_runs = _outcomes(before), _outcomes(after)
+    shared = sorted(set(b_runs) & set(a_runs))
+
+    warnings: list[str] = []
+    if b_sum.get("suite_sha256") and b_sum["suite_sha256"] != a_sum.get("suite_sha256"):
+        warnings.append(f"different suites ({b_sum['suite_sha256']} vs {a_sum.get('suite_sha256')}): "
+                        "the tasks themselves changed, so this compares two different questions")
+    deciders = lambda rep: sorted({r.get("decider") for r in rep.get("rows") or [] if r.get("decider")})  # noqa: E731
+    if deciders(before) != deciders(after):
+        warnings.append(f"different deciders ({deciders(before)} vs {deciders(after)}): this measures the model, not the change")
+    only_before = sorted(set(b_runs) - set(a_runs))
+    only_after = sorted(set(a_runs) - set(b_runs))
+    if only_before or only_after:
+        warnings.append(f"{len(only_before) + len(only_after)} task(s) are in only one of the runs and are left out: "
+                        f"{(only_before + only_after)[:6]}")
+
+    fixed, broke, changed_rate = [], [], []
+    for tid in shared:
+        was, now = _majority(b_runs[tid]), _majority(a_runs[tid])
+        if was != now:
+            (broke if was else fixed).append(tid)
+        if len(b_runs[tid]) > 1 or len(a_runs[tid]) > 1:
+            b_rate, a_rate = sum(b_runs[tid]) / len(b_runs[tid]), sum(a_runs[tid]) / len(a_runs[tid])
+            if b_rate != a_rate:
+                changed_rate.append({"id": tid, "before": f"{sum(b_runs[tid])}/{len(b_runs[tid])}",
+                                     "after": f"{sum(a_runs[tid])}/{len(a_runs[tid])}"})
+
+    p = mcnemar(len(fixed), len(broke))
+    b_pass = sum(_majority(b_runs[t]) for t in shared)
+    a_pass = sum(_majority(a_runs[t]) for t in shared)
+    n = len(shared)
+    verdict = ("nothing moved: no task changed which way it went" if not fixed and not broke else
+               f"{len(fixed)} fixed, {len(broke)} broken — "
+               + (f"too few to tell from chance (exact McNemar p={p:.2f}; "
+                  f"{len(fixed) + len(broke)} tasks moved, and {p:.0%} of the time chance alone does at least this)"
+                  if p > 0.05 else f"more than chance would give (exact McNemar p={p:.3f})"))
+    return {"tasks": n, "before": {"passed": b_pass, "of": n, "ci95": [round(x, 3) for x in wilson(b_pass, n)]},
+            "after": {"passed": a_pass, "of": n, "ci95": [round(x, 3) for x in wilson(a_pass, n)]},
+            "fixed": fixed, "broke": broke, "p_mcnemar": round(p, 4), "verdict": verdict,
+            "rate_moved": changed_rate, "warnings": warnings,
+            "repeats": {"before": b_sum.get("repeat", 1), "after": a_sum.get("repeat", 1)}}
+
+
+def compare_files(before_path: Path, after_path: Path) -> dict[str, Any]:
+    return compare(json.loads(before_path.read_text(encoding="utf-8")),
+                   json.loads(after_path.read_text(encoding="utf-8")))
+
+
+def format_compare(c: dict[str, Any]) -> str:
+    lines = [f"{c['before']['passed']}/{c['tasks']} → {c['after']['passed']}/{c['tasks']} tasks",
+             f"  before 95% CI {c['before']['ci95'][0]:.0%}–{c['before']['ci95'][1]:.0%}"
+             f"   after 95% CI {c['after']['ci95'][0]:.0%}–{c['after']['ci95'][1]:.0%}",
+             f"  {c['verdict']}"]
+    if c["fixed"]:
+        lines.append(f"  fixed:  {', '.join(c['fixed'])}")
+    if c["broke"]:
+        lines.append(f"  broke:  {', '.join(c['broke'])}")
+    for m in c["rate_moved"]:
+        lines.append(f"  rate:   {m['id']} {m['before']} → {m['after']}")
+    lines += [f"  ! {w}" for w in c["warnings"]]
+    return "\n".join(lines)

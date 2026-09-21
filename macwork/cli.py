@@ -292,6 +292,25 @@ def cmd_eval(cfg: Config, args: argparse.Namespace) -> int:
                        Path(args.out) if args.out else ROOT / "evals" / "reports", progress=lambda m: print(m, file=sys.stderr),
                        repeat=args.repeat)
     _print(report["summary"])
+    if args.compare:
+        # a total on its own reads like progress whether or not anything moved; this says which tasks did
+        from .evals import compare, format_compare
+
+        base = json.loads(Path(args.compare).read_text(encoding="utf-8"))
+        print("\nagainst " + args.compare, file=sys.stderr)
+        print(format_compare(compare(base, report)), file=sys.stderr)
+    return 0
+
+
+def cmd_compare(cfg: Config, args: argparse.Namespace) -> int:
+    """Did anything actually change between two eval runs? Reads two reports; runs nothing."""
+    from .evals import compare_files, format_compare
+
+    c = compare_files(Path(args.before), Path(args.after))
+    if args.json:
+        _print(c)
+    else:
+        print(format_compare(c))
     return 0
 
 
@@ -477,6 +496,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--only", help="comma-separated task ids")
     p.add_argument("--repeat", type=int, help="runs per task (default: the suite's repeat, else 1)")
     p.add_argument("--out")
+    p.add_argument("--compare", help="an earlier report.json: say which tasks moved, and whether that is more than chance")
+    p = sub.add_parser("compare", help="compare two eval reports (runs nothing)")
+    p.add_argument("before")
+    p.add_argument("after")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("helper")
     p.add_argument("action", choices=["build", "install", "path"])
     p.add_argument("--sign", help="codesign identity (default: ad-hoc)")
@@ -493,7 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
     handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "revert": cmd_revert, "watch": cmd_watch, "serve": cmd_serve,
-                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
+                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "compare": cmd_compare, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     missing = {c for c in sub.choices} - set(handlers)   # a subcommand with no handler is a KeyError at run time
     assert not missing, f"no handler for {missing}"
     return handlers[args.cmd](cfg, args)
