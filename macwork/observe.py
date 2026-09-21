@@ -22,7 +22,7 @@ from typing import Any, Callable
 from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
-from .model import Affordance, Observation, Slot
+from .model import Affordance, Observation, Slot, with_state
 
 log = logging.getLogger(__name__)
 
@@ -330,18 +330,20 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         if selectable(n, role):   # rows are chosen by selecting them, not by an action
             name = _label(n) or " · ".join(dict.fromkeys(inner_text(n["ref"])))
             if name:
-                state = " (selected)" if n.get("selected") else ""
-                obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select", f"select {rd} 「{name[:80]}」{state}",
+                state = "selected" if n.get("selected") else ""
+                obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select",
+                                                  with_state(f"select {rd} 「{name[:80]}」", state),
                                                   {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}, context=ctx_text, key=ikey))
         if role in text_roles and n.get("editable") is False and not by_capability:   # shows text, cannot be typed into
             role = "AXStaticText"
         if typeable(n, role):
             label = n.get("title") or n.get("desc") or n.get("placeholder") or ctx_text or rd
-            current = f" (now: {str(n['value'])[:60]})" if n.get("value") and role != "AXSecureTextField" else ""
+            current = f"now: {str(n['value'])[:60]}" if n.get("value") and role != "AXSecureTextField" else ""
             target = {"ref": n["ref"], "pid": ctx.app["pid"], "secure": role == "AXSecureTextField", "frame": n.get("frame")}
             if n.get("value") and role != "AXSecureTextField":   # what fields hold is the best evidence that typing worked
                 obs.notes.setdefault("fields", []).append(f"{label}: {str(n['value'])[: int(wcfg.get('field_chars', 300))]}")
-            obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type", f"type into {rd} 「{label}」{current}",
+            obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type",
+                                              with_state(f"type into {rd} 「{label}」", current),
                                               target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
             if has_range(n, role) and n.get("value") and n.get("editable") is not False:
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select_text",
@@ -351,7 +353,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                                                   f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text, key=ikey))
             if role in set(wcfg.get("submit_roles") or []):
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type_submit",
-                                                  f"type into {rd} 「{label}」 and press Return{current}", dict(target),
+                                                  with_state(f"type into {rd} 「{label}」 and press Return", current), dict(target),
                                                   slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
             # An element can be both: a table cell takes text *and* has a context menu. Probing capabilities
             # finds many more typing targets than the role list did, so swallowing their actions here would
@@ -371,11 +373,11 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             obs.notes.setdefault("unlabeled", []).append({"ref": n["ref"], "role": role, "rdesc": rd, "frame": n.get("frame"),
                                                            "action": offered[0], "context": ctx_text, "pid": ctx.app["pid"]})
         elif offered:
-            state = " (selected)" if n.get("selected") else ""
+            state = "selected" if n.get("selected") else ""
             for act in offered:
                 verb = labels.get(act) or str((n.get("action_desc") or {}).get(act) or "")   # the app's own word
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
-                text = f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}{state}"
+                text = with_state(f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}", state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
                                                   {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame")}, context=ctx_text, key=ikey))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):

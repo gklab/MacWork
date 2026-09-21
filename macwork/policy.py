@@ -24,14 +24,6 @@ from .privacy import Redactor
 log = logging.getLogger(__name__)
 
 
-_VOLATILE = re.compile(r"\s*\((?:now|selected)[^)]*\)")
-
-
-def _steady(label: str) -> str:
-    """A label without the part that changes under the user's hands."""
-    return _VOLATILE.sub("", label or "").strip()
-
-
 class PolicyMixin:
     def _host_bundles(self) -> set[str]:
         """The apps this engine runs under (the terminal or client that started it), found by walking up the
@@ -98,7 +90,7 @@ class PolicyMixin:
         run. What an action *does* is the same whatever is in the field, which is what is being classified.
         """
         app = ctx.app or {}
-        return f"{self.models.key(app) or app.get('bundle_id')}|{_steady(a.label)}|{a.context}"
+        return f"{self.models.key(app) or app.get('bundle_id')}|{a.name()}|{a.context}"
 
     def _releases(self, a: Affordance | None = None) -> dict[str, str]:
         """The verdicts that let an action through, named by policy rather than written into the code: what a

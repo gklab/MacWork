@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -17,6 +18,26 @@ class Slot:
     required: bool = True
 
 
+def with_state(name: str, state: str = "") -> str:
+    """An action's name with what it shows right now: 「type into Search (now: hello)」, 「select row (selected)」.
+
+    The decider should see the state; nothing else should. What a field holds changes with every keystroke, so
+    anything *keyed* on the full label — a floor verdict, a standing grant, a learned routine — saw a new
+    action each time. Three modules each grew their own regex to strip the state back off, and the three did
+    not agree on what to strip. It is put on here and taken off in `steady`, and nowhere else.
+    """
+    return f"{name} ({state})" if state else name
+
+
+_STATE = re.compile(r"\s*\((?:now: [^)]*|selected)\)")
+
+
+def steady(label: str) -> str:
+    """The label without its momentary state — the inverse of `with_state`, for labels that arrive as strings
+    (a recorded step, a stored routine). An `Affordance` knows its own: `a.name()`."""
+    return _STATE.sub("", label or "").strip()
+
+
 @dataclass
 class Affordance:
     id: str                        # unique within one observation
@@ -30,6 +51,10 @@ class Affordance:
     yields: str = ""               # for an action that only *returns* something (a file's text, a window's): what
                                    # exactly it would return, as an identity that changes when the source does.
                                    # Once a task holds that, the action is complete and is not offered again
+
+    def name(self) -> str:
+        """What this action is called, without what it happens to show right now."""
+        return steady(self.label)
 
     def identity(self) -> str:
         """What this action *is*, as independently of the interface language as the Mac allows.

@@ -22,7 +22,6 @@ CODE = {
     "macwork/privacycheck.py": "a synthetic corpus for measuring redaction in many languages: that is its job",
     "macwork/privacy.py": "one carrier sentence per script, so a bare name is tagged in the script it is written in",
     "macwork/facts.py": "a character class: each CJK character is a word",
-    "macwork/evals.py": "the eval harness's \"don't save\" buttons, in every language it has been run in",
 }
 # Defaults that may: the floor's word lists are documented as two languages wide and as a hint, never a
 # verdict; the address pattern recognises a Chinese postal address.

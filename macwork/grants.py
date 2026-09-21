@@ -35,11 +35,6 @@ log = logging.getLogger("macwork.grants")
 RISKY_SCREEN = "risky_screen"      # the gate that comes from the screen, not from the action
 
 
-def _steady(label: str) -> str:
-    """The label without what the field happens to hold right now (`(now: …)`), as the floor keys it."""
-    return re.sub(r"\s*\(now: .*?\)", "", label)
-
-
 def identity(app: dict[str, Any] | None, a: Affordance) -> str:
     """Which action, in which app — and nothing about the screen it was on or the task it was for.
 
@@ -51,7 +46,7 @@ def identity(app: dict[str, Any] | None, a: Affordance) -> str:
     An action that carries text is judged with its text in it, and is granted the same way — "type this
     command" is not "type anything".
     """
-    what = a.key or f"{_steady(a.label)}\x1f{a.context}"
+    what = a.key or f"{a.name()}\x1f{a.context}"
     return "\x1f".join([str((app or {}).get("bundle_id") or ""), a.channel, a.verb, what])
 
 

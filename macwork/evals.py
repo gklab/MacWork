@@ -44,6 +44,7 @@ from typing import Any, Callable
 import yaml
 
 from .act import NotInFront, _bring_forward
+from .decider import choice
 from .engine import Engine
 from .observe import Ctx, observe
 
@@ -245,25 +246,48 @@ def _leftovers(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> 
     return out
 
 
-# What a "throw this away" button is called. The engine itself never has such a list and never discards
-# anything — `tidy._quit` deliberately cancels a quit that asks about unsaved work, because the work is the
-# user's. An eval sandbox is the one place where the opposite is true: its documents are made by the suite,
-# for the suite, and leaving them piles up windows that change what the next run sees. Two runs of Grapher
-# left ten windows, and the eleventh run was scored INVALID because a chart was already on screen.
-DISCARD = ("不存储", "不保存", "删除", "Don't Save", "Don’t Save", "Delete", "Discard", "Verwerfen", "Ne pas enregistrer")
-
-
 def _discard_prompt(engine: Engine, pid: int) -> bool:
-    """A sheet asking about unsaved work: throw the work away. True when a button was pressed."""
+    """A sheet asking about unsaved work: throw the work away. True when a button was pressed.
+
+    The engine itself never does this — `tidy._quit` deliberately cancels a quit that asks about unsaved work,
+    because the work is the user's. An eval sandbox is the one place where the opposite is true: its documents
+    are made by the suite, for the suite, and leaving them piles up windows that change what the next run
+    sees (Grapher reached ten, and the eleventh run was scored INVALID because a chart was already there).
+
+    Which button discards is asked, not looked up. This used to be a tuple of button titles in four
+    languages — the kind of list this project exists to not have, and one that a fifth language, or an app
+    that words it differently, walks straight past.
+    """
     try:
-        nodes = engine.helper.call("ax.snapshot", pid=pid, scope="windows", max_depth=5, max_nodes=800).get("nodes", [])
+        nodes = engine.helper.call("ax.snapshot", pid=pid, scope="windows", max_depth=6, max_nodes=800).get("nodes", [])
     except Exception:  # noqa: BLE001
         return False
-    btn = next((n for n in nodes if n.get("role") == "AXButton" and (n.get("title") or "").strip() in DISCARD), None)
-    if not btn:
+    by_ref = {n.get("ref"): n for n in nodes}
+
+    def within_prompt(n: dict[str, Any]) -> bool:      # under a sheet, or in a dialog window
+        seen = 0
+        while n is not None and seen < 12:
+            if n.get("role") == "AXSheet" or n.get("subrole") in ("AXDialog", "AXSystemDialog"):
+                return True
+            n, seen = by_ref.get(n.get("parent")), seen + 1
+        return False
+
+    buttons = [n for n in nodes if n.get("role") == "AXButton" and (n.get("title") or "").strip() and within_prompt(n)]
+    if len(buttons) < 2:
+        return False
+    says = " / ".join(dict.fromkeys(str(n.get("value") or n.get("title")) for n in nodes
+                                    if n.get("role") == "AXStaticText" and within_prompt(n) and (n.get("value") or n.get("title"))))[:300]
+    options = {"none": "none of these throws it away"} | {f"b{i}": str(b["title"]).strip() for i, b in enumerate(buttons)}
+    try:
+        ans = engine.gate.decide(engine.redactor("harness"), {"the_app_asks": says},
+                                 {"discard": choice(engine.cfg.question("discard_sandbox"), options)}, task="harness")
+    except Exception:  # noqa: BLE001  (no decider: the window stays, and is reported as left over)
+        return False
+    pick = (ans.get("discard") or {}).get("choice", "none")
+    if pick not in options or pick == "none":
         return False
     try:
-        engine.helper.call("ax.perform", ref=btn["ref"], action="AXPress")
+        engine.helper.call("ax.perform", ref=buttons[int(pick[1:])]["ref"], action="AXPress")
     except Exception:  # noqa: BLE001
         return False
     time.sleep(0.4)
@@ -306,6 +330,10 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
                     time.sleep(0.4)
                 except NotInFront:
                     pass
+            # whichever way a window was asked to go, the app may have answered with a question of its own
+            for _ in range(len(item.get("ids", [])) + 1):
+                if not _discard_prompt(engine, item["pid"]):
+                    break
         except Exception as exc:  # noqa: BLE001  (best effort; what stays is reported)
             log_harness(f"sweep {item['app']}: {exc}")
     return _leftovers(engine, before)

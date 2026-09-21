@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, expand
-from .model import Affordance, Observation, Task
+from .model import Affordance, Observation, Task, steady
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"\(now: .*?\)", "", s or "")).strip()
+    return re.sub(r"\s+", " ", steady(s)).strip()
 
 
 def _without_detours(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
