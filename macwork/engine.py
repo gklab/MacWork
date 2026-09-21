@@ -304,7 +304,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
                 task.status, task.reason = "cancelled", "the caller declined"
                 return task.result()
             if held:
-                task.approved.add(held.label)
+                self.resume_approval(task)
         if task.status == "ambiguous":
             held = task.options.get(choice_id or "")
             if held is None:
@@ -313,7 +313,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, ConsultMixin, Tid
             # first — so a chosen action still meets the floor. A caller that already knows can answer both
             # at once by passing `confirm` with the choice, rather than being asked twice in a row.
             if confirm:
-                task.approved.add(held.label)
+                self.approve(task, held)
         task.status, task.pending, task.options = "running", {}, {}
         task.held = held
         return self._run_queued(task, progress, None)

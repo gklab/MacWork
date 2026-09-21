@@ -539,7 +539,7 @@ class LoopMixin:
         # has just confirmed *that* action, and asking again is asking twice — and wrong for the other two:
         # resuming from `ambiguous` says which option, never that it is safe, and resuming from
         # `need_input` supplies text for an action nobody has classified.
-        if look is None and chosen.label not in task.approved:
+        if look is None and self.approval_key(chosen) not in task.approved:
             gated = self._floor(task.id, ctx, chosen, (obs.window if obs else None) or (task.target or {}).get("window"))
             if gated:
                 task.held = chosen
@@ -568,12 +568,15 @@ class LoopMixin:
             typed = Affordance(chosen.id, chosen.channel, chosen.verb, f"{chosen.label} — {doing} 「{text[:120]}」", chosen.target,
                                context=chosen.context)
             floor = self._floor(task.id, ctx, typed, obs.window if obs else None)
-            if floor and chosen.label not in task.approved:
+            # keyed on the action *with its text*, not on the base label: "type at the cursor" is the same
+            # label every time, so one confirmation used to release everything typed after it
+            if floor and self.approval_key(typed) not in task.approved:
                 if not self._goal_calls_for(task, ctx, self.redactor(task.id), {}, typed):
                     task.memory.declined.add(chosen.label)
                     progress(f"not asked for, skipped: {typed.label[:80]}")
                     return None
                 task.held = chosen
+                task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
                 return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
                                     {"confirm": {**chosen.public(), "text": text[:200]}, "because": floor})
         task.tries = [t for t in task.tries if self._suggestion_label(t) != chosen.label]
@@ -585,6 +588,7 @@ class LoopMixin:
         # suggestions — and the last one to be judged is not necessarily this one.
         self.cache.pop("floor.last_category", None)
         self._floor(task.id, ctx, chosen, obs.window if obs else None, ask=False)
+        self.spend(task, chosen)      # a confirmation covers this run of it, not the next one
         out, events = self._execute(ctx, chosen, params)
         held, why = kept(ctx, chosen, params, out, events)   # did the action keep its promise?
         if held is False:

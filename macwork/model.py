@@ -149,6 +149,10 @@ class Task:
     approved: set[str] = field(default_factory=set)          # affordance labels the caller confirmed
     target: dict[str, Any] | None = None                     # app currently worked in (pid, name, bundle_id)
     held: Any = None                                         # the affordance waiting on the caller (need_input/confirm)
+    confirm_key: str = ""                                    # which identity a "yes" approves, when that is
+                                                 # not the held action's own: the text re-judge asks about
+                                                 # the action *with its text in it*, and approving the bare
+                                                 # action would leave the caller confirming forever
     options: dict[str, Any] = field(default_factory=dict)    # affordances offered when ambiguous, by id
     plan: list[str] | None = None                            # sub-goals from the planner, if one was consulted
     plan_i: int = 0

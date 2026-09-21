@@ -326,6 +326,37 @@ class PolicyMixin:
                 return cached[0] not in self._releases() and cached[0] != ""
         return bool(self._floor_hits(a))
 
+    @staticmethod
+    def approval_key(a: Affordance) -> str:
+        """What an approval is *for*.
+
+        It used to be the bare label, and labels repeat constantly — 「删除」, "OK", "Send", "Don't Save".
+        Confirming one dialog's button released every later action in the task called the same thing, in
+        any app. This names the action: its language-independent identity where the Mac gives one
+        (`Affordance.key`, so a relabelled button is still the same button), else the label, and where it
+        sits either way.
+        """
+        return f"{a.key or a.label}\x1f{a.context}"
+
+    def approve(self, task: Task, a: Affordance) -> None:
+        """The caller said yes to this one action."""
+        task.approved.add(self.approval_key(a))
+
+    def resume_approval(self, task: Task) -> None:
+        """The caller said yes. Approve what was actually asked about — `task.confirm_key` when the
+        question was about more than the held action alone."""
+        if task.confirm_key:
+            task.approved.add(task.confirm_key)
+            task.confirm_key = ""
+        elif task.held is not None:
+            self.approve(task, task.held)
+
+    def spend(self, task: Task, a: Affordance) -> None:
+        """...and it has now run. A confirmation answers "do this now", not "do this whenever": a task
+        that deletes five files asks five times, which is what a floor is."""
+        task.approved.discard(self.approval_key(a))
+        task.confirm_key = ""
+
     def _needs_confirm(self, a: Affordance, risky_screen: float, approved: set[str],
                        harmless: Callable[[Affordance], bool] | None = None, floor: list[str] | None = None) -> bool:
         """The safety floor always asks (``floor``: its categories for this action, as classified; by default
@@ -333,7 +364,7 @@ class PolicyMixin:
         anything else asks too — unless the decider, asked about this very action, judges that it only backs out
         (closes, cancels, postpones) and commits nothing."""
         conf = self.cfg.policy.get("confirm", {}) or {}
-        if conf.get("mode", "caller") == "never" or a.label in approved:
+        if conf.get("mode", "caller") == "never" or self.approval_key(a) in approved:
             return False
         if self._floor_hits(a) if floor is None else floor:
             return True
@@ -353,7 +384,7 @@ class PolicyMixin:
 
     def _goal_calls_for(self, task: Task, ctx: Ctx, redactor: Redactor, state: dict[str, Any], a: Affordance) -> bool:
         """Asked only for an action the safety floor gates: does the goal itself call for it?"""
-        if a.label in task.approved:
+        if self.approval_key(a) in task.approved:
             return True
         q = self.cfg.question("goal_calls_for").replace("{action}", a.label)
         try:
@@ -365,7 +396,7 @@ class PolicyMixin:
     def _serves_goal(self, task: Task, ctx: Ctx, a: Affordance) -> bool:
         """Leaving the app being worked in — opening or switching to another app, running a Shortcut, researching
         on the web — must make sense for the goal as the user stated it (judged without the screen's text)."""
-        if a.label in task.approved or a.id == "launch":
+        if self.approval_key(a) in task.approved or a.id == "launch":
             return True
         cache = task.memory.serves
         if a.label not in cache:

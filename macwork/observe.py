@@ -1075,6 +1075,59 @@ def _openers(ctx: Ctx, path: Path) -> list[dict[str, Any]]:
     return [a for a in apps if not a.get("default")][: int(ctx.cfg.get("observe.files.openers", 4))]
 
 
+# A path starts at a ~ or / that is not continuing a word — so "and/or" starts nothing, while a language
+# that writes no space before it ("打开/Users/…") does. Stated as what a path character *is*, so it holds
+# for every script rather than listing one script's punctuation.
+_PATH_START = re.compile(r"(?:(?<![A-Za-z0-9._~/\\-])|(?<=^))[~/]")
+
+
+def named_paths(text: str, max_words: int = 6, max_trim: int = 40) -> list[Path]:
+    """Paths the caller named, found by asking the file system where each one ends.
+
+    It used to be a regex that excluded CJK ideographs and some Chinese punctuation — there to keep
+    `打开 ~/Downloads/x.pdf 这个文件` from swallowing the trailing words. It broke the script it was written
+    for: `~/文稿/发票.pdf` was cut at the first Chinese character, so a Chinese filename could not be found
+    at all, while Korean, Thai and Greek got neither the help nor the harm.
+
+    Where a path ends is not a question about writing systems. It is a question about this Mac, and the
+    Mac can be asked: take the longest prefix that exists. That handles a name in any script, a language
+    that attaches its particles without a space, a trailing full stop, and a filename with spaces in it,
+    without knowing anything about any of them.
+    """
+    out: list[Path] = []
+    seen: set[str] = set()
+    for m in _PATH_START.finditer(text):
+        rest = text[m.start():]
+        # candidate ends: each whitespace run (a path may contain spaces, but not many), then the end
+        ends = [w.start() for w in re.finditer(r"\s", rest)][:max_words] + [len(rest)]
+        for end in reversed(ends):                     # longest first: prefer the whole name
+            found = None
+            for cut in range(end, max(0, end - max_trim) - 1, -1):   # trim what the sentence added
+                cand = rest[:cut].replace("\\ ", " ").strip()
+                if not cand or cand in ("~", "/"):
+                    break
+                # What follows the cut decides whether this is the thing named or a piece of it. A `/`
+                # next means the text was naming something deeper — "/a/b/missing.pdf" must not quietly
+                # become "/a/b", which exists and is not what anyone asked for.
+                if cut < len(rest) and rest[cut] == "/":
+                    continue
+                if cand.endswith("/"):
+                    continue      # the text went on into a child; `Path` would quietly drop the slash
+                try:
+                    here = Path(cand).expanduser()
+                    if here.exists():
+                        found = here
+                        break
+                except (OSError, ValueError):          # a candidate too long for the file system, a bad byte
+                    continue
+            if found is not None:
+                if str(found) not in seen:
+                    seen.add(str(found))
+                    out.append(found)
+                break
+    return out
+
+
 @provider("files")
 def files(ctx: Ctx, obs: Observation) -> None:
     fc = ctx.cfg.section("observe.files")
@@ -1085,9 +1138,9 @@ def files(ctx: Ctx, obs: Observation) -> None:
     # failed for want of this — each one opened Finder's "Go to Folder" and typed a long path instead.
     named = 0
     for value in [ctx.goal, *(str(v) for v in ctx.inputs.values())]:
-        for raw in re.findall(r"(?:~|/)[^\s\u4e00-\u9fff，。、：；？！「」（）]+", str(value or "")):
-            here = Path(raw.rstrip(".,;:").replace("\\ ", " ")).expanduser()
-            if not here.exists() or str(here) in {a.target.get("path") for a in obs.affordances}:
+        for here in named_paths(str(value or ""), int(fc.get("max_path_words", 6)),
+                                int(fc.get("max_path_trim", 40))):
+            if str(here) in {a.target.get("path") for a in obs.affordances}:
                 continue
             what = "folder" if here.is_dir() else "file"
             obs.affordances.append(Affordance(f"p{named}", "file", "open",

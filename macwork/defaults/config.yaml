@@ -149,8 +149,11 @@ observe:
   typing:                        # type the caller's text wherever the cursor is (editors that expose no text field)
     enabled: true
     requires_input: text         # offered only when the caller supplied inputs.text
-    label: type the given text at the cursor, into whatever has keyboard focus / 在光标处输入文字
-    submit_label: type the given text at the cursor and press Return / 在光标处输入文字并回车
+    # English, like every other string this repo writes. What the Mac says comes from the Mac and is in
+    # whatever language it is set to; what *we* say is ours, and saying it twice in two chosen languages
+    # only makes Chinese look special. Goals are the caller's own words, in any language they like.
+    label: type the given text at the cursor, into whatever has keyboard focus
+    submit_label: type the given text at the cursor and press Return
   shortcuts:                     # the person's own Shortcuts — also the only route by which an app's
                                  # declared App Intent can actually be performed (no process may perform
                                  # another app's intent; the system does, through Shortcuts and Siri)
@@ -188,7 +191,11 @@ observe:
     label: drag one thing on screen onto another
   schemes:
     limit: 8                     # URL schemes offered per app (from its own Info.plist)
-  files:
+  files:                         # paths the caller named. Where one ends is asked of the file system —
+                                 # the longest prefix that exists — so a name in any script is found, and
+                                 # a language that attaches its particles without a space does not break it
+    max_path_words: 6            # a filename may contain spaces; not many
+    max_path_trim: 40            # how much of the sentence after a path to try trimming off
     limit: 15
     roots: ["~"]
     input_keys: [query, keywords, file]   # inputs that trigger a Spotlight search
