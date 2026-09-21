@@ -16,6 +16,18 @@ class _NoPopen(subprocess.Popen):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_task_store(monkeypatch, tmp_path_factory):
+    """Tests never write to the person's own task store.
+
+    Only test_store.py pointed the store anywhere; every other Engine a test built persisted its fake tasks
+    to ~/Library/Application Support/macwork/tasks.db. `macwork profile` found it on its first run: a
+    median decide of 29 ms and an observe of 0 ms are not numbers any real task produces. An explicit
+    `engine.store` override in a test still wins over this — the environment is merged first.
+    """
+    monkeypatch.setenv("MACWORK__ENGINE__STORE", str(tmp_path_factory.mktemp("store") / "tasks.db"))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_processes(monkeypatch):
     calls = []
 

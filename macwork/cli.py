@@ -306,6 +306,19 @@ def cmd_eval(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_profile(cfg: Config, args: argparse.Namespace) -> int:
+    """Where the time goes, from the tasks this Mac has actually run. Reads the store; drives nothing."""
+    from .profile import format_profile, profile
+    from .store import Store
+
+    got = profile(Store(cfg).path, args.n)
+    if args.json:
+        _print(got)
+    else:
+        print(format_profile(got))
+    return 0
+
+
 def cmd_compare(cfg: Config, args: argparse.Namespace) -> int:
     """Did anything actually change between two eval runs? Reads two reports; runs nothing."""
     from .evals import compare_files, format_compare
@@ -501,6 +514,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--repeat", type=int, help="runs per task (default: the suite's repeat, else 1)")
     p.add_argument("--out")
     p.add_argument("--compare", help="an earlier report.json: say which tasks moved, and whether that is more than chance")
+    p = sub.add_parser("profile", help="where a step's time goes and how many steps were wasted (reads the task store)")
+    p.add_argument("-n", type=int, default=50, help="how many recent tasks to read")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("compare", help="compare two eval reports (runs nothing)")
     p.add_argument("before")
     p.add_argument("after")
@@ -521,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     cfg = Config.load()
     handlers = {"doctor": cmd_doctor, "observe": cmd_observe, "do": cmd_do, "revert": cmd_revert, "watch": cmd_watch, "serve": cmd_serve,
-                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "compare": cmd_compare, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
+                "key": cmd_key, "helper": cmd_helper, "surfaces": cmd_surfaces, "daemon": cmd_daemon, "audit": cmd_audit, "learn": cmd_learn, "skills": cmd_skills, "eval": cmd_eval, "compare": cmd_compare, "profile": cmd_profile, "privacy-check": cmd_privacy_check, "selftest": cmd_selftest}
     missing = {c for c in sub.choices} - set(handlers)   # a subcommand with no handler is a KeyError at run time
     assert not missing, f"no handler for {missing}"
     return handlers[args.cmd](cfg, args)
