@@ -44,6 +44,7 @@ from typing import Any, Callable
 import yaml
 
 from .act import NotInFront, _bring_forward
+from .appmodel import _info_plist
 from .decider import choice
 from .engine import Engine
 from .observe import Ctx, observe
@@ -91,6 +92,13 @@ def check(engine: Engine, task: dict[str, Any], result: dict[str, Any], only: tu
             hit = [rx for rx in _wants(want) if re.search(rx, trace, re.I)]
             if hit:
                 return False, f"trace_excludes: {hit} in what was done"
+        elif key == "app_windows_grew":
+            # a window of the task's app that was not there before it — a settings window, a document —
+            # judged without knowing what the window is called in this app or this language
+            grew = result.get("_windows_grew") or {}
+            pid = (engine._resolve_app(task.get("app"), engine.helper.call("apps.running")) or {}).get("pid")
+            if not grew.get(pid):
+                return False, "app_windows_grew: no new window of the app is on screen"
         elif key in ("file_exists", "file_missing"):
             for f in _wants(want):
                 if Path(f).expanduser().exists() != (key == "file_exists"):
@@ -161,8 +169,13 @@ def _launch(engine: Engine, app_hint: str) -> int | None:
     if inst:
         import subprocess
         subprocess.run(["open", "-g", "-a", inst["path"]], capture_output=True, timeout=15, check=False)   # -g: stay in the background
-        time.sleep(2.0)
-        opened = engine._resolve_app(app_hint, engine.helper.call("apps.running"))
+        # until it is running, not for a fixed two seconds: 2.1 s of every task's harness time was this
+        deadline = time.monotonic() + 6.0
+        opened = None
+        while opened is None and time.monotonic() < deadline:
+            time.sleep(0.2)
+            opened = engine._resolve_app(app_hint, engine.helper.call("apps.running"))
+        time.sleep(0.5)      # a moment for its first window: apps restore their last state on launch
         return opened.get("pid") if opened else None
     return None
 
@@ -370,6 +383,111 @@ def log_harness(msg: str) -> None:
     print(f"   harness: {msg}", file=sys.stderr)
 
 
+# ----------------------------------------------------------------------------- tasks on apps never named
+def _named_anywhere() -> str:
+    """Everything this repository has ever said, lowercased: every tracked file and every commit message.
+    An app that appears in it was seen while the engine was built, whether or not anyone meant to tune for
+    it, and cannot say anything about apps the engine has never met."""
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    text = []
+    try:
+        files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True, check=False).stdout.split()
+        for f in files:
+            try:
+                text.append((root / f).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+        text.append(subprocess.run(["git", "log", "--format=%B"], cwd=root, capture_output=True, text=True, check=False).stdout)
+    except OSError:
+        pass
+    return "\n".join(text).casefold()
+
+
+def _toolkit(app_path: str) -> str:
+    """What the app is built with, as its bundle says: the frameworks it ships, the keys in its Info.plist.
+    No app is named; a kind is read off the bundle the way a person would read a label."""
+    base = Path(app_path)
+    info = _info_plist(app_path)
+    frameworks = {p.name for p in (base / "Contents" / "Frameworks").glob("*")} if (base / "Contents" / "Frameworks").is_dir() else set()
+    if any(f.startswith("Electron") for f in frameworks):
+        return "electron"
+    if any(f.startswith("Qt") for f in frameworks):
+        return "qt"
+    bundled_jdk = any((base / "Contents" / d).is_dir() and list((base / "Contents" / d).glob("*.jdk")) for d in ("PlugIns", "Java"))
+    if "JVMOptions" in info or "JVMMainClassName" in info or bundled_jdk:
+        return "java"
+    if info.get("LSRequiresIPhoneOS"):
+        return "ios"
+    if info.get("UIDeviceFamily"):
+        return "catalyst"
+    return "appkit"
+
+
+def _opens_text(app_path: str) -> bool:
+    info = _info_plist(app_path)
+    kinds = {str(x).casefold() for t in info.get("CFBundleDocumentTypes") or []
+             for x in (t.get("LSItemContentTypes") or []) + (t.get("CFBundleTypeExtensions") or [])}
+    return bool(kinds & {"public.plain-text", "public.text", "public.utf8-plain-text", "txt"})
+
+
+def sampled_tasks(engine: Engine, suite: dict[str, Any], installed: list[dict[str, Any]] | None = None,
+                  named: str | None = None) -> list[dict[str, Any]]:
+    """Tasks the suite's templates make of apps this repository has never named, drawn from what is installed.
+
+    A suite that names apps is a suite the engine was built beside, and a number on it says how well the
+    engine does on apps its authors looked at. Generalisation is the other number: apps nobody here ever
+    mentioned, chosen by the Mac, grouped by what they are built with. The engine sees a goal naming an
+    app, as it would from any user; it never sees the list.
+    """
+    import random
+    from .observe import installed_apps
+
+    conf = suite.get("sample") or {}
+    named = _named_anywhere() if named is None else named
+    apps = installed if installed is not None else installed_apps(engine.cfg, engine.helper)
+    fresh = [a for a in apps if a.get("bundle_id") and a.get("path") and a.get("name")
+             and str(a["bundle_id"]).casefold() not in named
+             and not re.search(r"(?<!\w)" + re.escape(str(a["name"]).casefold()) + r"(?!\w)", named)]
+    for a in fresh:
+        a["toolkit"] = _toolkit(a["path"])
+    rng = random.Random(int(conf.get("seed", 0)))
+    rng.shuffle(fresh)
+    # spread the draw over toolkits: a Mac with forty AppKit apps and two Electron ones should still show both
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for a in fresh:
+        by_kind.setdefault(a["toolkit"], []).append(a)
+    drawn: list[dict[str, Any]] = []
+    want = int(conf.get("apps", 6))
+    while len(drawn) < want and any(by_kind.values()):
+        for kind in sorted(by_kind):
+            if by_kind[kind] and len(drawn) < want:
+                drawn.append(by_kind[kind].pop(0))
+    out = []
+    for tpl in suite.get("templates") or []:
+        for a in drawn:
+            if tpl.get("needs") == "text_documents" and not _opens_text(a["path"]):
+                continue
+            info = _info_plist(a["path"])
+            version = str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "")
+            if "{app_version}" in yaml.safe_dump(tpl, allow_unicode=True) and not version:
+                continue
+            def fill(v: Any) -> Any:
+                if isinstance(v, str):
+                    return v.replace("{app}", str(a["name"])).replace("{app_version}", version)
+                if isinstance(v, list):
+                    return [fill(x) for x in v]
+                if isinstance(v, dict):
+                    return {k: fill(x) for k, x in v.items()}
+                return v
+            task = {k: fill(v) for k, v in tpl.items() if k != "needs"}
+            task["id"] = f"{tpl['id']}--{a['bundle_id']}"
+            task["app"] = a["bundle_id"]
+            task["category"] = a["toolkit"]
+            out.append(task)
+    return out
+
+
 def _locked(engine: Engine) -> bool:
     return bool(engine.helper.call("session.state").get("screen_locked"))
 
@@ -393,6 +511,10 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
         from .appmodel import AppModels
         engine.models = AppModels(engine.cfg)
         engine.cache["appmodels"] = engine.models
+    if suite.get("templates"):
+        suite = {**suite, "tasks": sampled_tasks(engine, suite)}
+        progress(f"sampled {len(suite['tasks'])} tasks on apps this repository has never named: "
+                 + ", ".join(sorted({t['id'].split('--', 1)[1] + ' (' + t['category'] + ')' for t in suite['tasks']})))
     tasks = [t for t in suite.get("tasks", []) if not only or t["id"] in only]
     runs = int(repeat or suite.get("repeat", 1))
     conf = engine.cfg.docs["config"].setdefault("engine", {})
@@ -519,6 +641,8 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             cleanup(engine, t)
             progress(f"   ERROR {res['reason'][:120]}")
             return base | _error_row(t, res["reason"][:120])
+        if "app_windows_grew" in (t.get("check") or {}):
+            res["_windows_grew"] = {x["pid"]: x["windows"] for x in _leftovers(engine, before)}
         seen_ok, why = check(engine, t, res)
         lap("check")
         status_ok = res.get("status") in expected

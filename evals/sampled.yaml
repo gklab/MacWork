@@ -1,0 +1,38 @@
+# Generalisation, measured rather than claimed.
+#
+# Every other suite names its apps, and a number on a suite the engine was built beside says how well it
+# does on apps its authors looked at. This one names none. At run time the harness draws apps this
+# repository has never mentioned — not in a file, not in a commit message — from what is installed on the
+# Mac it runs on, spread across what they are built with (AppKit, Catalyst, Electron, Qt, Java, iOS), and
+# makes these templates of them. The engine is given a goal naming an app, as it would be by any user; it
+# never sees the draw. The draw is deterministic for one Mac (`seed`), so two runs there pair up.
+#
+# Templates may not assume anything about the app but what the Mac says of it: a template that needs an
+# app to open text files is given only apps whose Info.plist says they do; a version is the bundle's own.
+# Checks are ones any app can meet: a window of the app that was not there before, a file name in a window
+# title, the bundle's version in the answer.
+#
+# Harmless: files live in the sandbox; nothing is saved, sent, bought, installed or deleted.
+settle_s: 0.8
+fresh: true
+sandbox: true
+sample:
+  apps: 6
+  seed: 2026
+templates:
+  - id: settings-window
+    goal: 打开 {app} 的设置窗口
+    check: {app_windows_grew: true}
+    cleanup: [{activate: true, key: "cmd+w"}]
+  - id: version-in-about
+    goal: 看看 {app} 的版本号是多少
+    check: {answer_contains: ["{app_version}"]}
+    cleanup: [{activate: true, key: "cmd+w"}]
+  - id: open-a-text-file
+    needs: text_documents
+    goal: 用 {app} 打开 {eval_dir}/sample.txt
+    fixtures:
+      - path: sample.txt
+        text: "a plain text file, for whichever app says it opens one\n"
+    check: {window_contains: ["sample"]}
+    cleanup: [{activate: true, key: "cmd+w"}]

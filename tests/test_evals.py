@@ -20,7 +20,8 @@ SUITES = sorted(pathlib.Path("evals").glob("*.yaml"))
 
 # what check() and cleanup() in evals.py actually read
 CHECKS = {"screen_contains", "window_contains", "frontmost", "screen_excludes", "trace_excludes",
-          "output_contains", "answer_contains", "file_exists", "file_missing", "file_contains", "expect_status"}
+          "output_contains", "answer_contains", "file_exists", "file_missing", "file_contains", "expect_status",
+          "app_windows_grew"}
 TASK_KEYS = {"id", "app", "check_app", "goal", "inputs", "setup", "cleanup", "check", "fixtures",
              "accept_blocked", "repeat", "skip", "why",
              "category"}      # documentary: the harness ignores it, the suites group by it
@@ -262,3 +263,71 @@ def test_the_headline_counts_runs_and_tasks_that_count(tmp_path):
 def test_today_is_something_the_harness_knows():
     import time as _time
     assert evals._sub({"check": {"answer_contains": ["{day}"]}}, "")["check"]["answer_contains"] == [str(_time.localtime().tm_mday)]
+
+
+# --------------------------------------------------------------------- apps this repository has never named
+def _bundle(root, name, bundle_id, version="3.1", frameworks=(), plist_extra=None, opens=()):
+    import plistlib
+    app = root / f"{name}.app"
+    (app / "Contents" / "Frameworks").mkdir(parents=True)
+    for f in frameworks:
+        (app / "Contents" / "Frameworks" / f).mkdir()
+    info = {"CFBundleIdentifier": bundle_id, "CFBundleName": name, "CFBundleShortVersionString": version, **(plist_extra or {})}
+    if opens:
+        info["CFBundleDocumentTypes"] = [{"LSItemContentTypes": list(opens)}]
+    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
+    return {"name": name, "bundle_id": bundle_id, "path": str(app)}
+
+
+def test_a_toolkit_is_read_off_the_bundle_not_off_a_name(tmp_path):
+    assert evals._toolkit(_bundle(tmp_path, "Chat", "x.chat", frameworks=["Electron Framework.framework"])["path"]) == "electron"
+    assert evals._toolkit(_bundle(tmp_path, "Draw", "x.draw", frameworks=["QtCore.framework"])["path"]) == "qt"
+    assert evals._toolkit(_bundle(tmp_path, "Ide", "x.ide", plist_extra={"JVMOptions": {}})["path"]) == "java"
+    assert evals._toolkit(_bundle(tmp_path, "Phone", "x.phone", plist_extra={"LSRequiresIPhoneOS": True})["path"]) == "ios"
+    assert evals._toolkit(_bundle(tmp_path, "Pad", "x.pad", plist_extra={"UIDeviceFamily": [2]})["path"]) == "catalyst"
+    assert evals._toolkit(_bundle(tmp_path, "Plain", "x.plain")["path"]) == "appkit"
+
+
+def test_the_draw_takes_only_apps_never_named_and_spreads_it_over_toolkits(tmp_path):
+    installed = [_bundle(tmp_path, "Seen", "com.example.seen"),
+                 _bundle(tmp_path, "Chess", "com.example.chess"),          # a name that appears in the text
+                 _bundle(tmp_path, "Alpha", "com.example.alpha", version="1.0", opens=["public.plain-text"]),
+                 _bundle(tmp_path, "Beta", "com.example.beta", version="2.0"),
+                 _bundle(tmp_path, "Gamma", "com.example.gamma", version="", frameworks=["Electron Framework.framework"]),
+                 _bundle(tmp_path, "Delta", "com.example.delta", version="4.0", frameworks=["QtGui.framework"])]
+    named = "the suite opened com.example.seen once; a chess move; nothing else".casefold()
+    suite = {"sample": {"apps": 3, "seed": 1},
+             "templates": [{"id": "settings-window", "goal": "open the settings of {app}", "check": {"app_windows_grew": True}},
+                           {"id": "version-in-about", "goal": "which version is {app}?", "check": {"answer_contains": ["{app_version}"]}},
+                           {"id": "open-a-text-file", "needs": "text_documents", "goal": "open {eval_dir}/s.txt with {app}",
+                            "fixtures": [{"path": "s.txt", "text": "x"}], "check": {"window_contains": ["s"]}}]}
+    tasks = evals.sampled_tasks(None, suite, installed=installed, named=named)
+    drawn = {t["app"] for t in tasks}
+    assert "com.example.seen" not in drawn and "com.example.chess" not in drawn, "named anywhere: not a test of anything unseen"
+    assert len(drawn) == 3 and {t["category"] for t in tasks} == {"appkit", "electron", "qt"}, "one of each kind before a second of any"
+    by_id = {t["id"]: t for t in tasks}
+    versions = [t for t in tasks if t["id"].startswith("version-in-about")]
+    assert all("{app_version}" not in t["check"]["answer_contains"][0] for t in versions)
+    assert not any(t["app"] == "com.example.gamma" for t in versions), "a bundle with no version cannot be asked for one"
+    texts = [t for t in tasks if t["id"].startswith("open-a-text-file")]
+    assert {t["app"] for t in texts} <= {"com.example.alpha"}, "only an app whose bundle says it opens text"
+    assert all("{app}" not in t["goal"] and "needs" not in t for t in tasks)
+    assert tasks == evals.sampled_tasks(None, suite, installed=installed, named=named), "deterministic on one Mac"
+
+
+def test_a_new_window_of_the_app_is_a_check_any_app_can_meet(tmp_path):
+    from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+    from macwork.engine import Engine
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = {"app": "com.apple.TextEdit", "check": {"app_windows_grew": True}}
+    assert evals.check(eng, task, {"status": "done", "_windows_grew": {42: 1}})[0]
+    ok, why = evals.check(eng, task, {"status": "done", "_windows_grew": {7: 1}})
+    assert not ok and "no new window" in why
+
+
+def test_the_sampled_suite_parses_and_its_templates_are_shaped_like_tasks():
+    doc = yaml.safe_load(pathlib.Path("evals/sampled.yaml").read_text(encoding="utf-8"))
+    assert doc["sample"]["apps"] >= 3 and "seed" in doc["sample"]
+    for tpl in doc["templates"]:
+        assert set(tpl) - {"needs"} <= TASK_KEYS and tpl["id"] and "{app}" in tpl["goal"]
+        assert set(tpl.get("check") or {}) <= CHECKS
