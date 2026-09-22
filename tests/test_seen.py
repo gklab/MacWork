@@ -116,7 +116,7 @@ def test_a_window_that_moves_by_itself_is_no_witness(tmp_path):
 
 
 def test_a_picture_that_changed_where_no_text_did_is_read_by_sight_at_once(tmp_path):
-    """A Qt app's 关于 panel: "the picture changed (3% of it, at the bottom left); no text on screen did",
+    """A Qt app's About panel: "the picture changed (3% of it, at the bottom left); no text on screen did",
     and the engine had nothing to read it with. What the tree cannot say, the screen can."""
     from macwork.model import Step
     from tests.english_mac import EnglishMac
