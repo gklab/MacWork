@@ -539,6 +539,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             engine.helper.call("apps.quit", pid=harness_pid, timeout_ms=3000, timeout=15)
         lap("sweep")
         row = base | {"status": res.get("status"), "passed": ok, "valid": True, "why": why, "reason": res.get("reason", ""),
+                      "cause": res.get("cause"),      # why it ended, for a program (budget, screen_locked, …)
                       "steps": len(res.get("steps", [])), "seconds": seconds, "decider_calls": res.get("decider", {}).get("calls", 0),
                       "cost_usd": max(0.0, res.get("decider", {}).get("cost_usd", 0.0)), "planned": bool(res.get("plan")),
                       "decider": answering,
