@@ -101,6 +101,10 @@ observe:
     submit_roles: [AXTextField, AXComboBox, AXSearchField]   # single-line fields also get "type and press Return"
     range_roles: [AXTextArea]      # documents: select a part of the text, or put the cursor at the end
     read_roles: [AXStaticText, AXHeading, AXCell, AXLink]
+    # Content, whose name is its identity: a row's place changes with every sort, a link's with every page.
+    # Everything else — buttons, fields, tabs, toolbars — gets an identity from where it sits when the app
+    # gives it no identifier, so a relabelled control (another language, another state) is the same control
+    content_roles: [AXRow, AXCell, AXImage, AXStaticText, AXLink, AXHeading, AXList, AXOutline, AXTable, AXWebArea, AXGroup, AXMenuItem]
     field_chars: 300             # how much of a text field's contents is shown as evidence
     screen_text_chars: 1500
   apps:

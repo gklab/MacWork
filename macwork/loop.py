@@ -246,7 +246,7 @@ class LoopMixin:
         looks = sight.compare(pictures.get(here), glance, int(self.cfg.get("observe.sight.tolerance", 2)))
         if looks and looks["cells"]:
             return
-        task.memory.retracted.setdefault(here, []).append(left[-1].action)
+        task.memory.retracted.setdefault(here, []).append(left[-1].handle)
         log.info("back on a screen already acted from: %r was chosen here and did not hold", left[-1].action[:48])
 
     def _retracted_here(self, task: Task, here: str) -> list[str]:
@@ -347,27 +347,29 @@ class LoopMixin:
         if stuck:
             self._consult(task, ctx, obs, f"{same} actions in a row were taken from this screen and it has not changed", obs.affordances)
         affs = [a for a in obs.affordances + self._suggested(task, obs) if not self._denied(a, ctx.app)]
-        for label, times in self._taken_here(task, sig).items():           # done from this very screen already
+        for handle, times in self._taken_here(task, sig).items():          # done from this very screen already
             if times >= int(self.cfg.get("engine.max_repeats", 4)):         # enough of that one: it has had its turns
-                task.memory.no_effect.add(f"{sig}|{label}")
+                task.memory.no_effect.add(f"{sig}|{handle}")
         # …and the shape a stuck task really has is not "again" but "again, and back where I was": a real run
         # opened the same 「文件 ▸ 打开…」 six times, escaping each time, and every escape left a screen just
         # different enough that a per-screen count started over. What matters is that the action keeps leading
         # somewhere this task has already been, so that is what is counted — wherever it is taken from.
         going_nowhere = int(self.cfg.get("engine.max_circles", 3))
-        for label in set(task.memory.circles):
-            if task.memory.circles.count(label) >= going_nowhere:
-                task.memory.declined.add(label)
+        for handle in set(task.memory.circles):
+            if task.memory.circles.count(handle) >= going_nowhere:
+                task.memory.declined.add(handle)
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
-        dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
-        dead_here |= {a.label for a in affs if a.label in self._withdrawn_here(task, here)}
-        dead_here |= {a.label for a in affs if task.memory.failed.get(f"{sig}|{a.label}") == here}   # failed, and nothing has changed since
+        # keyed on what an action *is* (its identity, else its steady name), not on what it says right now
+        withdrawn = self._withdrawn_here(task, here)
+        dead_here = {a.label for a in affs if f"{sig}|{a.handle()}" in task.memory.no_effect}
+        dead_here |= {a.label for a in affs if a.handle() in withdrawn}
+        dead_here |= {a.label for a in affs if task.memory.failed.get(f"{sig}|{a.handle()}") == here}   # failed, and nothing has changed since
         # Not offered because the goal never asked for it, or it only led in circles. Keyed the way approvals
         # are — identity and where it sits — for a floor action: keyed on the label alone, one 「OK」 the goal
         # never asked for took every 「OK」 in every app out of the task. Circles and leaving for another app
         # are about the action wherever it is taken from, and stay keyed on the label.
         withheld = [a for a in affs if a.label not in dead_here
-                    and (a.label in task.memory.declined or self.approval_key(a) in task.memory.declined)]
+                    and (a.handle() in task.memory.declined or self.approval_key(a) in task.memory.declined)]
         affs = [a for a in affs if a.label not in dead_here and a not in withheld]   # facts: did nothing / not asked for
         # An action that is complete is not an option. A real run read a file, was handed all of it, and was
         # offered "read the text of" the same file on each of the next nine steps — and took it three times.
@@ -387,7 +389,7 @@ class LoopMixin:
             look_note = f"{left_out} more actions did not fit and are not listed"
         options = {"done": "done: the goal is accomplished, stop"} | \
             {a.id: a.describe() + (" — suggested by the planner" if a.label in suggested else "")
-             + (" — chosen from this exact screen before, and the task then came back here" if a.label in took_back else "")
+             + (" — chosen from this exact screen before, and the task then came back here" if a.handle() in took_back else "")
              for a in flat}
         groups = {f"g{i}": k for i, k in enumerate(folded)}
         options |= {g: folded[k][0] for g, k in groups.items()}
@@ -442,7 +444,7 @@ class LoopMixin:
         if dead_here:
             state["tried_here_without_effect"] = sorted(dead_here)[:20]
         if sig in task.memory.screens_seen and task.steps and task.steps[-1].before and task.steps[-1].before.split(":")[0] != sig:
-            task.memory.circles.append(task.steps[-1].action)   # the last step only led back to a screen already seen
+            task.memory.circles.append(task.steps[-1].handle)   # the last step only led back to a screen already seen
         task.memory.screens_seen.add(sig)
         if sig not in task.memory.screen_notes:          # every distinct screen, briefly: the evidence for a final diagnosis
             task.memory.screen_notes[sig] = f"{state['app']} — {obs.window or '(no window)'}: {obs.screen_text[:200]}"
@@ -450,7 +452,8 @@ class LoopMixin:
         if left:     # on screen, and not this task's to answer: the user has been told
             state["left_for_the_user_to_answer"] = left[:4]
         if task.memory.circles:
-            state["went_in_circles"] = task.memory.circles[-6:]
+            names = {s.handle: s.action for s in task.steps}      # the decider reads names; the memory is keyed on handles
+            state["went_in_circles"] = [names.get(h, h) for h in task.memory.circles[-6:]]
         if task.outputs.get("planner_thinks_blocked"):
             state["planner_thinks"] = f"only the user can continue: {task.outputs['planner_thinks_blocked'][:200]} — an opinion, to weigh against the screen"
         last, run = self._run_length(task)
@@ -518,7 +521,7 @@ class LoopMixin:
             # stuck shape this rule exists for — open a dialog, escape, open it again — changes the picture
             # every time.)
             if st.before and st.before.split(":")[0] == sig and not (st.unseen and (st.picture is None or st.picture > 0)):
-                out[st.action] = out.get(st.action, 0) + 1
+                out[st.handle] = out.get(st.handle, 0) + 1
         return out
 
     def _history(self, task: Task) -> list[str]:
@@ -604,7 +607,7 @@ class LoopMixin:
         if last is not None and "progress" in d:
             last.decision["progress_after"] = d["progress"]   # how a step turned out is only known on the next look
         if last and last.before and d.get("progress", 1.0) < float(th.get("progress_bad", 0.2)):
-            task.memory.no_effect.add(f"{last.before.split(':')[0]}|{last.action}")   # the decider saw no effect: a fact for that screen
+            task.memory.no_effect.add(f"{last.before.split(':')[0]}|{last.handle}")   # the decider saw no effect: a fact for that screen
 
         ranked = lambda: [k for k, _p in sorted(probs.items(), key=lambda kv: -kv[1]) if k in look.by_id]  # noqa: E731
         if key in look.groups:                    # see inside a group first, like opening a menu to read it
@@ -915,7 +918,7 @@ class LoopMixin:
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
-        task.prev = {"sig": sig, "label": chosen.label, "ok": out.ok, "events": events, "app": ctx.app,
+        task.prev = {"sig": sig, "label": chosen.label, "handle": chosen.handle(), "ok": out.ok, "events": events, "app": ctx.app,
                      "screen": obs.screen_text if obs else None, "window": obs.window if obs else None,
                      "unseen": bool(out.unseen), "glance": (obs.notes.get("glance") if obs else None)}
         task.updated = time.time()
@@ -1004,7 +1007,7 @@ class LoopMixin:
         changed = sig != prev["sig"] or bool(events) or (prev.get("screen") is not None and prev["screen"] != obs.screen_text)
         changed = changed or bool(seen and seen["cells"])      # a person would say it changed: they saw it change
         self.models.record(prev.get("app"), prev["sig"], prev["label"], sig, bool(prev.get("ok")), changed)
-        key = f"{prev['sig']}|{prev['label']}"
+        key = f"{prev['sig']}|{prev.get('handle') or prev['label']}"
         if not prev.get("ok"):
             # It could not be carried out — the app was busy, the element went away, a wait timed out. That
             # says something about the moment, not about the action, and this used to remove the action from

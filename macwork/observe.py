@@ -253,6 +253,35 @@ def _identity(ident: str, role: str | None, subrole: str | None, label: str = ""
     return "|".join(x for x in ("ax", role or "", subrole or "", ident) if x) if ident else ""
 
 
+def _structural_identity(n: dict[str, Any], by_ref: dict[str, dict[str, Any]], kids: dict[str, list[str]],
+                         content_roles: set[str]) -> str:
+    """An identity from where a control sits, for controls the app gave no identifier.
+
+    Most window controls carry no Accessibility identifier, and there the label was the only identity —
+    which is the interface language, and what the control happens to show. Where the control *is* does not
+    change with either: the chain of roles from the window down to it, and its place among siblings of
+    the same role at each level. Two identical toolbars give two different paths; a relabelled button gives
+    the same one. Content — rows, cells, images, links, text — is left out: a row's place changes with every
+    sort and its text is what it is, so its name stays its identity.
+    """
+    role = n.get("role") or ""
+    if not role or role in content_roles:
+        return ""
+    path: list[str] = []
+    ref, hops = n.get("ref"), 0
+    while ref and ref in by_ref and hops < 40:
+        node = by_ref[ref]
+        r, parent = node.get("role") or "", node.get("parent")
+        if r in content_roles:
+            return ""          # inside content (a button in a row): the row's place is not stable, so neither is this
+        same = [c for c in kids.get(parent, [])] if parent else [ref]
+        index = [by_ref[c].get("role") for c in same if c in by_ref].count(r) and \
+            [c for c in same if c in by_ref and by_ref[c].get("role") == r].index(ref)
+        path.append(f"{r}[{index}]")
+        ref, hops = parent, hops + 1
+    return "axpath|" + "/".join(reversed(path))
+
+
 def _label(n: dict[str, Any]) -> str:
     for k in ("title", "desc", "value", "placeholder", "help"):
         v = n.get(k)
@@ -298,7 +327,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
     select_roles = set(wcfg.get("select_roles") or [])
     range_roles = set(wcfg.get("range_roles") or [])
     by_ref, kids = _tree(nodes)
-    select_roles = set(wcfg.get("select_roles") or [])
+    content_roles = set(wcfg.get("content_roles") or [])
     seen_text = set(obs.screen_text.splitlines())
     texts: list[str] = []
 
@@ -324,7 +353,8 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         rd = n.get("rdesc") or role.removeprefix("AX").lower()
         if n.get("enabled", True) is False:
             continue
-        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), _label(n))   # "" when the app gives none
+        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), _label(n)) \
+            or _structural_identity(n, by_ref, kids, content_roles)   # "" for content, whose name is its identity
         if n["ref"] in in_row and (role in text_roles or role in read_roles or role in ("AXCell", "AXImage", "AXGroup")):
             continue
         ctx_text = _context_of(n, by_ref) or where

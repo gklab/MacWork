@@ -56,6 +56,12 @@ class Affordance:
         """What this action is called, without what it happens to show right now."""
         return steady(self.label)
 
+    def handle(self) -> str:
+        """What the engine keys its memory on: the identity where there is one, else the name without its
+        momentary state. Memory was keyed on the full label, so a field that read 「type into Search (now:
+        hello)」 was a new action after every keystroke, and nothing remembered about it ever matched."""
+        return self.key or self.name()
+
     def identity(self) -> str:
         """What this action *is*, as independently of the interface language as the Mac allows.
 
@@ -203,6 +209,11 @@ class Step:
     effect: str = ""                             # the floor's category for it: navigate | enter | delete | send | …
                                                  # "" = nobody judged it. This is what `revert` reads to know
                                                  # which steps changed something, rather than judging again
+
+    @property
+    def handle(self) -> str:
+        """The same as `Affordance.handle()`, for a step already taken."""
+        return self.key or steady(self.action)
 
 
 TERMINAL = {"done", "failed", "cancelled"}
