@@ -24,14 +24,14 @@ from .planner import Planning
 from .privacy import RedactionError
 from .act import Outcome
 from . import sight
-from .model import Affordance, Observation, Step, Task
+from .model import Affordance, Change, Observation, Step, Task
 from .observe import Ctx, arrange, get_provider, group_of, observe
 from .skills import Skills
 
 log = logging.getLogger(__name__)
 
 
-NOTHING_CHANGED = "nothing on screen changed"
+from .model import NOTHING_CHANGED  # noqa: E402  (kept importable from here: the history and its tests name it)
 
 
 def _visible(line: str) -> str:
@@ -41,45 +41,33 @@ def _visible(line: str) -> str:
     return "".join(ch for ch in line if unicodedata.category(ch) != "Cf").strip()
 
 
-def what_changed(before_text: str, after_text: str, before_window: str | None = None, after_window: str | None = None,
-                 before_app: str | None = None, after_app: str | None = None, limit: int = 200,
-                 picture: dict[str, Any] | None = None) -> str:
-    """What the last action did to the screen, as a fact the decider can read.
+def change_between(before_text: str, after_text: str, before_window: str | None = None, after_window: str | None = None,
+                   before_app: str | None = None, after_app: str | None = None,
+                   picture: dict[str, Any] | None = None) -> Change:
+    """What the last action did to the screen, as facts (see `model.Change`).
 
     The history said `button 「2」 -> ok`, and ok means the button went down — not that the display went
     from 12× to 12×2, which is the one thing that would have shown the mistake. The engine holds the screen
     before and the screen after at the moment it looks again; this is only the subtraction.
 
     Lines, not characters: a screen is a set of things that are there, and what an action does is make
-    some of them appear, go away or turn into something else. One line gone and one new is said as the
-    first *becoming* the second, because that is what it is.
+    some of them appear, go away or turn into something else.
     """
     def lines(text: str) -> list[str]:
         return list(dict.fromkeys(v for v in (_visible(x) for x in (text or "").split("\n")) if v))
 
-    def cut(x: str, n: int = 48) -> str:
-        return x if len(x) <= n else x[: n - 1] + "…"
-
     before, after = lines(before_text), lines(after_text)
-    gone = [x for x in before if x not in after]
-    new = [x for x in after if x not in before]
-    parts: list[str] = []
-    if after_app and before_app and after_app != before_app:
-        parts.append(f"now in {after_app}")
-    if (after_window or "") != (before_window or "") and (before_window or after_window):
-        parts.append(f"window 「{cut(before_window or '(none)', 30)}」 → 「{cut(after_window or '(none)', 30)}」")
-    if len(gone) == 1 and len(new) == 1:
-        parts.append(f"「{cut(gone[0])}」 became 「{cut(new[0])}」")
-    else:
-        for name, items in (("appeared", new), ("gone", gone)):
-            if items:
-                shown = "; ".join(cut(x) for x in items[:3])
-                parts.append(f"{name}: {shown}" + (f" (+{len(items) - 3} more)" if len(items) > 3 else ""))
-    if not parts and picture and picture["cells"]:
-        # no text the engine can read changed, and something did: what a person would have seen
-        return f"{sight.describe(picture)}; no text on screen did"
-    out = ", ".join(parts) or NOTHING_CHANGED
-    return out if len(out) <= limit else out[: limit - 1] + "…"
+    return Change(app_before=before_app, app_after=after_app, window_before=before_window, window_after=after_window,
+                  appeared=[x for x in after if x not in before], gone=[x for x in before if x not in after],
+                  picture_share=(picture["share"] if picture and picture.get("cells") else None),
+                  picture_where=(picture.get("where") if picture and picture.get("cells") else None))
+
+
+def what_changed(before_text: str, after_text: str, before_window: str | None = None, after_window: str | None = None,
+                 before_app: str | None = None, after_app: str | None = None, limit: int = 200,
+                 picture: dict[str, Any] | None = None) -> str:
+    """The sentence for the history. The facts are `change_between`; this only renders them."""
+    return change_between(before_text, after_text, before_window, after_window, before_app, after_app, picture).describe(limit)
 
 
 def exact_state(sig: str, screen_text: str) -> str:
@@ -318,7 +306,7 @@ class LoopMixin:
         dead_before = set(task.memory.no_effect)
         self._learn_from_prev(task, ctx.app, sig, obs)
         last = task.steps[-1] if task.steps else None
-        if last is not None and last.outcome.endswith("no text on screen did") and ctx.app and obs.window is not None \
+        if last is not None and last.change.get("picture_only") and ctx.app and obs.window is not None \
                 and str(self.cfg.get("observe.vision.mode", "auto")) != "never":
             # The last action changed the picture and not a word of the tree: an About panel drawn by the
             # app itself, a popover the toolkit does not describe. A real task opened one (a Qt app's
@@ -1011,9 +999,9 @@ class LoopMixin:
             task.steps[-1].picture = round(seen["share"], 4)
         if prev and task.steps and prev.get("screen") is not None and not task.steps[-1].outcome:
             # the screen before and the screen after are both in hand exactly here, and nowhere else
-            task.steps[-1].outcome = what_changed(
-                prev.get("screen") or "", obs.screen_text, prev.get("window"), obs.window,
-                (prev.get("app") or {}).get("name"), (app or {}).get("name"), picture=seen)
+            change = change_between(prev.get("screen") or "", obs.screen_text, prev.get("window"), obs.window,
+                                    (prev.get("app") or {}).get("name"), (app or {}).get("name"), picture=seen)
+            task.steps[-1].outcome, task.steps[-1].change = change.describe(), change.as_dict()
         if not prev or not prev.get("sig"):
             return
         events = [x for x in prev.get("events", []) if not x.startswith("wait failed")]

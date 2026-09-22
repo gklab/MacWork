@@ -134,7 +134,8 @@ def test_a_picture_that_changed_where_no_text_did_is_read_by_sight_at_once(tmp_p
     eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "vision"]}}), helper=h, decider=ScriptedDecider([]))
     task = eng._new_task("which version is this?", {}, None)
     task.steps.append(Step(n=0, action="menu Help ▸ About", ok=True, events=[],
-                           outcome="the picture in the window changed (3% of it, at the bottom left); no text on screen did"))
+                           outcome="the picture in the window changed (3% of it, at the bottom left); no text on screen did",
+                           change={"picture_only": True, "picture_share": 0.03, "picture_where": "at the bottom left"}))
     look = eng._look(task, eng._step_context(task))
     assert h.did("screen.ocr"), "the screen was read on this very look, not a step later"
     assert "10.9.12865" in look.obs.screen_text

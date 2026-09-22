@@ -16,7 +16,8 @@ again. This is only the subtraction.
 
 import pytest
 
-from macwork.loop import what_changed
+from macwork.loop import NOTHING_CHANGED, what_changed
+from macwork.model import Step
 
 
 def changed(before, after, **kw):
@@ -128,3 +129,32 @@ def test_an_app_that_reacted_without_changing_any_text_is_not_said_to_have_done_
     task.steps.append(Step(0, "press it", ok=True, events=["AXValueChanged"], outcome=NOTHING_CHANGED))
     line = eng._history(task)[0]
     assert "AXValueChanged" in line and "no text on screen changed" in line
+
+
+# --------------------------------------------------------------------------- facts first, the sentence second
+
+def test_the_change_is_facts_and_the_sentence_is_rendered_from_them():
+    """The engine read its own sentence back (`endswith("no text on screen did")`) to know what it had said."""
+    from macwork.loop import change_between
+    c = change_between("‎12‎×", "‎12‎×‎2", "Calculator", "Calculator")
+    assert c.appeared == ["12×2"] and c.gone == ["12×"] and c.text_changed and not c.window_changed and not c.nothing
+    assert c.describe() == what_changed("‎12‎×", "‎12‎×‎2", "Calculator", "Calculator")
+
+    drawn = change_between("Home", "Home", "w", "w", picture={"cells": [3], "share": 0.03, "where": "at the bottom left"})
+    assert drawn.picture_only and not drawn.text_changed and drawn.as_dict()["picture_only"] is True
+    assert drawn.describe().startswith("the picture in the window changed (3% of it, at the bottom left)")
+
+    still = change_between("Home", "Home", "w", "w", picture={"cells": [], "share": 0.0, "where": ""})
+    assert still.nothing and still.describe() == NOTHING_CHANGED and still.as_dict()["nothing"] is True
+
+
+def test_the_facts_survive_a_restart_with_the_step():
+    from macwork.loop import change_between
+    from macwork.model import Task
+    from macwork.store import dump, load
+    task = Task(goal="x")
+    c = change_between("a", "b", "w1", "w2")
+    task.steps.append(Step(0, "press", outcome=c.describe(), change=c.as_dict()))
+    back = load(dump(task))
+    assert back.steps[0].change["appeared"] == ["b"] and back.steps[0].change["window_before"] == "w1"
+    assert back.steps[0].outcome == "window 「w1」 → 「w2」, 「a」 became 「b」"

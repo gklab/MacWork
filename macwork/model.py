@@ -97,6 +97,80 @@ class Observation:
 
 
 @dataclass
+class Change:
+    """What the last action did to the screen, as facts. `describe()` is the sentence the decider reads.
+
+    It was only ever the sentence, and the engine read the sentence back — `endswith("no text on screen
+    did")` — to know what it had itself just said. Facts here, prose rendered from them; nothing parses the
+    prose. Stored on the step as a plain dict (`Step.change`) so it survives a restart like everything else.
+    """
+    app_before: str | None = None
+    app_after: str | None = None
+    window_before: str | None = None
+    window_after: str | None = None
+    appeared: list[str] = field(default_factory=list)      # lines of screen text that are there now and were not
+    gone: list[str] = field(default_factory=list)          # …and the reverse
+    picture_share: float | None = None                     # of the window's picture, when a glance could compare
+    picture_where: str | None = None
+
+    @property
+    def app_changed(self) -> bool:
+        return bool(self.app_after and self.app_before and self.app_after != self.app_before)
+
+    @property
+    def window_changed(self) -> bool:
+        return (self.window_after or "") != (self.window_before or "") and bool(self.window_before or self.window_after)
+
+    @property
+    def text_changed(self) -> bool:
+        return bool(self.appeared or self.gone)
+
+    @property
+    def picture_changed(self) -> bool:
+        return bool(self.picture_share)
+
+    @property
+    def picture_only(self) -> bool:
+        """Something changed that no text or window title shows: what the tree cannot say, the screen can."""
+        return self.picture_changed and not (self.text_changed or self.window_changed or self.app_changed)
+
+    @property
+    def nothing(self) -> bool:
+        return not (self.text_changed or self.window_changed or self.app_changed or self.picture_changed)
+
+    def describe(self, limit: int = 200) -> str:
+        def cut(x: str, n: int = 48) -> str:
+            return x if len(x) <= n else x[: n - 1] + "…"
+        parts: list[str] = []
+        if self.app_changed:
+            parts.append(f"now in {self.app_after}")
+        if self.window_changed:
+            parts.append(f"window 「{cut(self.window_before or '(none)', 30)}」 → 「{cut(self.window_after or '(none)', 30)}」")
+        if len(self.gone) == 1 and len(self.appeared) == 1:
+            parts.append(f"「{cut(self.gone[0])}」 became 「{cut(self.appeared[0])}」")
+        else:
+            for name, items in (("appeared", self.appeared), ("gone", self.gone)):
+                if items:
+                    shown = "; ".join(cut(x) for x in items[:3])
+                    parts.append(f"{name}: {shown}" + (f" (+{len(items) - 3} more)" if len(items) > 3 else ""))
+        if not parts and self.picture_changed:
+            share = (self.picture_share or 0.0) * 100
+            amount = f"{share:.0f}%" if share >= 1 else "under 1%"
+            return f"the picture in the window changed ({amount} of it, {self.picture_where}); no text on screen did"
+        out = ", ".join(parts) or NOTHING_CHANGED
+        return out if len(out) <= limit else out[: limit - 1] + "…"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"app_before": self.app_before, "app_after": self.app_after, "window_before": self.window_before,
+                "window_after": self.window_after, "appeared": list(self.appeared), "gone": list(self.gone),
+                "picture_share": self.picture_share, "picture_where": self.picture_where,
+                "picture_only": self.picture_only, "nothing": self.nothing}
+
+
+NOTHING_CHANGED = "nothing on screen changed"
+
+
+@dataclass
 class Step:
     n: int
     action: str                                  # affordance label (or a status note)
@@ -114,6 +188,8 @@ class Step:
     key: str = ""                                # the affordance's language-independent identity, if it had one
     outcome: str = ""                            # what it did, once the next look has shown it: "「12×」 became
                                                  # 「12×2」". "ok" only ever meant the action was carried out
+    change: dict[str, Any] = field(default_factory=dict)   # the same, as facts (`Change.as_dict()`): what the
+                                                 # engine reads; `outcome` is what the decider reads
     produced: bool = False                       # it handed something back — a file's text, a window read in
                                                  # full, what a Shortcut returned. Such a step raises no
                                                  # Accessibility event, and "did anything happen" used to
