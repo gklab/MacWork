@@ -93,6 +93,24 @@ class of bug rather than one instance.
   short says why. A violation is the engine's own bug, recorded as a fact in `outputs.invariants_broken`
   and counted per run in every eval report — never an exception, never something to dig out of a trace.
 
+## What a spreadsheet in a Qt app taught (2026-09-22, WPS, two runs, both failed)
+
+* **Coverage is measured over the window, not read off its chrome** (`observe.undescribed_share`). The
+  grid was in the tree as nothing at all — not a scroll area, not a group — behind a toolbar of 35
+  actionable nodes, so every signal that looked at what the tree *offered* saw a well-described window.
+  The share of the window's area no described node covers is computed for every window; past the same
+  `canvas_area_share`, the screen is read on the first look, its text becomes targets, and the empty
+  crossings of a grid become places. When even the screen shows nothing there, the decider is told, and a
+  task that ends on it ends with cause `window_unreadable`.
+* **Progress is nearer to the step's evidence, not "the screen changed"** (`progress_toward`). New,
+  Create New, Create New, Create New each opened something and each counted as an intended effect, while
+  the plan sat at its first sub-goal for nine steps. Where the planner said what a step should leave on
+  screen, the progress question is asked against that, and a planner consulted about a stuck task is told
+  which sub-goal it is stuck on. Found on the way: the no-progress rule always counted the newest step as
+  "somewhere" because it is judged on the look that follows it, so the rule had never fired.
+* **Every ending short of done carries a cause**, checked as an invariant; the diagnosis passes `budget`
+  or `no_route` through and names `needs_user`, `impossible`, `unclear_goal`, `unfinished` otherwise.
+
 ## Also in v5
 
 * An app's own sheet or dialog is an interruption like a prompt from another process: the task, something

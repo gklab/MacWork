@@ -37,6 +37,10 @@ done_verify: >-
   page open, the text present where it belongs, the answer found)?
   If the evidence is missing, partial, or only an intermediate screen (a chooser, a dialog, a menu), answer no.
 progress: Did the last action in the state have the intended visible effect?
+progress_toward: >-
+  The last action in the state was taken to get to this: "{evidence}". Compared with the screen before it,
+  is the current screen nearer to showing that — or showing it already? A screen that merely changed
+  (something opened, something loaded) without getting nearer to it is no.
 risky_screen: >-
   Is the current screen asking to confirm something irreversible or outward-facing (delete, overwrite, send,
   pay, publish, quit without saving)?

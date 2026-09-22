@@ -125,8 +125,12 @@ observe:
     sparse_below: 8              # fewer actionable AX elements than this = nothing to work with
     canvas_min_texts: 6
     max_empty_places: 12         # where read text lines up in rows and columns, this many empty crossings are offered as places too
-    canvas_area_share: 0.35      # this much of a window holding nothing the tree named = read it now, not on request
+    canvas_area_share: 0.35      # this much of a window holding nothing the tree named = read it now, not on request.
+                                 # Measured two ways: a container this big with nothing named inside it, and the
+                                 # window's area no described node covers at all (`undescribed_share`, computed for
+                                 # every window: a spreadsheet's grid that is in the tree as nothing whatsoever)
     canvas_max_inside: 2         # …where "nothing" means at most this many described elements within it
+    coverage_cells: 48           # cells a side the window is rasterised into for that share
     languages: auto              # auto = this Mac's languages, kept to the ones the recogniser supports
     language_correction: false   # it "corrects" towards those languages, and what is read is UI labels,
                                  # file names and code identifiers — where correction is most often wrong

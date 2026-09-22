@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import subprocess
@@ -423,6 +424,39 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         _more_text(ctx, obs, texts)
 
 
+def undescribed_share(nodes: list[dict[str, Any]], win: list[int] | None, actions: set[str], text_roles: set[str], cells: int = 48) -> float:
+    """How much of the window's area no node the tree *describes* covers — a fact about this window, measured.
+
+    A node describes something when it can be acted on, is a field, or is a leaf that carries a name or a
+    value. A container with children is what its children are; a container with nothing inside describes
+    nothing, whatever its size — that is exactly the scroll area a spreadsheet draws its cells into, and the
+    web area of a page that is still loading. The union of the described frames is rasterised over the window
+    (cells a side) rather than computed exactly: 48×48 is finer than any decision made on it.
+    """
+    if not win or len(win) != 4 or not win[2] or not win[3]:
+        return 0.0
+    by_ref, kids = _tree(nodes)
+    x0, y0, w, h = float(win[0]), float(win[1]), float(win[2]), float(win[3])
+    covered = [[False] * cells for _ in range(cells)]
+    for n in nodes:
+        f = n.get("frame")
+        if not f or len(f) != 4 or n.get("role") == "AXWindow":
+            continue
+        described = bool(actions & set(n.get("actions") or [])) or n.get("role") in text_roles or \
+            (not kids.get(n["ref"]) and any(n.get(k) for k in ("title", "value", "description", "placeholder")))
+        if not described:
+            continue
+        cx0 = max(0, int((float(f[0]) - x0) / w * cells)); cy0 = max(0, int((float(f[1]) - y0) / h * cells))
+        cx1 = min(cells, int(math.ceil((float(f[0]) + float(f[2]) - x0) / w * cells)))
+        cy1 = min(cells, int(math.ceil((float(f[1]) + float(f[3]) - y0) / h * cells)))
+        for cy in range(cy0, cy1):
+            row = covered[cy]
+            for cx in range(cx0, cx1):
+                row[cx] = True
+    seen = sum(sum(row) for row in covered)
+    return round(1.0 - seen / float(cells * cells), 3)
+
+
 def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
     ax = ctx.cfg.section("observe.ax")
     return ctx.helper.call("ax.snapshot", pid=ctx.app["pid"], scope=scope, max_nodes=ax.get("max_nodes", 3000),
@@ -544,6 +578,11 @@ def window(ctx: Ctx, obs: Observation) -> None:
     element_affordances(ctx, obs, nodes, "w")
     _own_prompts(ctx, obs, nodes, n0)
     obs.notes["window_actionable"] = count(nodes)
+    if nodes and obs.notes.get("window_frame"):
+        # how much of the window the tree says nothing about: the one signal that does not depend on how
+        # the app happened to structure its chrome (see `vision`)
+        obs.notes["undescribed_share"] = undescribed_share(nodes, obs.notes["window_frame"], actions, text_roles,
+                                                           int(ctx.cfg.get("observe.vision.coverage_cells", 48)))
     if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
         obs.notes["window_not_answering"] = True
     obs.notes["window_ms"] = s.get("ms")
@@ -1098,7 +1137,8 @@ def vision(ctx: Ctx, obs: Observation) -> None:
     # what reading this window last told us about it: a window whose content the tree cannot describe stays
     # that way while the app does, and finding that out costs a read
     known_canvas = key in ctx.cache.setdefault("vision.canvas", set())
-    if mode == "auto" and not empty and not unlabeled and not known_canvas:
+    blank = float(obs.notes.get("undescribed_share") or 0.0) >= float(vc.get("canvas_area_share", 0.35))
+    if mode == "auto" and not empty and not unlabeled and not known_canvas and not blank:
         return
     # "this task asked to read that window" is that task's business; kept globally, one task's choice made
     # every later task OCR the same window for the life of the process
@@ -1124,7 +1164,14 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         inside = sum(1 for g in placed if _inside(g, f))
         if inside <= int(vc.get("canvas_max_inside", 2)):
             hollow = max(hollow, float(f[2]) * float(f[3]))
-    mostly_undescribed = bool(area) and hollow / area >= float(vc.get("canvas_area_share", 0.35))
+    share = float(vc.get("canvas_area_share", 0.35))
+    # Two readings of the same fact. The hollow container: a node that covers most of the window with nothing
+    # the tree named inside it (Numbers' scroll area). And the window as a whole: the area no described node
+    # covers at all (`undescribed_share`) — a spreadsheet whose grid is not in the tree as anything, a Qt
+    # app, a canvas, a page still loading. The second is measured in `window()` and does not care whether
+    # the app wrapped its blank in a container or not; WPS's grid was 80% of a window with 35 actionable
+    # nodes in the toolbar, two 16-pixel unlabeled nodes, and nothing at all where the cells were.
+    mostly_undescribed = (bool(area) and hollow / area >= share) or blank
 
     wanted = ctx.scope.vision_wanted
     if mode == "auto" and not empty and not known_canvas and not mostly_undescribed \
@@ -1199,6 +1246,12 @@ def vision(ctx: Ctx, obs: Observation) -> None:
     uncovered = [b for b in boxes if b.get("frame") and not any(_inside(b["frame"], t) for t in taken)]
     canvas = len(uncovered) >= int(vc.get("canvas_min_texts", 6))
     obs.notes["vision_uncovered"] = len(uncovered)
+    if mostly_undescribed and not uncovered:
+        # The tree describes nothing there, and neither does the screen: a fact the decider is told (it may be
+        # loading: wait), and a cause for a task that ends here — not "no route", which says nothing.
+        obs.notes["window_unreadable"] = float(obs.notes.get("undescribed_share") or round(hollow / area, 3) if area else 1.0)
+        _more_text(ctx, obs, [f"(most of this window — {int(obs.notes['window_unreadable'] * 100)}% — shows nothing that can be read: "
+                              "the app describes nothing there and nothing is readable on the screen)"])
     if canvas:
         ctx.cache["vision.canvas"].add(key)
     elif known_canvas:
@@ -1208,6 +1261,14 @@ def vision(ctx: Ctx, obs: Observation) -> None:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
                                               {"x": x, "y": y, "frame": b["frame"], "window_frame": win}))
+        for e in empty_crossings(uncovered, int(vc.get("max_empty_places", 12))):
+            # what was read lines up in rows and columns — a grid the tree holds as nothing — and the places
+            # where a row and a column cross with nothing in them are where something is to be put
+            beside = " ".join(f"「{t[:20]}」" for t in e["row"][:3])
+            under = " ".join(f"「{t[:20]}」" for t in e["column"][:5])
+            obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click",
+                                              f"click the empty place in the row of {beside}, in line with {under}",
+                                              {"x": e["x"], "y": e["y"], "window_frame": win}))
         _right_click_by_name(ctx, obs, vc, boxes)
         # right-to-left text read left-to-right comes back as a different sentence, so which way a line runs
         # is asked of the system (Locale.characterDirection for the languages actually recognised)

@@ -31,10 +31,18 @@ class JudgeMixin:
             return v >= float(th.get("done", 0.8))
         return v >= float(th.get("done_veto", 0.35))   # after acting, only a clear "no" overrules
 
-    def _diagnose(self, task: Task, ctx: Ctx, obs: Observation, state: dict[str, Any], reason: str) -> dict[str, Any]:
-        """Out of budget: the decider reads the last screen and says why the goal was not reached; "blocked" gets a
-        second opinion (and its wording) from the planner when there is one."""
+    def _diagnose(self, task: Task, ctx: Ctx, obs: Observation, state: dict[str, Any], reason: str, cause: str = "") -> dict[str, Any]:
+        """Out of budget, or out of routes: the decider reads the last screen and says why the goal was not
+        reached; "blocked" gets a second opinion (and its wording) from the planner when there is one. Every
+        ending here carries a cause a program can read: what stopped the task (`cause`), or what the last
+        screen was — a window most of which nothing could read is one, and it says so before "no route"."""
         tried = [s.action for s in task.steps][-12:]
+        screen = (obs.window, obs.screen_text[:300])
+        unreadable = obs.notes.get("window_unreadable")
+        if unreadable:
+            return self._finish(task, "failed", f"{reason}; most of the window 「{obs.window or ''}」 ({int(float(unreadable) * 100)}%) could not be "
+                                "read: the app describes nothing there and nothing was readable on the screen",
+                                {"tried": tried, "screen": screen}, cause="window_unreadable")
         opts = {k: str(v).strip() for k, v in (self.cfg.docs["questions"].get("unfinished") or {}).items()}
         why = "failed"
         if len(opts) >= 2:
@@ -45,17 +53,18 @@ class JudgeMixin:
                 log.info("diagnosis: %s %s", why, {k: round(v, 2) for k, v in ((ans.get("why") or {}).get("probabilities") or {}).items()})
             except DeciderError:
                 pass
-        screen = (obs.window, obs.screen_text[:300])
         if why == "blocked":   # the planner already had its turns during the run: here it only words the reason
             if not task.blocked_reason:
                 self._consult(task, ctx, obs, f"{reason}; only the user seems able to continue: tried " + "; ".join(tried))
             return self._finish(task, "blocked", f"{reason}; " + (task.blocked_reason or self.cfg.question("blocked_reason")),
-                                {"tried": tried, "screen": screen, "screens_seen": list(task.memory.screen_notes.values())[-6:]})
+                                {"tried": tried, "screen": screen, "screens_seen": list(task.memory.screen_notes.values())[-6:]}, cause=cause or "needs_user")
         if why == "impossible":
-            return self._finish(task, "failed", f"{reason}; the app answered that this is not available or found nothing", {"tried": tried, "screen": screen})
+            return self._finish(task, "failed", f"{reason}; the app answered that this is not available or found nothing", {"tried": tried, "screen": screen},
+                                cause=cause or "impossible")
         if why == "unclear":
-            return self._finish(task, "failed", f"{reason}; the goal is unclear on this screen — say more precisely what is wanted", {"tried": tried, "screen": screen})
-        return self._finish(task, "failed", reason, {"tried": tried, "screen": screen})
+            return self._finish(task, "failed", f"{reason}; the goal is unclear on this screen — say more precisely what is wanted", {"tried": tried, "screen": screen},
+                                cause=cause or "unclear_goal")
+        return self._finish(task, "failed", reason, {"tried": tried, "screen": screen}, cause=cause or "unfinished")
 
     def _alternatives(self, probs: dict[str, float], by_id: dict[str, Affordance]) -> list[dict[str, Any]]:
         """The ways the goal could be read here, for the caller to choose between. The top k by rank — which

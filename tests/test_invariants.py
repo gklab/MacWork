@@ -34,7 +34,7 @@ def test_an_ending_must_be_known_and_explained():
     task = Task(goal="x")
     check_ending(task, "exploded")
     check_ending(task, "failed")
-    assert task.outputs["invariants_broken"] == ["ended in a status nobody knows: 'exploded'", "ended failed with no reason"]
+    assert task.outputs["invariants_broken"] == ["ended in a status nobody knows: 'exploded'", "ended failed with no reason", "ended failed with no cause"]
 
 
 def test_a_whole_run_breaks_no_invariant(tmp_path):

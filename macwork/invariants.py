@@ -55,3 +55,5 @@ def check_ending(task: Task, status: str) -> None:
         broken(task, f"ended in a status nobody knows: {status!r}")
     if status in ("failed", "blocked") and not task.reason:
         broken(task, f"ended {status} with no reason")
+    if status in ("failed", "blocked") and not task.cause:
+        broken(task, f"ended {status} with no cause")    # a real run ended failed with cause null: nothing for a program to read
