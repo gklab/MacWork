@@ -378,6 +378,8 @@ engine:
     poll_ms: 80                  # also watch the window's content (many SwiftUI apps post no notifications); 0 = events only
     quiet_ms: 300                # after something changed, wait until the window stays unchanged this long (settled)
     poll_nodes: 400
+    fingerprint_reuse_ms: 300    # a fingerprint this recent, of the same app, is the baseline an action moves from
+                                 # (the one the judge just took): a step took three, and two were of one screen
     speculate: true              # decide on the first calm screen and check it did not move while deciding (else look again)
     speculate_quiet_ms: 80
     speculate_timeout_ms: 800    # no change by then: decide anyway; a late change is caught by the same check

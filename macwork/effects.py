@@ -24,10 +24,12 @@ class EffectsMixin:
         poll_ms, poll_nodes = int(v.get("poll_ms", 0)), int(v.get("poll_nodes", 400))
         baseline, base_pid = None, (ctx.app or {}).get("pid")
         if poll_ms and base_pid:   # the window's content before acting: UIs that post no notifications still change
-            try:
-                baseline = self.helper.call("ax.fingerprint", pid=base_pid, poll_nodes=poll_nodes).get("fingerprint")
-            except HelperError:
-                baseline = None
+            baseline = self._recent_fingerprint(ctx)     # the judge took one a moment ago, of this same screen
+            if baseline is None:
+                try:
+                    baseline = self.helper.call("ax.fingerprint", pid=base_pid, poll_nodes=poll_nodes).get("fingerprint")
+                except HelperError:
+                    baseline = None
         windows_before = self._window_titles(ctx) if a.channel == "menu" and a.target.get("combo") else None
         t0 = time.monotonic()
         self.cache["actions_done"] = self.cache.get("actions_done", 0) + 1   # invalidates cached menus
@@ -114,7 +116,9 @@ class EffectsMixin:
     def _moves_by_itself(self, ctx: Ctx, obs: Observation) -> bool:
         """Does this window change with nobody acting (a clock, live statistics)? Measured once, then remembered:
         such a window never looks settled, so checking decisions against it would only waste them."""
-        a = self._fingerprint(ctx)
+        a = self._recent_fingerprint(ctx)
+        if a is None:
+            a = self._fingerprint(ctx)
         time.sleep(float(self.cfg.get("engine.verify.ambient_probe_s", 0.15)))
         if a is None or self._fingerprint(ctx) == a:
             return False
@@ -130,4 +134,16 @@ class EffectsMixin:
         except HelperError:
             return None
         ctx.cache["screen.fp"] = (ctx.app["pid"], fp)   # the menus are cached against this; taking it again would cost a round trip
+        ctx.cache["screen.fp_at"] = (ctx.app["pid"], fp, time.monotonic())
         return fp
+
+    def _recent_fingerprint(self, ctx: Ctx) -> int | None:
+        """The fingerprint taken a moment ago of this same app, or None. A step took it three times — after the
+        look, after the decision, before the action — and the last two are of one screen, milliseconds apart.
+        Where the caller wants to know whether the screen *moved*, it asks for a fresh one; where it wants a
+        baseline to move from, the recent one is the same baseline."""
+        if not ctx.app:
+            return None
+        pid, fp, at = ctx.cache.get("screen.fp_at") or (None, None, 0.0)
+        within = float(self.cfg.get("engine.verify.fingerprint_reuse_ms", 300)) / 1000
+        return fp if pid == ctx.app["pid"] and time.monotonic() - at < within else None

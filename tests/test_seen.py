@@ -138,3 +138,17 @@ def test_a_picture_that_changed_where_no_text_did_is_read_by_sight_at_once(tmp_p
     look = eng._look(task, eng._step_context(task))
     assert h.did("screen.ocr"), "the screen was read on this very look, not a step later"
     assert "10.9.12865" in look.obs.screen_text
+
+
+def test_a_fingerprint_taken_a_moment_ago_is_the_baseline_an_action_moves_from(tmp_path):
+    """A step took three, and the last two were of one screen, milliseconds apart."""
+    import time as _time
+    h = FakeHelper()
+    eng = Engine(cfg(tmp_path, config={"engine": {"verify": {"fingerprint_reuse_ms": 200}}}), helper=h, decider=ScriptedDecider([]))
+    c = eng._step_context(eng._new_task("x", {}, None))
+    assert eng._recent_fingerprint(c) is None, "nothing taken yet"
+    fp = eng._fingerprint(c)
+    n = len(h.did("ax.fingerprint"))
+    assert eng._recent_fingerprint(c) == fp and len(h.did("ax.fingerprint")) == n, "no second round trip"
+    _time.sleep(0.25)
+    assert eng._recent_fingerprint(c) is None, "too old to stand in for the screen now"
