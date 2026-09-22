@@ -53,7 +53,7 @@ def test_the_server_redacts_unless_told_not_to(tmp_path):
     calls = []
 
     class Eng:
-        def observe(self, app, goal, inputs, limit, redact=False):
+        def observe(self, app, goal, inputs, limit, redact=False, **kw):
             calls.append(redact)
             return {}
 

@@ -45,6 +45,7 @@ class Helper:
         self.on_reset: Callable[[], None] | None = None   # set by the engine: a new helper invalidates its refs
         self._bg: Helper | None = None
         self._bg_lock = threading.Lock()
+        self._methods: set[str] | None = None   # what this helper answers to, from `ping`; per connection
 
     # ------------------------------------------------------------------ connect
     def _binary(self) -> Path | None:
@@ -188,11 +189,25 @@ class Helper:
         self._sock = self._proc = None
         self._buf = b""
         self.mode = None
+        self._methods = None            # the next helper may be a different build
         if self.on_reset is not None:   # every element reference the old process handed out is dead with it
             try:
                 self.on_reset()
             except Exception:  # noqa: BLE001  (a failed cache drop must not mask the helper's own failure)
                 log.warning("on_reset failed", exc_info=True)
+
+    def supports(self, method: str) -> bool:
+        """Does the helper on the other end know this method? `ping` has listed them all along and nothing
+        asked; every newer method met an older helper as an opaque provider error. Asked once per connection.
+        An unknown answer (an older helper with no list, a helper that cannot be reached) is "yes": the call
+        itself then says what it says, as before."""
+        if self._methods is None:
+            try:
+                listed = self.call("ping", timeout=5).get("methods")
+            except HelperError:
+                return True
+            self._methods = set(listed) if listed else set()
+        return not self._methods or method in self._methods
 
     def call(self, method: str, timeout: float = 30.0, **params: Any) -> Any:
         with self._lock:

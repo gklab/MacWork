@@ -1612,7 +1612,10 @@ def observe(ctx: Ctx) -> Observation:
         try:
             fn(ctx, obs)
         except (HelperError, OSError, subprocess.SubprocessError) as exc:
-            obs.notes[f"{name}_error"] = str(exc)[:200]
+            # an older helper answers a method it does not have with `no_method`; that is not the provider
+            # failing, and the way out is a rebuild, not a bug report
+            obs.notes[f"{name}_error"] = ("the helper is older than this engine and does not know " + exc.message.split()[-1]
+                                          + ": rebuild it with `macwork helper install`") if exc.code == "no_method" else str(exc)[:200]
             log.info("provider %s failed: %s", name, exc)
         obs.notes[f"{name}_n"] = len(obs.affordances) - n0
         obs.notes[f"{name}_ms"] = round((time.monotonic() - t) * 1000)

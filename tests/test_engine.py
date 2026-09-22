@@ -62,6 +62,9 @@ class FakeHelper:
         self.focus_app = "TextEdit"
         self.secure_input = False
 
+    def background(self):          # the real helper's second connection: here, the same fake
+        return self
+
     def call(self, method, timeout=30.0, **p):
         self.calls.append((method, p))
         app = {"pid": 42, "name": "TextEdit", "bundle_id": "com.apple.TextEdit", "path": "/System/Applications/TextEdit.app"}
@@ -103,7 +106,7 @@ class FakeHelper:
         if method == "input.type":
             self.typed = p.get("text", "")
             return {"ok": True}
-        if method in ("ax.perform", "apps.activate", "input.key", "ax.set_range", "input.drag", "input.click"):
+        if method in ("ax.perform", "apps.activate", "input.key", "ax.set_range", "input.drag", "input.click", "input.release_all"):
             return {"ok": True}
         if method == "input.idle":
             return {"idle_s": 99}

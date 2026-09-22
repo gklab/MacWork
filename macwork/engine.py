@@ -225,7 +225,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
 
     # --------------------------------------------------------------- step level
     def observe(self, app: str | None = None, goal: str = "", inputs: dict[str, Any] | None = None, limit: int = 200,
-                redact: bool = False) -> dict[str, Any]:
+                redact: bool = False, offset: int = 0) -> dict[str, Any]:
         """Reading the screen. Deliberately not behind the lock that serialises driving: looking changes
         nothing, and a caller asking what is on screen should not wait out someone else's task.
 
@@ -244,8 +244,13 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 a.id = f"o{self._obs_seq}:{a.id}"   # resolving to whatever element now happens to sit at that id
             obs.affordances = affs
             self._last = (ctx, obs)
+        # In provider order, from `offset`: a step-level caller facing 800 options saw the first `limit` and
+        # had no way to the rest. `next_offset` is the same observation continued, not a new one.
+        page = affs[offset: offset + limit]
         out = {"app": ctx.app, "window": obs.window, "screen_text": obs.screen_text,
-               "affordances": [a.public() for a in affs[:limit]], "total": len(affs), "notes": obs.notes}
+               "affordances": [a.public() for a in page], "total": len(affs), "notes": obs.notes}
+        if offset + limit < len(affs):
+            out["next_offset"] = offset + limit
         return self._outgoing("observe", out) if redact else out
 
     def _outgoing(self, kind: str, out: dict[str, Any]) -> dict[str, Any]:
@@ -400,6 +405,16 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         if task is None:   # saying "cancelled" for an id nobody knows only hides a typo or an expired task
             return {"task_id": task_id, "cancelled": False, "error": "unknown or expired task"}
         self._cancelled.add(task_id)
+        if self._running is task:
+            # The flag is read between steps. A step that is a hold — keys down for a stated time — does not
+            # look at it until the hold ends, and a caller who said stop had to wait that out with the keys
+            # still down. The helper serves a second connection while the first is inside the hold, and
+            # `release_all` ends it at its next tick.
+            bg = getattr(self.helper, "background", None)
+            try:
+                (bg() if bg else self.helper).call("input.release_all", timeout=5)
+            except HelperError as exc:
+                log.info("cancel: could not release held input (%s)", exc)
         dropped = self._drop_from_queue(task_id)
         if task.status in PENDING or task.status == "queued" or dropped:
             task.status = "cancelled"

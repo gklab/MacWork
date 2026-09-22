@@ -103,11 +103,12 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
 
     @mcp.tool()
     async def mac_observe(app: str | None = None, goal: str = "", limit: int = 120,
-                          inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+                          inputs: dict[str, Any] | None = None, offset: int = 0) -> dict[str, Any]:
         """What can be done right now: affordances (menus, buttons, fields, apps, keys…) of `app` (default frontmost),
         in a fixed provider order (window, menus, keys, apps…), plus the readable screen text. `inputs` is what
-        mac_do takes: a path in it is offered for opening, `controls` become holdable options."""
-        return await anyio.to_thread.run_sync(lambda: eng.observe(app, goal, inputs, limit, redact=redact))
+        mac_do takes: a path in it is offered for opening, `controls` become holdable options. When `total`
+        exceeds the page, `next_offset` continues the same listing."""
+        return await anyio.to_thread.run_sync(lambda: eng.observe(app, goal, inputs, limit, redact=redact, offset=offset))
 
     @mcp.tool()
     async def mac_act(affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False,
