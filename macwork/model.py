@@ -228,7 +228,8 @@ class Task:
     updated: float = field(default_factory=time.time)
     reason: str = ""
     cause: str = ""                                            # why it ended, for a program: budget |
-                                                 # screen_locked | decider_unreachable | redaction_failed.
+                                                 # screen_locked | decider_unreachable | redaction_failed |
+                                                 # engine_error.
                                                  # `reason` is for a person; the eval harness read it for
                                                  # phrases to tell "the service was down" from "it failed"
     decider_calls: int = 0

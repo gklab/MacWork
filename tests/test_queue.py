@@ -169,3 +169,20 @@ def test_a_handed_in_task_can_be_followed_by_its_id(eng):
         time.sleep(0.01)
     assert eng.status(first)["status"] == "done" and "position" not in eng.status(first)
     assert eng.status("nobody")["error"] == "unknown or expired task"
+
+
+def test_a_task_that_crashes_the_engine_still_ends_properly(tmp_path):
+    """The status alone was set: the task was not kept, not audited, and what it had opened stayed open."""
+    import json
+
+    class Broken(Engine):
+        def _loop(self, task, progress):
+            raise RuntimeError("a bug in a provider")
+
+    conf = {"engine": {"store": str(tmp_path / "tasks.db"), "tidy_background": False}}
+    eng = Broken(cfg(tmp_path, config=conf), helper=FakeHelper(), decider=ScriptedDecider([]))
+    res = eng.do("anything")
+    assert res["status"] == "failed" and res["cause"] == "engine_error" and "RuntimeError" in res["reason"]
+    assert eng.store.get(res["task_id"]) is not None, "kept, like any other ending"
+    log = [json.loads(x) for x in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(r["kind"] == "task" and r["task"] == res["task_id"] and r["status"] == "failed" for r in log)

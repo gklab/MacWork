@@ -566,9 +566,16 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             self._running = task
             try:
                 self._run(task, progress)
-            except Exception:                    # noqa: BLE001  (one task must not take the queue down)
+            except Exception as exc:             # noqa: BLE001  (one task must not take the queue down)
                 log.exception("task %s failed outside the loop", task.id)
-                task.status, task.reason = "failed", "the engine itself failed; see the log"
+                # The status alone was set here, and nothing else: the task was not kept, not audited, and
+                # what it had opened stayed open, because none of that happens outside `_finish`. A crash
+                # is an ending like any other, with its own cause.
+                try:
+                    self._finish(task, "failed", f"the engine itself failed ({type(exc).__name__}); see the log", cause="engine_error")
+                except Exception:                # noqa: BLE001  (the ending itself failing must not hide the first failure)
+                    log.exception("task %s could not even be finished", task.id)
+                    task.status, task.reason, task.cause = "failed", "the engine itself failed; see the log", "engine_error"
             finally:
                 self._running = None
                 self._done_events.pop(task.id, threading.Event()).set()
