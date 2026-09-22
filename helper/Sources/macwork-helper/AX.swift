@@ -20,7 +20,11 @@ final class AXStore {
     private var elements: [String: AXUIElement] = [:]
     let keepGenerations: Int
 
-    init(keepGenerations: Int = 64) { self.keepGenerations = keepGenerations }   // cached menu trees outlive several snapshots
+    // Cached menu trees outlive several snapshots, and a look is many snapshots: the window, every window,
+    // each prompt from another process, each process with a status item. At 64 a cached menu tree from the
+    // previous look was already expired on this one, and real tasks lost steps to it. An element reference
+    // is a small thing; 256 is a few looks' worth.
+    init(keepGenerations: Int = 256) { self.keepGenerations = keepGenerations }
 
     func newGeneration() -> Int {
         gen += 1

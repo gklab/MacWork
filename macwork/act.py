@@ -173,8 +173,55 @@ def app_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 
 @channel("menu")
 def menu_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
-    ctx.helper.call("ax.perform", ref=a.target["ref"], action="AXPress")
+    try:
+        ctx.helper.call("ax.perform", ref=a.target["ref"], action="AXPress")
+    except HelperError as exc:
+        if exc.code != "stale_ref":
+            raise
+        # The menu tree is cached across looks (350-870 ms to read), and its element references expire as
+        # snapshots pile up; a real task lost a step to "unknown or expired element ref" and the step after it
+        # to the same, on a menu item that had not moved. Read the menu bar again and find the item by what
+        # it is — its identity where the app gives one, else its place and name — and press that.
+        ref = _relocate_menu_item(ctx, a)
+        if ref is None:
+            raise
+        ctx.helper.call("ax.perform", ref=ref, action="AXPress")
     return Outcome(True, watch_pid=a.target["pid"])
+
+
+def _relocate_menu_item(ctx: Ctx, a: Affordance) -> str | None:
+    """A fresh reference for a menu item whose old one expired, from a new read of the menu bar. The new
+    snapshot replaces the cached one, so the next look does not trip over the same expiry."""
+    from .observe import _identity, _tree
+    ax = ctx.cfg.section("observe.ax")
+    try:
+        snap = ctx.helper.call("ax.snapshot", pid=a.target["pid"], scope="menubar", max_nodes=ax.get("max_nodes", 3000),
+                               max_depth=12, budget_ms=ax.get("budget_ms", 3000), visible_only=False, actions=False)
+    except HelperError:
+        return None
+    ctx.cache.pop("menu.snap", None)
+    nodes = snap.get("nodes", [])
+    by_ref, kids = _tree(nodes)
+    want_path = [x.strip() for x in re.sub(r"\s\([^()]*\)$", "", a.label.removeprefix("menu ")).split(" ▸ ")]
+
+    def path_of(ref: str) -> list[str]:
+        out: list[str] = []
+        while ref and ref in by_ref:
+            n = by_ref[ref]
+            if n.get("role") in ("AXMenuItem", "AXMenuBarItem") and n.get("title"):
+                out.append(str(n["title"]))
+            ref = n.get("parent") or ""
+        return list(reversed(out))
+
+    for n in nodes:
+        if n.get("role") != "AXMenuItem" or not n.get("title") or kids.get(n["ref"]):
+            continue
+        if a.key and _identity(n.get("ident") or "", n.get("role"), n.get("subrole"), str(n["title"])) == a.key:
+            return n["ref"]
+    for n in nodes:
+        if n.get("role") == "AXMenuItem" and n.get("title") and not kids.get(n["ref"]) and path_of(n["ref"]) == want_path:
+            return n["ref"]
+    return None
 
 
 @channel("window")
@@ -203,7 +250,11 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         return Outcome(True, output={"read_window": {"thin": thin, "app": (ctx.app or {}).get("name") or "", "text": whole,
                                                      "truncated": bool(snap.get("truncated"))}}, wait=False)
     if a.verb == "raise":           # bring another window of the app to the front
-        ctx.helper.call("ax.perform", ref=t["ref"], action="AXRaise")
+        try:
+            ctx.helper.call("ax.perform", ref=t["ref"], action="AXRaise")
+        except HelperError as exc:
+            if exc.code != "ax_error":   # a window that refuses AXRaise still comes forward with its app
+                raise
         _bring_forward(ctx, t["pid"])
         return Outcome(True, watch_pid=t["pid"])
     if a.verb in ("select_text", "cursor_end"):   # a range of a document's text (AX counts UTF-16 units)
@@ -236,7 +287,20 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
             ctx.helper.call("input.click", x=f[0] + min(f[2] / 2, 60), y=f[1] + f[3] / 2)
         return Outcome(True, watch_pid=t["pid"])
     if a.verb not in ("type", "type_submit"):
-        ctx.helper.call("ax.perform", ref=t["ref"], action=t.get("action") or "AXPress")
+        action = t.get("action") or "AXPress"
+        try:
+            ctx.helper.call("ax.perform", ref=t["ref"], action=action)
+        except HelperError as exc:
+            f = t.get("frame")
+            if exc.code != "ax_error" or not f:
+                raise
+            # The element declares the action and the app will not carry it out — Finder answered AXOpen on
+            # a file icon with "attribute unsupported" (-25205) and AXShowMenu with "cannot complete", in a
+            # real run, several times — so it is done the way a person does it, with the pointer, where the
+            # element is: opened by a double-click, its menu by a right-click, pressed by a click.
+            _bring_forward(ctx, t["pid"])
+            how = {"AXOpen": {"count": 2}, "AXShowMenu": {"button": "right"}}.get(action, {})
+            ctx.helper.call("input.click", x=f[0] + f[2] / 2, y=f[1] + f[3] / 2, **how)
         return Outcome(True, watch_pid=t.get("watch") or t["pid"])   # a prompt over the app: watch the app
     text = str(params.get("text", ""))
     if a.verb == "type_submit":   # real keystrokes: apps like browsers ignore a value set behind their back

@@ -445,6 +445,8 @@ class LoopMixin:
             state["left_for_the_user_to_answer"] = left[:4]
         if task.memory.circles:
             state["went_in_circles"] = task.memory.circles[-6:]
+        if task.outputs.get("planner_thinks_blocked"):
+            state["planner_thinks"] = f"only the user can continue: {task.outputs['planner_thinks_blocked'][:200]} — an opinion, to weigh against the screen"
         last, run = self._run_length(task)
         if run >= int(self.cfg.get("engine.repeat_notice", 3)):
             state["done_over_and_over"] = f"{last} — {run} times in a row now, with the goal still not reached"
@@ -696,7 +698,7 @@ class LoopMixin:
         if self._consult(task, look.ctx, look.obs, problem, look.affs) and not task.blocked_reason:
             return AGAIN
         if task.blocked_reason or move == "blocked":
-            return self._finish(task, "blocked", task.blocked_reason or self.cfg.question("blocked_reason"),
+            return self._finish(task, "blocked", task.blocked_reason or task.outputs.get("planner_thinks_blocked") or self.cfg.question("blocked_reason"),
                                 {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]})
         return self._finish(task, "failed", "judged unreachable on this Mac", {"tried": tried[-8:]})
 
@@ -707,8 +709,13 @@ class LoopMixin:
         if self._consult(task, look.ctx, look.obs, problem, look.affs):
             task.pace.fruitless = 0
             if task.blocked_reason:
-                return self._finish(task, "blocked", task.blocked_reason,
-                                    {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]})
+                # The planner's word alone ended the task here. A real run ended `blocked` at step 0 because
+                # the planner, shown a path as ~/…, decided it "did not know the real user name" — a text
+                # model's reading of a redacted path, and the decider had said "find another route", not
+                # "blocked". Two independent judgements have to agree: the planner's is kept as an opinion
+                # the decider sees, and only its own `blocked` ends the task (with the planner's reason).
+                task.outputs["planner_thinks_blocked"] = task.blocked_reason
+                task.blocked_reason = ""
             return AGAIN
         task.pace.fruitless += 1                       # no new route to be had: after a second time, say why instead of wandering
         # …but not before the screen itself has been given a fair try. A real task gave up after two steps,
@@ -836,7 +843,11 @@ class LoopMixin:
                     task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
                     return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
                                         self._confirm_pending({**chosen.public(), "text": text[:200]}, floor, offer))
-        task.tries = [t for t in task.tries if self._suggestion_label(t) != chosen.label]
+        # by its id, not its label: a key suggestion is labelled with the menu item it turns out to be
+        # ("press cmd+shift+g (suggested by the planner) (menu Go ▸ Go to Folder…)"), so matching on the
+        # bare suggestion never removed it and a real task pressed cmd+shift+g on four steps out of eight
+        task.tries = [t for i, t in enumerate(task.tries)
+                      if chosen.id != f"t{i}" and self._suggestion_label(t) != chosen.label]
         task.pace.redo = 0
         progress(chosen.label)
         t0 = time.monotonic()

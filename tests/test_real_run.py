@@ -13,6 +13,7 @@
 
 from macwork import evals
 from macwork.engine import Engine
+from macwork.helper import HelperError
 from macwork.model import Affordance, Task
 from macwork.observe import Ctx
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg, worded
@@ -139,3 +140,80 @@ def test_making_something_new_is_not_gated(tmp_path):
     assert eng._floor("t", ctx, Affordance("m1", "menu", "press", "menu File ▸ New Folder (⇧⌘N)", {}, context="File")) == []
     made_elsewhere = Affordance("s1", "shortcut", "run", "run shortcut 「New Folder」", {"name": "New Folder"})
     assert eng._floor("t", ctx, made_elsewhere) != [], "a Shortcut that 'creates' can create anywhere: still gated"
+
+
+def test_a_menu_item_whose_reference_expired_is_found_again_and_pressed(tmp_path):
+    """The menu tree is cached across looks and its references expire as snapshots pile up: a real task
+    lost two steps in a row to "unknown or expired element ref" on a menu item that had not moved."""
+    from macwork.act import CHANNELS
+    from macwork.observe import PROVIDERS
+    from tests.english_mac import APP, EnglishMac, MENUBAR
+    import copy
+
+    class Expiring(EnglishMac):
+        def __init__(self):
+            super().__init__()
+            self.generation = 1
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.snapshot" and p.get("scope") == "menubar":
+                self.calls.append((method, p))
+                snap = copy.deepcopy(MENUBAR)
+                for n in snap["nodes"]:          # every read hands out references of a new generation
+                    n["ref"] = n["ref"].replace("g1.", f"g{self.generation}.")
+                    if "parent" in n:
+                        n["parent"] = n["parent"].replace("g1.", f"g{self.generation}.")
+                return snap
+            if method == "ax.perform" and str(p.get("ref", "")).startswith("g1."):
+                raise HelperError("stale_ref", f"unknown or expired element ref {p['ref']}; take a new snapshot")
+            return super().call(method, timeout, **p)
+
+    helper = Expiring()
+    from macwork.observe import Ctx, Observation
+    ctx = Ctx(cfg(tmp_path), helper, app=APP, goal="", inputs={}, task="t", gate=None, cache={})
+    obs = Observation(app=APP, window="Untitled", affordances=[])
+    PROVIDERS["menu"](ctx, obs)                                   # generation 1 references, then they expire
+    new = next(a for a in obs.affordances if "New" in a.label and "Delete" not in a.label)
+    helper.generation = 9
+    out = CHANNELS["menu"](ctx, new, {})
+    assert out.ok
+    pressed = [p["ref"] for m, p in helper.calls if m == "ax.perform"]
+    assert pressed == ["g9.6"], pressed
+
+
+def test_an_action_the_app_will_not_complete_is_done_with_the_pointer(tmp_path):
+    """Finder answered AXOpen on a file icon with "attribute unsupported" and AXShowMenu with "cannot
+    complete", several times in one run. A person double-clicks the icon."""
+    from macwork.act import CHANNELS
+
+    class Refusing(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.perform" and p.get("action") in ("AXOpen", "AXShowMenu"):
+                raise HelperError("ax_error", f"{p['action']} failed on {p['ref']}: AXError -25205")
+            return super().call(method, timeout, **p)
+
+    h = Refusing()
+    c = Ctx(cfg(tmp_path), h, app={"pid": 42, "name": "Finder"}, goal="", inputs={}, task="t", gate=None, cache={})
+    icon = Affordance("w9", "window", "press", "open image 「note.txt」", {"ref": "g2.9", "pid": 42, "action": "AXOpen", "frame": [100, 200, 64, 64]})
+    assert CHANNELS["window"](c, icon, {}).ok
+    clicks = h.did("input.click")
+    assert clicks and clicks[-1]["count"] == 2 and (clicks[-1]["x"], clicks[-1]["y"]) == (132, 232)
+    menu = Affordance("w10", "window", "press", "open the context menu of image 「note.txt」", {"ref": "g2.9", "pid": 42, "action": "AXShowMenu", "frame": [100, 200, 64, 64]})
+    assert CHANNELS["window"](c, menu, {}).ok and h.did("input.click")[-1]["button"] == "right"
+    bare = Affordance("w11", "window", "press", "button 「x」", {"ref": "g2.1", "pid": 42, "action": "AXOpen"})
+    import pytest
+    with pytest.raises(HelperError):
+        CHANNELS["window"](c, bare, {})          # no frame: nothing to point at, and the refusal stands
+
+
+def test_a_suggestion_taken_is_a_suggestion_gone(tmp_path):
+    """A key suggestion is labelled with the menu item it turns out to be, so matching on the bare suggestion
+    never removed it: a real task pressed cmd+shift+g on four steps out of eight."""
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = eng._new_task("go somewhere", {}, None)
+    task.tries = [{"keys": "cmd+shift+g"}, {"type": "hello"}]
+    offered = eng._suggested(task)
+    chosen = offered[0]
+    chosen.label += " (menu Go ▸ Go to Folder…)"      # what the loop appends when the combo has a menu item
+    eng._perform(task, eng._step_context(task), None, chosen, lambda m: None)
+    assert task.tries == [{"type": "hello"}], task.tries
