@@ -10,7 +10,7 @@
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black.svg)](#installation)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2.svg)](#mcp-server)
 
-[Website](https://macwork.org) · [Design](docs/design-v4.md) · [Benchmarks](docs/benchmarks.md) · [Extending](docs/extending.md) · [Triggers](docs/triggers.md)
+[Website](https://macwork.org) · [Design](docs/design-v5.md) · [Benchmarks](docs/benchmarks.md) · [Extending](docs/extending.md) · [Triggers](docs/triggers.md)
 
 </div>
 
@@ -77,7 +77,7 @@ macwork-helper        small signed Swift app holding the macOS permissions
 ```
 
 The caller owns language and planning; the engine owns facts, budgets and the safety floor; the decider
-makes every judgement call on the live screen. The full design is in [docs/design-v4.md](docs/design-v4.md).
+makes every judgement call on the live screen. The full design is in [docs/design-v5.md](docs/design-v5.md) (history: v2–v4 beside it).
 
 ## Installation
 
