@@ -3,7 +3,7 @@
 v4 made the engine ask the system instead of writing things down, and made the safety floor a judgement
 instead of a word list. What it did not have was a way to say whether any of that worked: no baseline was
 ever kept, one run was quoted as a rate, and two of the passes in the first ×3 run turned out to be false.
-v5 starts from the numbers and ends in three structural changes the numbers pointed at.
+v5 starts from the numbers and ends in four structural changes the numbers pointed at.
 
 ## What was measured (2026-09-22, decider jev, planner deepseek-flash)
 
@@ -32,7 +32,7 @@ while the old one was still in front, an app's own recovery dialog was called a 
 dismiss, a "done" with the Open dialog up, and an answer saying "the date is not shown" that passed a check
 for 「日」 through 「日期」. Each has a commit, a test, and where it applies a config switch.
 
-## Three structural changes
+## Four structural changes
 
 ### 1. Facts first, the sentence second (`model.Change`)
 
