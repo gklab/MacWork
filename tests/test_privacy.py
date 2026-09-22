@@ -116,3 +116,12 @@ def test_text_in_any_script_reaches_the_tagger(tmp_path):
 
     assert _runs("Meeting with 王芳 at 3pm") == ["Meeting with", "王芳", "at", "pm"]
     assert _runs("发送给 Grace Lee") == ["发送给", "Grace Lee"]
+
+
+def test_a_version_number_glued_to_a_letter_is_not_an_address(tmp_path):
+    """RayLink's About window says V8.1.3.8; the engine answered ⟦IP_1⟧."""
+    from macwork.privacy import Redactor
+    from tests.test_engine import cfg
+    r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
+    assert r.text("About RayLink / V8.1.3.8 / 关于") == "About RayLink / V8.1.3.8 / 关于"
+    assert "⟦IP_1⟧" in r.text("connected to 10.0.0.7 on port 22")
