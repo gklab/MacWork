@@ -79,3 +79,23 @@ def test_a_step_has_the_same_handle_as_the_action_it_took():
     assert s.handle == a.handle() == "axpath|AXWindow[0]/AXTextField[0]"
     b = Affordance("w2", "window", "press", "button 「OK」 (selected)", {})
     assert Step(1, b.label).handle == b.handle() == "button 「OK」"
+
+
+def test_memory_has_one_way_in_and_one_way_out():
+    """The keys were built by hand in six places and read back in five; one still used the label a day
+    after the rest had moved to handles. Nothing outside these methods spells a key."""
+    from macwork.model import Memory
+    m = Memory()
+    m.note_no_effect("sigA", "button 「Refresh」")
+    m.note_failed("sigA", "menu File ▸ Open…", "sigA:123")
+    m.note_withdrawn("sigA:123", "button 「2」")
+    m.note_withdrawn("sigA:123", "button 「2」")
+    m.decline("switch to app Finder")
+    ask = lambda handle, state="sigA:123", approval="": m.withheld_reason("sigA", state, handle, approval, limit=2)  # noqa: E731
+    assert ask("button 「Refresh」") == "no_effect"
+    assert ask("menu File ▸ Open…") == "failed" and ask("menu File ▸ Open…", state="sigA:999") is None, "failed: only while the screen is as it was"
+    assert ask("button 「2」") == "withdrawn" and ask("button 「2」", state="sigB:1") is None, "withdrawn: only from that exact state"
+    assert ask("switch to app Finder") == "declined" and ask("anything", approval="switch to app Finder") == "declined"
+    assert ask("button 「New」") is None
+    assert m.no_effect_handles() == {"button 「Refresh」"}
+    assert m.withdrawn_from("sigA:123", limit=3) == set(), "told once, withdrawn at the limit"

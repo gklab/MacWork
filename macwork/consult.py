@@ -101,7 +101,7 @@ class ConsultMixin:
             return False
         self.spend_allowance(task, "corrections" if went_wrong else "replans")
         task.blocked_reason = plan.get("blocked") or ""
-        dead = {k.split("|", 1)[1] for k in task.memory.no_effect}
+        dead = task.memory.no_effect_handles()
         task.tries = [t for t in plan.get("try") or [] if self._suggestion_label(t) not in dead]   # facts beat suggestions
         if not plan["steps"] and not task.tries and not task.blocked_reason:
             return False

@@ -268,6 +268,48 @@ class Memory:
     yielded: set[str] = field(default_factory=set)             # `Affordance.yields` of what this task already got
     retracted_at: int = -1                                     # len(steps) when the last one was noted (a look can repeat)
 
+    # ---- the one way in and the one way out. The keys were built by hand in six places ("sig|handle",
+    # "sig|label" before that) and read back in five; one of them still used the label a day after the
+    # rest had moved to handles. Nothing outside these methods spells a key.
+    @staticmethod
+    def _at(sig: str, handle: str) -> str:
+        return f"{sig}|{handle}"
+
+    def note_no_effect(self, sig: str, handle: str) -> None:
+        """This action, from this screen, changed nothing: a fact, never offered from here again."""
+        self.no_effect.add(self._at(sig, handle))
+
+    def note_failed(self, sig: str, handle: str, state: str) -> None:
+        """It could not be carried out just then: withheld while the screen is exactly as it was."""
+        self.failed[self._at(sig, handle)] = state
+
+    def note_withdrawn(self, state: str, handle: str) -> None:
+        """Chosen from this exact state, and the task came back here: told once, withdrawn at the limit."""
+        self.retracted.setdefault(state, []).append(handle)
+
+    def decline(self, handle: str) -> None:
+        """Not what the goal is about, or only ever leads back: not offered again in this task."""
+        self.declined.add(handle)
+
+    def no_effect_handles(self) -> set[str]:
+        return {k.split("|", 1)[1] for k in self.no_effect}
+
+    def withdrawn_from(self, state: str, limit: int) -> set[str]:
+        got = self.retracted.get(state) or []
+        return {h for h in set(got) if got.count(h) >= limit}
+
+    def withheld_reason(self, sig: str, state: str, handle: str, approval: str, limit: int) -> str | None:
+        """Why this action is not offered from this screen, or None: no_effect | failed | withdrawn | declined."""
+        if self._at(sig, handle) in self.no_effect:
+            return "no_effect"
+        if self.failed.get(self._at(sig, handle)) == state:
+            return "failed"
+        if handle in self.withdrawn_from(state, limit):
+            return "withdrawn"
+        if handle in self.declined or approval in self.declined:
+            return "declined"
+        return None
+
 
 @dataclass
 class TaskScope:

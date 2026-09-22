@@ -246,7 +246,7 @@ class LoopMixin:
         looks = sight.compare(pictures.get(here), glance, int(self.cfg.get("observe.sight.tolerance", 2)))
         if looks and looks["cells"]:
             return
-        task.memory.retracted.setdefault(here, []).append(left[-1].handle)
+        task.memory.note_withdrawn(here, left[-1].handle)
         log.info("back on a screen already acted from: %r was chosen here and did not hold", left[-1].action[:48])
 
     def _retracted_here(self, task: Task, here: str) -> list[str]:
@@ -258,9 +258,7 @@ class LoopMixin:
         Told once, withdrawn at `engine.max_retractions` (2). Only from this state: on `12×` a second 「2」
         is a mistake, and on `12×1` it is the answer.
         """
-        limit = int(self.cfg.get("engine.max_retractions", 2))
-        got = task.memory.retracted.get(here) or []
-        return {a for a in set(got) if got.count(a) >= limit}
+        return task.memory.withdrawn_from(here, int(self.cfg.get("engine.max_retractions", 2)))
 
     def _can_continue(self, task: Task, e: dict[str, Any], spent: Spent) -> bool:
         """Is there anything left to continue *with*? Only this run's share is gone, the task has done
@@ -349,7 +347,7 @@ class LoopMixin:
         affs = [a for a in obs.affordances + self._suggested(task, obs) if not self._denied(a, ctx.app)]
         for handle, times in self._taken_here(task, sig).items():          # done from this very screen already
             if times >= int(self.cfg.get("engine.max_repeats", 4)):         # enough of that one: it has had its turns
-                task.memory.no_effect.add(f"{sig}|{handle}")
+                task.memory.note_no_effect(sig, handle)
         # …and the shape a stuck task really has is not "again" but "again, and back where I was": a real run
         # opened the same 「文件 ▸ 打开…」 six times, escaping each time, and every escape left a screen just
         # different enough that a per-screen count started over. What matters is that the action keeps leading
@@ -357,20 +355,17 @@ class LoopMixin:
         going_nowhere = int(self.cfg.get("engine.max_circles", 3))
         for handle in set(task.memory.circles):
             if task.memory.circles.count(handle) >= going_nowhere:
-                task.memory.declined.add(handle)
+                task.memory.decline(handle)
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
-        # keyed on what an action *is* (its identity, else its steady name), not on what it says right now
-        withdrawn = self._withdrawn_here(task, here)
-        dead_here = {a.label for a in affs if f"{sig}|{a.handle()}" in task.memory.no_effect}
-        dead_here |= {a.label for a in affs if a.handle() in withdrawn}
-        dead_here |= {a.label for a in affs if task.memory.failed.get(f"{sig}|{a.handle()}") == here}   # failed, and nothing has changed since
-        # Not offered because the goal never asked for it, or it only led in circles. Keyed the way approvals
-        # are — identity and where it sits — for a floor action: keyed on the label alone, one 「OK」 the goal
-        # never asked for took every 「OK」 in every app out of the task. Circles and leaving for another app
-        # are about the action wherever it is taken from, and stay keyed on the label.
-        withheld = [a for a in affs if a.label not in dead_here
-                    and (a.handle() in task.memory.declined or self.approval_key(a) in task.memory.declined)]
-        affs = [a for a in affs if a.label not in dead_here and a not in withheld]   # facts: did nothing / not asked for
+        # Keyed on what an action *is* (its identity, else its steady name), not on what it says right now.
+        # Facts about this screen — did nothing here, could not be done here, came back from here — take the
+        # action out quietly; "not what the goal asked for" is said to the decider, so an option that
+        # vanished does not read as never having been there.
+        limit = int(self.cfg.get("engine.max_retractions", 2))
+        reasons = {a.id: task.memory.withheld_reason(sig, here, a.handle(), self.approval_key(a), limit) for a in affs}
+        dead_here = {a.label for a in affs if reasons[a.id] in ("no_effect", "failed", "withdrawn")}
+        withheld = [a for a in affs if reasons[a.id] == "declined"]
+        affs = [a for a in affs if reasons[a.id] is None]
         # An action that is complete is not an option. A real run read a file, was handed all of it, and was
         # offered "read the text of" the same file on each of the next nine steps — and took it three times.
         # The identity is the source's (path, size, modified), so a file that has changed can be read again.
@@ -618,7 +613,7 @@ class LoopMixin:
         if last is not None and "progress" in d:
             last.decision["progress_after"] = d["progress"]   # how a step turned out is only known on the next look
         if last and last.before and d.get("progress", 1.0) < float(th.get("progress_bad", 0.2)):
-            task.memory.no_effect.add(f"{last.before.split(':')[0]}|{last.handle}")   # the decider saw no effect: a fact for that screen
+            task.memory.note_no_effect(last.before.split(":")[0], last.handle)   # the decider saw no effect: a fact for that screen
 
         ranked = lambda: [k for k, _p in sorted(probs.items(), key=lambda kv: -kv[1]) if k in look.by_id]  # noqa: E731
         if key in look.groups:                    # see inside a group first, like opening a menu to read it
@@ -807,7 +802,7 @@ class LoopMixin:
                 return self._finish(task, "failed", "no action left to take on this screen")
         redactor = self.redactor(task.id)
         if chosen.channel in ("app", "shortcut") and not self._serves_goal(task, look.ctx, chosen):
-            task.memory.declined.add(chosen.label)       # leaving for something the goal gives no reason for (e.g. text on a page asked)
+            task.memory.decline(chosen.label)            # leaving for something the goal gives no reason for (e.g. text on a page asked)
             progress(f"not what the goal is about, skipped: {chosen.label}")
             return AGAIN
         floor = self._floor(task.id, look.ctx, chosen, look.obs.window)
@@ -826,7 +821,7 @@ class LoopMixin:
         # backs out of where it is stands even when the goal never mentioned it — it still has to pass the
         # confirmation gate below, which is where the user hears about anything that is not merely backing out.
         if floor and not self._goal_calls_for(task, look.ctx, redactor, look.state, chosen) and not harmless(chosen):
-            task.memory.declined.add(self.approval_key(chosen))   # quit, delete, send… the goal never asked for: not worth the user's attention
+            task.memory.decline(self.approval_key(chosen))   # quit, delete, send… the goal never asked for: not worth the user's attention
             progress(f"not asked for, skipped: {chosen.label}")
             return AGAIN
         if self._needs_confirm(chosen, risky_screen, task.approved, harmless, floor=floor):
@@ -885,7 +880,7 @@ class LoopMixin:
             # label every time, so one confirmation used to release everything typed after it
             if floor and self.approval_key(typed) not in task.approved:
                 if not self._goal_calls_for(task, ctx, self.redactor(task.id), {}, typed):
-                    task.memory.declined.add(self.approval_key(chosen))
+                    task.memory.decline(self.approval_key(chosen))
                     progress(f"not asked for, skipped: {typed.label[:80]}")
                     return None
                 granted, offer = self.standing(task.id, ctx, typed, floor)    # …and so is a standing grant
@@ -1022,19 +1017,19 @@ class LoopMixin:
         changed = sig != prev["sig"] or bool(events) or (prev.get("screen") is not None and prev["screen"] != obs.screen_text)
         changed = changed or bool(seen and seen["cells"])      # a person would say it changed: they saw it change
         self.models.record(prev.get("app"), prev["sig"], prev["label"], sig, bool(prev.get("ok")), changed)
-        key = f"{prev['sig']}|{prev.get('handle') or prev['label']}"
+        handle = prev.get("handle") or prev["label"]
         if not prev.get("ok"):
             # It could not be carried out — the app was busy, the element went away, a wait timed out. That
             # says something about the moment, not about the action, and this used to remove the action from
             # this screen for the rest of the task all the same. It is withheld while the screen is exactly
             # as it was when it failed (asking again there gets the same failure), and offered again once
             # anything on it has changed. `engine.max_repeats` still ends it for good.
-            task.memory.failed[key] = exact_state(prev["sig"], prev.get("screen") or "")
+            task.memory.note_failed(prev["sig"], handle, exact_state(prev["sig"], prev.get("screen") or ""))
         elif not changed and not (prev.get("unseen") and seen is None):
             # nothing happened: never offered again from this screen in this task. Unless what it does is
             # something the engine has no way to see — then "nothing changed" is a fact about the observer.
             # With a glance before and after it *was* seen, and an unchanged picture is evidence like any other
-            task.memory.no_effect.add(key)
+            task.memory.note_no_effect(prev["sig"], handle)
 
     # ------------------------------------------------------------------ routines
     def _replay(self, task: Task, skill: dict[str, Any], progress: Progress) -> bool:
