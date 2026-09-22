@@ -72,10 +72,10 @@ class ConsultMixin:
         went_wrong = last is not None and (not last.ok or float(last.decision.get("progress_after", 1.0))
                                            < float(self.cfg.get("engine.thresholds.progress_bad", 0.2)))
         if went_wrong:
-            if task.pace.corrections >= int(self.cfg.get("planner.max_corrections", 3)):
+            if not self.allowance_left(task, "corrections"):
                 return False
             problem = f"the last action did not do what it was for ({last.action[:80]}); what the screen says now is in the context. {problem}"
-        elif task.pace.replans >= int(self.cfg.get("planner.max_replans", 2)) + 1:
+        elif not self.allowance_left(task, "replans"):
             return False
         # Asking the same question of the same screen gets the same answer, and this answer is not cheap:
         # measured on this Mac, one replan is 1.5-2.7s of local model, and one task spent 12 of its 21
@@ -99,10 +99,7 @@ class ConsultMixin:
             log.info("planner: %s", exc)
             task.outputs.setdefault("planner_errors", []).append(str(exc)[:200])
             return False
-        if went_wrong:
-            task.pace.corrections += 1
-        else:
-            task.pace.replans += 1
+        self.spend_allowance(task, "corrections" if went_wrong else "replans")
         task.blocked_reason = plan.get("blocked") or ""
         dead = {k.split("|", 1)[1] for k in task.memory.no_effect}
         task.tries = [t for t in plan.get("try") or [] if self._suggestion_label(t) not in dead]   # facts beat suggestions

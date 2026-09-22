@@ -329,7 +329,7 @@ class LoopMixin:
             if len(seen_as) < int(self.cfg.get("engine.max_pictures", 200)):
                 seen_as.setdefault(here, obs.notes["glance"])
         window_key = f"{(ctx.app or {}).get('pid')}|{obs.window}"
-        fp_seen = self._fingerprint(ctx) if (task.steps and task.pace.redo < int(self.cfg.get("engine.verify.max_redo", 1))
+        fp_seen = self._fingerprint(ctx) if (task.steps and self.allowance_left(task, "redo")
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
 
         # The same screen, several actions later: each of them "did" something — a scroll, a Clear, an
@@ -575,7 +575,7 @@ class LoopMixin:
         if look.fp_seen is not None and self._fingerprint(look.ctx) not in (look.fp_seen, None) and not self._moves_by_itself(look.ctx, look.obs):
             # the screen kept changing while the decision was made on it: look again (nothing is recorded)
             task.memory.no_effect = look.dead_before
-            task.pace.redo += 1
+            self.spend_allowance(task, "redo")
             last = task.steps[-1]
             task.prev = task.prev or {"sig": last.before.split(":")[0] if last.before else None, "label": last.action,
                                       "ok": last.ok, "events": last.events, "app": look.ctx.app, "screen": None}
@@ -616,8 +616,7 @@ class LoopMixin:
             if not isinstance(r, tuple):
                 return r
             move, key, probs = r
-        if move == "wait" and task.pace.waits < int(self.cfg.get("engine.max_waits", 4)):
-            task.pace.waits += 1
+        if move == "wait" and self.spend_allowance(task, "waits"):
             progress("wait for the app")
             time.sleep(float(self.cfg.get("engine.wait_s", 1.5)))
             return AGAIN
@@ -652,10 +651,9 @@ class LoopMixin:
         return self._pick(task, look, key, move, ranked, risky_screen, progress)
 
     def _open_group(self, task: Task, look: Look, key: str, progress: Progress) -> bool:
-        if task.pace.looks >= int(self.cfg.get("engine.max_looks", 6)):
+        if not self.spend_allowance(task, "looks"):
             return False
         task.memory.expanded.add(look.groups[key])
-        task.pace.looks += 1
         progress(f"look into {look.folded[look.groups[key]][0].split(' (')[0].removeprefix('look into ')}")
         return True
 
@@ -676,8 +674,7 @@ class LoopMixin:
                 # A goal that asks for something to be reported is not accomplished until there is something to
                 # report. A real run opened a page and called itself done in one step, before the page was ever
                 # on screen to be read; look again instead of handing back "it could not be found".
-                if not task.outputs.get("answer") and task.pace.answer_tries < int(self.cfg.get("engine.max_answer_tries", 2)):
-                    task.pace.answer_tries += 1
+                if not task.outputs.get("answer") and self.spend_allowance(task, "answer_tries"):
                     log.info("the goal asks for an answer and there is none yet: looking again")
                     return AGAIN
             return self._finish(task, "done", "goal judged accomplished" if task.steps else "already accomplished")
@@ -712,9 +709,8 @@ class LoopMixin:
         backend = self.planning_backend
         if backend is None or not self.cfg.get("planner.second_opinion_on_done", True):
             return ""
-        if task.pace.done_opinions >= int(self.cfg.get("planner.max_done_opinions", 2)):
+        if not self.spend_allowance(task, "done_opinions"):
             return ""
-        task.pace.done_opinions += 1
         try:
             agrees, why = Planning(self.cfg, backend, self.redactor(task.id), self.audit).judge_done(
                 task.goal, self._brief(task, look.ctx, look.obs, look.affs))
@@ -755,13 +751,13 @@ class LoopMixin:
                 task.outputs["planner_thinks_blocked"] = task.blocked_reason
                 task.blocked_reason = ""
             return AGAIN
-        task.pace.fruitless += 1                       # no new route to be had: after a second time, say why instead of wandering
+        self.spend_allowance(task, "fruitless")                  # no new route to be had: after a second time, say why instead of wandering
         # …but not before the screen itself has been given a fair try. A real task gave up after two steps,
         # with the very action it needed sitting in the options, because the planner had nothing to add. The
         # planner having no route is not the same as there being none.
         enough = len(task.steps) >= int(self.cfg.get("engine.min_steps_before_giving_up", 4))
         untried = any(a.label not in {st.action for st in task.steps} for a in look.flat)
-        if task.pace.fruitless >= int(self.cfg.get("engine.max_fruitless_rethinks", 2)) and task.steps \
+        if not self.allowance_left(task, "fruitless") and task.steps \
                 and (enough or not untried):
             return self._diagnose(task, look.ctx, look.obs, look.state, reason="no route to the goal was found")
         return None
@@ -785,9 +781,8 @@ class LoopMixin:
             return AGAIN
         if chosen.channel == "vision":            # read the unlabeled controls of this window, then decide again
             look.ctx.cache.setdefault("vision.wanted", {}).setdefault(look.ctx.task, set()).add(chosen.target["key"])
-            task.pace.looks += 1
             progress("read the screen")
-            if task.pace.looks <= int(self.cfg.get("engine.max_looks", 6)):
+            if self.spend_allowance(task, "looks"):
                 return AGAIN
             chosen = next((by_id[k] for k in ranked() if by_id[k].channel != "vision"), None)
             if chosen is None:

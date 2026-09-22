@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from .appmodel import AppModels
 from .config import Config
+from .budget import BudgetMixin
 from .consult import ConsultMixin
 from .decider import Decider, DeciderError, make_decider
 from .effects import EffectsMixin
@@ -58,7 +59,7 @@ def _names(a: dict[str, Any]) -> list[str]:
             _norm_name(str(a.get("path", "")).rsplit("/", 1)[-1].removesuffix(".app"))]
 
 
-class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, ConsultMixin, TidyMixin, LearnMixin):
+class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, ConsultMixin, TidyMixin, LearnMixin, BudgetMixin):
     def __init__(self, cfg: Config | None = None, helper: Helper | None = None, decider: Decider | None = None) -> None:
         self.cfg = cfg or Config.load()
         self.helper = helper or Helper(self.cfg)
@@ -495,6 +496,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             # to, looked again, chose the same action, and asked the same question a second time.
             task.confirm_key = self.approval_key(task.held)
         task.status, task.reason, task.pending = status, reason, pending or {}
+        task.outputs["budget"] = self.ledger(task)      # what it used, of what: the first question about a task that stopped
         task.updated = time.time()
         self.store.save(task)
         if status == "done" and not answered_anyway:
