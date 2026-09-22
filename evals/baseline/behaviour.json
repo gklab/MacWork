@@ -42,7 +42,7 @@
    "run": 1,
    "category": "",
    "app": "com.apple.TextEdit",
-   "goal": "打开 /Users/wangzhaokai/Library/Caches/macwork-sandbox/long.txt，告诉我里面的口令是什么",
+   "goal": "打开 ~/Library/Caches/macwork-sandbox/long.txt，告诉我里面的口令是什么",
    "status": "failed",
    "passed": false,
    "valid": true,
@@ -56,7 +56,7 @@
    "decider": "jev",
    "trace": [
     "menu File ▸ Open… (⌘O)",
-    "open the file /Users/wangzhaokai/Library/Caches/macwork-sandbox/long.txt in whichever app this Mac opens it with",
+    "open the file ~/Library/Caches/macwork-sandbox/long.txt in whichever app this Mac opens it with",
     "scroll down in this window with the wheel",
     "press cmd+down (suggested by the planner)",
     "put the cursor at the end of the text in text entry area 「text entry area」"

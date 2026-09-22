@@ -529,6 +529,10 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             shutil.rmtree(eval_dir, ignore_errors=True)
 
 
+def _no_home(text: str) -> str:
+    return text.replace(str(Path.home()), "~")
+
+
 def _rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     k, n = sum(r["passed"] for r in rows), len(rows)
     lo, hi = wilson(k, n)
@@ -567,7 +571,10 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        (out_dir / f"{stamp}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+        # A report is meant to be committed (evals/baseline/), and a trace names the files a task opened —
+        # under this user's home directory, by their user name. The redactor turns that into `~` for anything
+        # sent; a report was written raw.
+        (out_dir / f"{stamp}.json").write_text(_no_home(json.dumps(report, ensure_ascii=False, indent=1)), encoding="utf-8")
         s = summary
         md = [f"# {suite_path.name} — {s['at']} (sha256 {s['suite_sha256']}, ×{runs})", "",
               f"**{s['passed_tasks']}/{s['tasks']} tasks passed (95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%}, over tasks — "
@@ -583,7 +590,7 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
             med = sorted(r["seconds"] for r in rs)[len(rs) // 2]
             md.append(f"| {tid} | {sum(r['passed'] for r in rs)}/{len(rs)} | {' '.join('✅' if r['passed'] else '❌' for r in rs)} | {med} | "
                       f"{(fails[-1]['why'] if fails else '')[:90].replace('|', '/')} |")
-        (out_dir / f"{stamp}.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+        (out_dir / f"{stamp}.md").write_text(_no_home("\n".join(md) + "\n"), encoding="utf-8")
         report["files"] = [str(out_dir / f"{stamp}.json"), str(out_dir / f"{stamp}.md")]
     return report
 

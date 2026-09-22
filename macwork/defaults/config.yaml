@@ -387,6 +387,9 @@ engine:
 
 input:
   non_ascii: paste               # paste (clipboard, restored after) | unicode (synthetic unicode key events)
+                                 # paste puts the text on the general pasteboard for about 250 ms, where a
+                                 # clipboard manager will see it; unicode does not, and some editors ignore
+                                 # synthetic unicode events. Not switched by default until that is measured
   set_value_first: false         # true: set a field's value through Accessibility first (background-friendly, but many fields ignore it)
   focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
   focus_wait_s: 0.8              # how long to wait for the field to really have the keyboard before typing
@@ -412,6 +415,9 @@ audit:
 
 server:
   name: macwork
+  raw_observe: false             # true: mac_observe / mac_act hand the caller the screen text, field contents
+                                 # and paths as they are. Off, they are redacted like a decider request — the
+                                 # caller is a model somewhere else — and each answer is audited
   transport: stdio               # stdio | streamable-http
   host: 127.0.0.1
   port: 8977

@@ -229,3 +229,16 @@ def test_the_baseline_is_where_compare_looks(tmp_path):
     assert evals.baseline_for("evals/behaviour.yaml").name == "behaviour.json"
     assert evals.baseline_for("evals/behaviour.yaml").exists(), "the committed baseline for the behaviour suite"
     assert evals.baseline_for("evals/behaviour.yaml").parent.name == "baseline"
+
+
+def test_a_report_never_names_this_user(tmp_path, monkeypatch):
+    """A report is meant to be committed, and a trace names the files a task opened — under the home
+    directory, by user name. The first committed baseline carried `/Users/<name>` twice."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/Users/somebody")))
+    rows = [{"id": "a", "category": "-", "status": "done", "passed": True, "valid": True, "seconds": 1.0, "decider_calls": 1,
+             "cost_usd": 0.0, "trace": ["open the file /Users/somebody/Library/Caches/x.txt"]}]
+    evals._report(tmp_path / "s.yaml", b"", rows, 1, tmp_path)
+    for f in tmp_path.glob("*.json"):
+        assert "/Users/somebody" not in f.read_text(encoding="utf-8")
+        assert "~/Library/Caches/x.txt" in f.read_text(encoding="utf-8")

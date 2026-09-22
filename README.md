@@ -212,7 +212,9 @@ Everything a decider or planner sees passes through `privacy.py` on this Mac fir
   addresses), become stable pseudonyms — `⟦PERSON_1⟧` is the same person for the whole task.
 * `privacy.redact.names` hides names you list; `never_send` withholds whole fields; home paths become `~`;
   **if tagging fails, text is withheld rather than sent.**
-* Every request is written as sent to a local audit log. `audit.dry_run: true` sends nothing at all.
+* What `mac_observe` / `mac_act` hand an MCP caller is redacted the same way: the caller is a model
+  somewhere else (`server.raw_observe` opts a local one out). Every request and answer is written to a
+  local audit log as sent. `audit.dry_run: true` sends nothing at all.
 * No screenshots leave the machine and there is no telemetry. The API key lives in the Keychain.
 
 `macwork privacy-check` measures the leak rate on a synthetic corpus and reports it as it is — including
@@ -221,18 +223,16 @@ that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic
 ## Evaluation
 
 ```sh
-macwork eval --suite evals/v2.yaml                   # → evals/reports/{stamp}.{json,md}
-macwork eval --suite evals/behaviour.yaml --compare  # …and pair it with the committed baseline (evals/baseline/)
+macwork eval --suite evals/v2.yaml --compare         # → evals/reports/{stamp}.{json,md}, paired with evals/baseline/
 macwork compare <before>.json <after>.json           # paired, exact McNemar; drives nothing
 macwork profile                                      # where each step's time goes, and how many steps were wasted
 ```
 
 `evals/v2.yaml` holds 29 tasks over navigation, multi-step, cross-app, question answering, must-not and
 prompt injection, using only apps that ship with macOS. The current result is **14/29 on a single run** —
-which is not a success rate: the move from 12/29 was 2 fixed and 0 broken, p = 0.50, and no report of that
-run was kept. `compare` refuses to pair reports from a different suite or decider. The baseline a new run is
-held against is committed in `evals/baseline/` (one suite so far, from a single run). History and method:
-[docs/benchmarks.md](docs/benchmarks.md).
+which is not a success rate: the move from 12/29 was 2 fixed and 0 broken, p = 0.50, and no report of it was
+kept. `compare` refuses to pair reports from a different suite or decider; the baseline a run is held against
+is committed in `evals/baseline/` (one suite, one run, so far). History: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Configuration
 

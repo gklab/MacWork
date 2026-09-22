@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import zlib
@@ -969,14 +970,22 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         label = (u.get("rdesc") or "control") + " (no label) " + (name or f"#{i + 1}") + (f" at {_where_in(f, win, grid)}" if grid else "")
         describe = vc.get("describer_cmd")
         if describe and not inside:   # a local image describer names icons (e.g. a VLM on this Mac)
+            # A crop of the window is a screenshot. It went to /tmp under a name anyone could predict, readable
+            # by anyone, and stayed there. It goes to a file only this user can read, and does not stay.
+            fd, path = tempfile.mkstemp(prefix="macwork-icon-", suffix=".png")
+            os.close(fd)
             try:
-                path = f"/tmp/macwork-icon-{ctx.app['pid']}-{i}.png"
                 ctx.helper.call("screen.capture", pid=ctx.app["pid"], near=obs.notes.get("window_frame"), crop=f, path=path, timeout=15)
                 out = subprocess.run([*describe, path], capture_output=True, text=True, timeout=20, check=False).stdout.strip()
                 if out:
                     label += f" looks like: {out[:80]}"
             except (HelperError, OSError, subprocess.SubprocessError) as exc:
                 obs.notes["describer_error"] = str(exc)[:120]
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
         obs.affordances.append(Affordance(f"v{len(obs.affordances)}", "window", "press", label,
                                           {"ref": u["ref"], "pid": u["pid"], "action": u.get("action"), "frame": f}, context=u.get("context", "")))
     # Which of what was read is out of the tree's reach. `taken` is every frame the tree did reach, including

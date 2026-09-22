@@ -224,9 +224,17 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                    hands=self.take_hands, task=key)
 
     # --------------------------------------------------------------- step level
-    def observe(self, app: str | None = None, goal: str = "", inputs: dict[str, Any] | None = None, limit: int = 200) -> dict[str, Any]:
+    def observe(self, app: str | None = None, goal: str = "", inputs: dict[str, Any] | None = None, limit: int = 200,
+                redact: bool = False) -> dict[str, Any]:
         """Reading the screen. Deliberately not behind the lock that serialises driving: looking changes
-        nothing, and a caller asking what is on screen should not wait out someone else's task."""
+        nothing, and a caller asking what is on screen should not wait out someone else's task.
+
+        `redact`: the answer leaves this process — an MCP caller is a model somewhere else — so it goes
+        through the same redaction as anything sent to the decider. It did not: the goal level pseudonymised
+        every string before a request, and the step level handed the caller the screen text, every field's
+        contents and the document's path in the clear, unaudited. The CLI reads its own screen and is not
+        redacted; `server.raw_observe` lets a local caller opt out.
+        """
         ctx = self._ctx(goal, inputs or {}, app, "observe")
         obs = observe(ctx)
         affs = [a for a in obs.affordances if not self._denied(a, ctx.app)]   # in provider order: no relevance guessing
@@ -236,11 +244,25 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 a.id = f"o{self._obs_seq}:{a.id}"   # resolving to whatever element now happens to sit at that id
             obs.affordances = affs
             self._last = (ctx, obs)
-        return {"app": ctx.app, "window": obs.window, "screen_text": obs.screen_text,
-                "affordances": [a.public() for a in affs[:limit]], "total": len(affs), "notes": obs.notes}
+        out = {"app": ctx.app, "window": obs.window, "screen_text": obs.screen_text,
+               "affordances": [a.public() for a in affs[:limit]], "total": len(affs), "notes": obs.notes}
+        return self._outgoing("observe", out) if redact else out
+
+    def _outgoing(self, kind: str, out: dict[str, Any]) -> dict[str, Any]:
+        """What a caller outside this process gets: redacted the way a decider request is, and audited. If
+        tagging broke, nothing — the same rule as the Gate's, for the same reason."""
+        red = self.redactor("observe")
+        safe = red.value(out)
+        if red.failed:
+            self.audit.record("refused", task=kind, why="entity tagging failed; nothing was returned to the caller")
+            return {"error": "personal data could not be checked for, so nothing was returned", "withheld": True}
+        self.audit.record(kind, app=(safe.get("app") or {}).get("name") if isinstance(safe.get("app"), dict) else None,
+                          window=safe.get("window"), chars=len(str(safe.get("screen_text") or "")),
+                          affordances=len(safe.get("affordances") or []))
+        return safe
 
     def act(self, affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False,
-            remember: bool = False) -> dict[str, Any]:
+            remember: bool = False, redact: bool = False) -> dict[str, Any]:
         with self._lock:      # acting does drive the Mac, so it waits its turn like a task does
             if not self._last:
                 return {"ok": False, "error": "call observe first"}
@@ -285,7 +307,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 return {"ok": False, "needs_input": missing, "affordance": a.public()}
             out, events = self._execute(ctx, a, params or {})
             self._last = None  # refs may be stale now: observe again
-            return {"ok": out.ok, "error": out.error, "events": events, "output": out.output, "now_in": out.target}
+            res = {"ok": out.ok, "error": out.error, "events": events, "output": out.output, "now_in": out.target}
+            return self._outgoing("act", res) if redact else res   # a read's output is the file, in full
 
     # --------------------------------------------------------------- goal level
     def do(self, goal: str, inputs: dict[str, Any] | None = None, app: str | None = None, progress: Progress | None = None) -> dict[str, Any]:

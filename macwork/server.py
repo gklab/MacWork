@@ -29,6 +29,9 @@ mac_observe then mac_act with an affordance id from that observation."""
 def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
     cfg = cfg or Config.load()
     eng = engine or Engine(cfg)
+    # What goes back to an MCP caller leaves this process: redacted like a decider request, unless a
+    # local caller has said it wants the screen as it is.
+    redact = not bool(cfg.get("server.raw_observe", False))
     mcp = MCPServer(cfg.get("server.name", "macwork"), instructions=INSTRUCTIONS)
     mcp._macwork_engine = eng      # so serve() can let go of it when the transport ends
 
@@ -104,7 +107,7 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         """What can be done right now: affordances (menus, buttons, fields, apps, keys…) of `app` (default frontmost),
         in a fixed provider order (window, menus, keys, apps…), plus the readable screen text. `inputs` is what
         mac_do takes: a path in it is offered for opening, `controls` become holdable options."""
-        return await anyio.to_thread.run_sync(lambda: eng.observe(app, goal, inputs, limit))
+        return await anyio.to_thread.run_sync(lambda: eng.observe(app, goal, inputs, limit, redact=redact))
 
     @mcp.tool()
     async def mac_act(affordance_id: str, params: dict[str, Any] | None = None, confirm: bool = False,
@@ -112,7 +115,7 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         """Execute one affordance from the latest mac_observe. Irreversible actions need confirm=true.
         remember=true keeps that confirmation as a standing grant — see mac_resume for who may give one."""
         keep, note = _may_remember(remember)
-        res = await anyio.to_thread.run_sync(lambda: eng.act(affordance_id, params, confirm, keep))
+        res = await anyio.to_thread.run_sync(lambda: eng.act(affordance_id, params, confirm, keep, redact=redact))
         return {**res, **note}
 
     @mcp.tool()
