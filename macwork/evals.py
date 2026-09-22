@@ -577,7 +577,10 @@ def _forget(engine: Engine) -> None:
     Not everything cached is recall. Which apps are installed is a fact about the Mac and costs 1.8 s to
     re-read; the pseudonym table is privacy machinery. Those stay.
     """
-    for key in ("floor.verdicts", "floor.harmless", "vision.ocr", "vision.wanted", "vision.canvas",
+    scopes = getattr(engine, "_scopes", None)
+    if isinstance(scopes, dict):
+        scopes.clear()          # each task's live working state: pictures, windows seen, screens read by sight
+    for key in ("floor.verdicts", "floor.harmless", "vision.ocr", "vision.canvas",
                 "menu.snap", "menubar.owners", "learn.safe", "services.all"):
         got = engine.cache.get(key)
         if isinstance(got, (dict, set)):

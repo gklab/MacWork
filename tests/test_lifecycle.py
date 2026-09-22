@@ -160,11 +160,11 @@ def test_what_the_cache_keeps_per_task_goes_with_the_task(tmp_path):
                  helper=FakeHelper(), decider=ScriptedDecider([]))
     task = Task(goal="look around")
     eng.tasks[task.id] = task
-    eng.cache.setdefault("pictures", {})[task.id] = {"sig": b"..."}
-    eng.cache.setdefault("vision.wanted", {})[task.id] = {"w1"}
-    eng.cache["pictures"]["another-task"] = {}
+    eng.scope(task.id).pictures["sig"] = b"..."
+    eng.scope(task.id).vision_wanted.add("w1")
+    eng.scope("another-task")
     _time.sleep(0.02)
     eng._gc()
     assert task.id not in eng.tasks
-    assert task.id not in eng.cache["pictures"] and task.id not in eng.cache["vision.wanted"]
-    assert "another-task" in eng.cache["pictures"], "only what belonged to the expired task"
+    assert task.id not in eng._scopes, "its live state went with it"
+    assert "another-task" in eng._scopes, "only what belonged to the expired task"

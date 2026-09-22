@@ -36,7 +36,7 @@ from .judge import MOVES, JudgeMixin
 from .learn import LearnMixin
 from .loop import LoopMixin, Progress
 from .policy import PolicyMixin
-from .model import PENDING, Affordance, Observation, Task
+from .model import PENDING, Affordance, Observation, Task, TaskScope
 from .observe import Ctx, installed_apps, observe
 from .privacy import Audit, Gate, RedactionError, Redactor
 from .skills import Skills
@@ -68,6 +68,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         self.cache: dict[str, Any] = {}
         self.tasks: dict[str, Task] = {}
         self._redactors: dict[str, Redactor] = {}
+        self._scopes: dict[str, TaskScope] = {}   # each task's live working state, dropped with the task
         self._cancelled: set[str] = set()
         self._last: tuple[Ctx, Observation] | None = None
         self._obs_seq = 0                     # every observation stamps its affordance ids, so a stale id cannot act
@@ -218,11 +219,18 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         self.cache["installed"] = inst
         return next((a for a in inst if h in _names(a)), None) or next((a for a in inst if any(h in n for n in _names(a) if n)), None)
 
+    def scope(self, key: str) -> TaskScope:
+        """The live working state of one task (or of the step level, under "observe")."""
+        got = self._scopes.get(key)
+        if got is None:
+            got = self._scopes[key] = TaskScope()
+        return got
+
     def _ctx(self, goal: str, inputs: dict[str, Any], app: Any, key: str) -> Ctx:
         running = self.helper.call("apps.running")
         return Ctx(self.cfg, self.helper, goal=goal, inputs=inputs, app=self._resolve_app(app, running), running=running,
                    cache=self.cache, redactor=self.redactor(key),   # gate is attached only where a decision is needed
-                   hands=self.take_hands, task=key)
+                   hands=self.take_hands, task=key, scope=self.scope(key))
 
     # --------------------------------------------------------------- step level
     def observe(self, app: str | None = None, goal: str = "", inputs: dict[str, Any] | None = None, limit: int = 200,
@@ -285,7 +293,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             # to `act`. At the step level there is no loop, so they were offered by `observe` and then came
             # back "no channel 'vision'" — an option that cannot be taken is not an option.
             if a.channel == "vision":
-                ctx.cache.setdefault("vision.wanted", {}).setdefault("observe", set()).add(a.target["key"])
+                ctx.scope.vision_wanted.add(a.target["key"])
                 self._last = None
                 return {"ok": True, "observe_again": True,
                         "note": "this window will be read from the screen on the next observe"}
@@ -423,19 +431,14 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             self._done_events.pop(task_id, threading.Event()).set()
         return {"task_id": task_id, "cancelled": True, "was_queued": dropped}
 
-    # What the cache keeps per task, keyed on the task id. Collected with the task: the pictures alone are
-    # about 1.4 KB a screen, up to 200 screens, and nothing dropped them for the life of the process.
-    PER_TASK_CACHES = ("pictures", "vision.wanted", "windows.seen")
-
     def _gc(self) -> None:
         ttl = float(self.cfg.get("engine.tasks_ttl_s", 1800))
         for tid, t in list(self.tasks.items()):
             if time.time() - t.updated > ttl:
                 self.tasks.pop(tid, None)
                 self._redactors.pop(tid, None)
+                self._scopes.pop(tid, None)    # its pictures alone are about 1.4 KB a screen, up to 200 screens
                 self._cancelled.discard(tid)   # else the set grows for the life of the process
-                for key in self.PER_TASK_CACHES:
-                    (self.cache.get(key) or {}).pop(tid, None)
         self.store.sweep()
 
     def exclusive(self) -> bool:

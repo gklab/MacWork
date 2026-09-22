@@ -242,7 +242,7 @@ class LoopMixin:
         # Same structure and same text, and a different picture, is a different state: in a window that draws
         # itself the text never changes and the picture is the only thing that does. (A calculator back on
         # `12×` looks the same as it did, so this does not get in the way of what the rule was made for.)
-        pictures = self.cache.setdefault("pictures", {}).setdefault(task.id, {})
+        pictures = self.scope(task.id).pictures
         looks = sight.compare(pictures.get(here), glance, int(self.cfg.get("observe.sight.tolerance", 2)))
         if looks and looks["cells"]:
             return
@@ -313,7 +313,7 @@ class LoopMixin:
             # 关于), was told "the picture changed (3% of it, at the bottom left); no text on screen did",
             # and had nothing to read it with. What the tree cannot say, the screen can: read it now.
             key = f"{ctx.app['pid']}|{obs.window}"
-            wanted = ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set())
+            wanted = ctx.scope.vision_wanted
             if key not in wanted:
                 wanted.add(key)
                 sight_provider = get_provider("vision")
@@ -325,7 +325,7 @@ class LoopMixin:
         here = exact_state(sig, obs.screen_text)
         self._note_return(task, here, obs.notes.get("glance"))
         if obs.notes.get("glance"):        # what this state looked like the first time it was seen
-            seen_as = self.cache.setdefault("pictures", {}).setdefault(task.id, {})
+            seen_as = self.scope(task.id).pictures
             if len(seen_as) < int(self.cfg.get("engine.max_pictures", 200)):
                 seen_as.setdefault(here, obs.notes["glance"])
         window_key = f"{(ctx.app or {}).get('pid')}|{obs.window}"
@@ -783,7 +783,7 @@ class LoopMixin:
             log.info("step %d: letting the app finish before leaving it", len(task.steps))
             return AGAIN
         if chosen.channel == "vision":            # read the unlabeled controls of this window, then decide again
-            look.ctx.cache.setdefault("vision.wanted", {}).setdefault(look.ctx.task, set()).add(chosen.target["key"])
+            look.ctx.scope.vision_wanted.add(chosen.target["key"])
             progress("read the screen")
             if self.spend_allowance(task, "looks"):
                 return AGAIN

@@ -270,6 +270,19 @@ class Memory:
 
 
 @dataclass
+class TaskScope:
+    """What one task keeps between its looks and is never stored: live, per-task working state.
+
+    It sat in `engine.cache` under keys like `pictures[task_id]` and `vision.wanted[task_id]`, beside
+    caches that are the Mac's (installed apps, floor verdicts), collected by naming each key in a list.
+    One object per task, made with the task and dropped with it.
+    """
+    pictures: dict[str, Any] = field(default_factory=dict)     # exact state -> what it looked like the first time
+    vision_wanted: set[str] = field(default_factory=set)       # windows this task asked to read by sight
+    windows_seen: set[Any] = field(default_factory=set)        # window ids seen so far: a new one is read first
+
+
+@dataclass
 class Desktop:
     """The desktop as the task found it, and what it opened — so tidying touches only its own doing."""
     initial_pids: set[int] | None = None                       # apps running when the task began: never closed by it

@@ -23,7 +23,7 @@ from typing import Any, Callable
 from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
-from .model import Affordance, Observation, Slot, with_state
+from .model import Affordance, Observation, Slot, with_state, TaskScope
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class Ctx:
     hands: Any = None                           # callable: may the engine use the keyboard and the front app now?
     redactor: Any = None                        # this task's pseudonym table
     task: str = ""                              # whose look this is: for what is remembered per task, not per Mac
+    scope: TaskScope = field(default_factory=TaskScope)   # that task's live working state (see model.TaskScope)
 
 
 Provider = Callable[[Ctx, Observation], None]
@@ -629,7 +630,7 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
     # status item drops down, the sheet a button raised — and it was read in the window server's order,
     # behind whatever else was on screen, or not at all once the elsewhere budget was spent. A real task
     # pressed the menu bar clock three times and never read what came down. New first.
-    seen: set[Any] = ctx.cache.setdefault("windows.seen", {}).setdefault(ctx.task or "observe", set())
+    seen: set[Any] = ctx.scope.windows_seen
     order = sorted(range(len(wins)), key=lambda i: (_window_id(wins[i]) in seen, i))
     for i in order:
         w = wins[i]
@@ -1125,7 +1126,7 @@ def vision(ctx: Ctx, obs: Observation) -> None:
             hollow = max(hollow, float(f[2]) * float(f[3]))
     mostly_undescribed = bool(area) and hollow / area >= float(vc.get("canvas_area_share", 0.35))
 
-    wanted = ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set())
+    wanted = ctx.scope.vision_wanted
     if mode == "auto" and not empty and not known_canvas and not mostly_undescribed \
             and vc.get("on_demand", True) and key not in wanted:
         # the tree names most things: reading the screen for the rest costs ~0.3 s, so it happens when asked for

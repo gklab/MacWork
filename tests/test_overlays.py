@@ -12,7 +12,7 @@ says about them — no Dock presence, and something readable inside.
 from typing import Any
 
 from macwork.config import Config
-from macwork.model import Observation
+from macwork.model import Observation, TaskScope
 from macwork.observe import Ctx, get_provider
 
 
@@ -132,11 +132,12 @@ def test_a_window_that_just_appeared_is_read_before_the_ones_that_were_always_th
     """A real task pressed the menu bar clock three times and never read what came down: the panel was
     listed behind the windows that had been there all along, past the elsewhere budget."""
     cache: dict = {}
+    scope = TaskScope()          # what one task keeps between its looks
 
     def look_with(windows, trees):
         cfg = Config.load(overrides={"config": {"observe": {"overlays": {"max_elsewhere": 2}}}})
         ctx = Ctx(cfg=cfg, helper=Helper(windows, trees), app={"pid": 1, "name": "Editor"}, goal="", inputs={}, task="t",
-                  gate=None, cache=cache)
+                  gate=None, cache=cache, scope=scope)
         obs = Observation(app=ctx.app, window="w", affordances=[])
         get_provider("overlays")(ctx, obs)
         return [c["from"] for c in obs.notes.get("covered_by", [])]
@@ -176,12 +177,13 @@ def test_a_window_that_just_appeared_is_read_from_the_screen_too():
             return super().call(method, timeout, **p)
 
     cache: dict = {}
+    scope = TaskScope()          # what one task keeps between its looks
     panel = {**win(13, "Notification Center", [1200, 30, 300, 400]), "id": 3}
     h = Sighted([panel, APP], {13: [node("Today")]})
 
     def look_with():
         cfg = Config.load()
-        ctx = Ctx(cfg=cfg, helper=h, app={"pid": 1, "name": "Editor"}, goal="", inputs={}, task="t", gate=None, cache=cache)
+        ctx = Ctx(cfg=cfg, helper=h, app={"pid": 1, "name": "Editor"}, goal="", inputs={}, task="t", gate=None, cache=cache, scope=scope)
         obs = Observation(app=ctx.app, window="w", affordances=[])
         get_provider("overlays")(ctx, obs)
         return obs.notes["covered_by"][0]["text"]
