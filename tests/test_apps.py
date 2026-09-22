@@ -61,3 +61,22 @@ def test_an_app_that_runs_without_a_window_says_so(tmp_path):
     claudebar = next(label for label in labels if "ClaudeBar" in label)
     assert "background app" in claudebar
     assert not any("background app" in label for label in labels if "计算器" in label)
+
+
+def test_a_goal_names_an_app_by_the_name_the_mac_shows_for_it():
+    """The goal that went to a dictionary website six times: 「词典」 is the name this Mac shows for Dictionary.
+    A script written without spaces has no word edges, so the name counts wherever it is written — and one
+    lying inside a longer name at the same place is the longer name."""
+    from macwork.observe import apps_named
+
+    apps = [{"name": "词典", "file": "Dictionary", "path": "/System/Applications/Dictionary.app"},
+            {"name": "文本编辑", "file": "TextEdit", "path": "/System/Applications/TextEdit.app"},
+            {"name": "信息", "file": "Messages", "path": "/System/Applications/Messages.app"},
+            {"name": "系统信息", "file": "System Information", "path": "/System/Applications/Utilities/System Information.app"}]
+
+    def named(text):
+        return [a["file"] for a in apps_named(text, apps)]
+
+    assert named("在词典里查 serendipity，把它的中文释义写进一个新的文本编辑文稿") == ["Dictionary", "TextEdit"]
+    assert named("在系统信息里查看内存") == ["System Information"]
+    assert named("look it up in Dictionary") == ["Dictionary"], "or by its file name"

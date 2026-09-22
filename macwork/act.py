@@ -500,6 +500,11 @@ def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
             return Outcome(False, error=str(exc), wait=False)
         return Outcome(True, output={"trashed": got}, wait=False)
     what = str(params.get("url") or a.target["path"])
+    scheme = str(a.target.get("scheme") or "")
+    if scheme and not what.casefold().startswith(f"{scheme.casefold()}:"):
+        # "open a 「dict:」 link with Dictionary" was judged — by the floor and by whether leaving serves the goal —
+        # as what it says. Handed an https: link, `open` would bring up the browser instead, which nobody judged.
+        return Outcome(False, error=f"this opens 「{scheme}:」 links with the app that declares them, and 「{what[:60]}」 is not one", wait=False)
     with_app = a.target.get("app")          # the app the system named, when this option was "open it with X"
     args = ["open", "-R", what] if a.verb == "reveal" else \
         (["open", "-a", str(with_app), what] if with_app else ["open", what])

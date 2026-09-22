@@ -66,7 +66,9 @@ floor_what: >-
   from what the words mean in that place: a folder, menu or setting that is only named that way is navigation.
 serves_goal: >-
   Is "{action}" a sensible step toward the goal as the user stated it — something the goal calls for, or that a
-  person would do on the way to it? (The user's words are all that count here.)
+  person would do on the way to it? Where the goal names the app to do something in (apps_the_goal_names lists
+  the apps on this Mac it names), doing that same thing somewhere else instead — in another app, on a web page,
+  at a command line — is not on the way to it. (The user's words are all that count here.)
 goal_calls_for: >-
   Does the goal itself ask for "{action}" — is this exactly what the user wants done, or a step they would expect
   on the way (not a detour, not something that undoes or abandons the goal)?
@@ -151,7 +153,9 @@ planner_plan: |-
   keyboard shortcut, {{"type": "text to type"}}, {{"drag": ["<label to drag>", "<label to drop onto>"]}}, or
   {{"open_url": "<a whole link>"}} — use that last one only with a scheme the context lists under url_schemes,
   which is the app saying it can be driven that way without its windows.
-  Leave it empty if nothing concrete comes to mind.
+  Leave it empty if nothing concrete comes to mind. The context's asks_the_user_first is what the engine will
+  not do without stopping to ask the user: plan a route that needs none of it, unless the goal itself asks for
+  that very thing.
 planner_replan: |-
   Goal: {goal}
   Done so far: {done}
@@ -165,6 +169,8 @@ planner_replan: |-
   Prefer entry points that actually appear in
   actions_available (its menus list the real shortcuts) over habits from other apps. After typing into a
   command palette or search field, add {{"keys": "return"}}. Never repeat anything in tried_without_effect.
+  The context's asks_the_user_first is what the engine will not do without stopping to ask the user: a route
+  that needs none of it comes first, unless the goal itself asks for that very thing.
   If what was tried shows the app is gated by something only the user can do (a sign-in or sign-up screen, a
   password, a system permission, a purchase), put a one-line explanation of what the user must do in "blocked"
   and leave "try" empty; otherwise leave "blocked" empty.

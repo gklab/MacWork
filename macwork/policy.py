@@ -18,7 +18,7 @@ from typing import Any, Callable
 from .decider import DeciderError, choice, noul
 from .helper import HelperError
 from .model import Affordance, Task
-from .observe import Ctx
+from .observe import Ctx, apps_named, known_apps, names_of
 from .planner import Planning
 from .privacy import Redactor
 from .words import languages_wanted
@@ -222,10 +222,15 @@ class PolicyMixin:
             return choice_, float(probs)
         return choice_, sum(float(probs.get(r, 0.0)) for r in self._releases(a))
 
-    def _floor_options(self, a: Affordance, hits: list[str]) -> dict[str, str]:
+    def floor_categories(self) -> dict[str, str]:
+        """What the floor stops for, category by category, in policy's own words — the catch-all last."""
         conf = self.cfg.policy.get("confirm", {}) or {}
         cats = {k: str((v or {}).get("what") or k) for k, v in (conf.get("categories") or {}).items()}
         cats["other"] = str(conf.get("other") or "it does something else irreversible or outward-facing").strip()
+        return cats
+
+    def _floor_options(self, a: Affordance, hits: list[str]) -> dict[str, str]:
+        cats = self.floor_categories()
         options = self._releases(a)
         # a word hit narrows the question to what the words suggested; with no hit the whole floor is on the
         # table, because the words being silent says nothing about the action
@@ -448,8 +453,18 @@ class PolicyMixin:
 
     def _goal_state(self, task: Task, ctx: Ctx, a: Affordance | None = None) -> dict[str, Any]:
         """Only what the user said, where we are and the action in question: questions about what the goal wants
-        must not be answerable by text on the screen — that is how instructions hidden in a page would get in."""
+        must not be answerable by text on the screen — that is how instructions hidden in a page would get in.
+
+        Which of the user's words are the names of apps on this Mac is neither: it is the goal read against the
+        Mac's own list of apps, and a page can change neither. 「在词典里查」 is "look it up in a dictionary"
+        until it is known that 词典 is an app here."""
         out = {"goal": task.goal, "inputs": dict(task.inputs), "working_in": (ctx.app or {}).get("name")}
+        try:
+            named = [str(x.get("name")) for x in apps_named(task.goal, known_apps(ctx)) if x.get("name")]
+        except HelperError:
+            named = []
+        if named:
+            out["apps_the_goal_names"] = named
         if a is not None:
             out["action"] = a.label
         return out
@@ -465,14 +480,47 @@ class PolicyMixin:
             return True    # cannot tell: let the caller decide
         return float(ans.get("calls_for", {}).get("noul", 1.0)) >= float(self.cfg.get("engine.thresholds.goal_calls_for", 0.3))
 
-    def _serves_goal(self, task: Task, ctx: Ctx, a: Affordance) -> bool:
-        """Leaving the app being worked in — opening or switching to another app, running a Shortcut, researching
-        on the web — must make sense for the goal as the user stated it (judged without the screen's text)."""
+    def _leaves_for(self, ctx: Ctx, a: Affordance) -> str | None:
+        """Where this action takes the task, when that is out of the app it is working in: the app's name, ""
+        for wherever the system hands it, None when it stays.
+
+        Asked of what the action does, not of which executor carries it out. The question below was asked for
+        the `app` and `shortcut` channels alone, and real runs left by three other doors without it being
+        asked once: the Apple menu's Recent Items (a menu item, 「Google Chrome」, into the person's own
+        browser), a link the planner suggested (the file channel, into whatever opens links), and an app's
+        icon in a Finder window. A menu item or a control whose own name is the name of another app on this
+        Mac opens that app; the Mac's list of apps says which names those are.
+        """
+        if a.channel in ("app", "shortcut"):
+            return str(a.target.get("name") or "")
+        if a.channel == "service":      # content handed to another app, which usually comes to the front with it
+            return ""
+        here = (ctx.app or {}).get("bundle_id")
+        if a.channel == "file" and a.verb in ("open", "reveal"):
+            # whoever the system hands a file or a link to comes to the front — for a web link, the browser
+            return None if here and a.target.get("bundle_id") == here else ""
+        title = " ".join(str(a.target.get("title") or "").split()).casefold()
+        if not title:
+            return None
+        try:
+            apps = known_apps(ctx)
+        except HelperError:
+            return None
+        for app in apps:
+            if app.get("bundle_id") != here and title in {n.casefold() for n in names_of(app)}:
+                return str(app.get("name") or a.target.get("title"))
+        return None
+
+    def _serves_goal(self, task: Task, ctx: Ctx, a: Affordance, leaving_for: str = "") -> bool:
+        """Leaving the app being worked in — opening or switching to another app, running a Shortcut, opening a
+        link or a file elsewhere — must make sense for the goal as the user stated it (judged without the
+        screen's text). `leaving_for` names the app it leaves for when the action's own words do not."""
         if self.approval_key(a) in task.approved or a.id == "launch":
             return True
         cache = task.memory.serves
         if a.label not in cache:
-            q, fills = self.cfg.question("serves_goal"), {"action": a.label}
+            what = a.label if not leaving_for or leaving_for in a.label else f"{a.label} (it opens {leaving_for})"
+            q, fills = self.cfg.question("serves_goal"), {"action": what}
             try:
                 ans = ctx.gate.decide(self.redactor(task.id), self._goal_state(task, ctx, a), {"serves": noul(q, fills=fills)}, task=task.id)
                 cache[a.label] = float(ans.get("serves", {}).get("noul", 1.0)) >= float(self.cfg.get("engine.thresholds.serves_goal", 0.35))

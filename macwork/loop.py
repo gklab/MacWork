@@ -818,8 +818,11 @@ class LoopMixin:
             if chosen is None:
                 return self._finish(task, "failed", "no action left to take on this screen", cause="no_actions")
         redactor = self.redactor(task.id)
-        if chosen.channel in ("app", "shortcut") and not self._serves_goal(task, look.ctx, chosen):
-            task.memory.decline(chosen.label)            # leaving for something the goal gives no reason for (e.g. text on a page asked)
+        leaving_for = self._leaves_for(look.ctx, chosen)
+        if leaving_for is not None and not self._serves_goal(task, look.ctx, chosen, leaving_for):
+            # leaving for something the goal gives no reason for (e.g. text on a page asked). By its handle: a menu
+            # item carries an identity, and a label it was never offered under would withhold nothing
+            task.memory.decline(chosen.handle())
             progress(f"not what the goal is about, skipped: {chosen.label}")
             return AGAIN
         floor = self._floor(task.id, look.ctx, chosen, look.obs.window)

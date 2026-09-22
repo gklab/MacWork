@@ -112,17 +112,73 @@ def installed_apps(cfg: Any, helper: Any) -> list[dict[str, Any]]:
                        timeout=float(cfg.get("observe.apps.timeout_s", 15)) + 5)
 
 
+def known_apps(ctx: Ctx) -> list[dict[str, Any]]:
+    """The apps on this Mac, the running ones first: what the apps provider offers, from the same cache."""
+    installed = _cached(ctx, "apps.installed", 600, lambda: installed_apps(ctx.cfg, ctx.helper)) \
+        if ctx.cfg.get("observe.apps.include_installed", True) else []
+    running = {a.get("path") for a in ctx.running}
+    return list(ctx.running) + [a for a in installed or [] if a.get("path") not in running]
+
+
+def names_of(app: dict[str, Any]) -> set[str]:
+    """What a person calls an app: the name the Mac shows for it, in the Mac's language, and its file name."""
+    path = str(app.get("path") or "")
+    file = app.get("file") or (path.rsplit("/", 1)[-1].removesuffix(".app") if path else "")
+    return {n for n in (" ".join(str(x or "").split()) for x in (app.get("name"), file)) if len(n) >= 2}
+
+
+def _latin(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch == "_")
+
+
+def apps_named(text: str, apps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The apps a sentence calls by name, in the order it names them — asked of the Mac's own list, so
+    nothing here knows any app.
+
+    A name counts where it stands as one: a Latin name not run into a longer word ("Maps" in "roadmaps") or
+    into a file name ("News" in "news.html"), and a name lying inside a longer name found at the same place
+    is that longer name ("App" in "App Store", 「信息」 in 「系统信息」). A script written without spaces has
+    no word edges to look for, so there a name is found wherever it is written — 「在词典里查」 names 词典.
+    """
+    hay = " ".join(str(text or "").split()).casefold()
+    found: list[tuple[int, int, dict[str, Any]]] = []
+    for app in apps:
+        for name in names_of(app):
+            n = name.casefold()
+            i = hay.find(n)
+            while i != -1:
+                j = i + len(n)
+                before, after, beyond = hay[i - 1:i] or " ", hay[j:j + 1] or " ", hay[j + 1:j + 2] or " "
+                run_in = (_latin(n[0]) and _latin(before)) or \
+                    (_latin(n[-1]) and (_latin(after) or (after == "." and _latin(beyond))))
+                if not run_in:
+                    found.append((i, j, app))
+                i = hay.find(n, i + 1)
+    whole = [f for f in found if not any(o[0] <= f[0] and f[1] <= o[1] and o[1] - o[0] > f[1] - f[0] for o in found)]
+    out: list[dict[str, Any]] = []
+    for _i, _j, app in sorted(whole, key=lambda f: f[0]):
+        if not any(app is seen for seen in out):
+            out.append(app)
+    return out
+
+
 # ----------------------------------------------------------------------------- apps
 @provider("apps")
 def apps(ctx: Ctx, obs: Observation) -> None:
     here = (ctx.app or {}).get("pid")
+    # An app the goal calls by name is a thing on this Mac, the way a path it names is one. It was one of 400
+    # behind "look into open another app", and the planner, which is never shown that group, was never told
+    # 「词典」 is an app here: it read 「在词典里查 serendipity」 as "look it up on a dictionary website", and
+    # six real runs of that task went to the person's own browser instead.
+    named = {k for k in (a.get("path") or a.get("bundle_id") for a in apps_named(ctx.goal, known_apps(ctx))) if k}
     running_paths = set()
     for i, a in enumerate(ctx.running):
         running_paths.add(a.get("path"))
         if a.get("pid") == here or not a.get("name"):
             continue
         obs.affordances.append(Affordance(f"a{i}", "app", "activate", f"switch to app {a['name']}",
-                                          {"pid": a["pid"], "bundle_id": a.get("bundle_id"), "name": a["name"]}))
+                                          {"pid": a["pid"], "bundle_id": a.get("bundle_id"), "name": a["name"],
+                                           **({"named": True} if (a.get("path") or a.get("bundle_id")) in named else {})}))
     if not ctx.cfg.get("observe.apps.include_installed", True):
         return
     installed = _cached(ctx, "apps.installed", 600, lambda: installed_apps(ctx.cfg, ctx.helper))
@@ -134,7 +190,8 @@ def apps(ctx: Ctx, obs: Observation) -> None:
         # expect a window to appear (its menu bar item is reachable through the menubar_extras provider)
         kind = " (a background app: no window, it puts an item in the menu bar)" if a.get("background") else ""
         obs.affordances.append(Affordance(f"i{i}", "app", "open", f"open app {name}{kind}",
-                                          {"path": a["path"], "bundle_id": a.get("bundle_id"), "name": a["name"]}))
+                                          {"path": a["path"], "bundle_id": a.get("bundle_id"), "name": a["name"],
+                                           **({"named": True} if (a.get("path") or a.get("bundle_id")) in named else {})}))
 
 
 # ----------------------------------------------------------------------------- menu bar
@@ -219,7 +276,7 @@ def menu(ctx: Ctx, obs: Observation) -> None:
                     ident = n.get("ident") or ""
                     obs.affordances.append(Affordance(f"m{len(obs.affordances)}", "menu", "press",
                                                       f"menu {' ▸ '.join(path + [title])}{checked}{_shortcut(n.get('cmd'))}",
-                                                      {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd"))},
+                                                      {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd")), "title": title},
                                                       context=' ▸ '.join(path[:1]),
                                                       key=_identity(ident, n.get("role"), n.get("subrole"), title)))
                     if n.get("mark"):
@@ -412,7 +469,8 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
                 text = with_state(f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}", state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame")}, context=ctx_text, key=ikey))
+                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame"),
+                                                   "title": label}, context=ctx_text, key=ikey))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
             t = str(n.get("value") or n.get("title") or n.get("desc") or "").strip()
             if t and n.get("url"):   # where a link goes is the thing worth knowing about it
@@ -1833,6 +1891,8 @@ def group_of(a: Affordance) -> tuple[str, str]:
     if a.channel == "menu":
         return f"menu:{a.context}", f"the 「{a.context}」 menu"
     if a.channel == "app":
+        if a.target.get("named"):     # the goal names it: a group of its own, too small ever to be folded away
+            return "app:named", "the apps the goal names"
         return f"app:{a.verb}", "open another app" if a.verb == "open" else "switch to another running app"
     if a.verb == "select":   # rows of one list together, apart from the window's buttons
         where = a.context.split(" ▸ ")[0] if a.context else ""

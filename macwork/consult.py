@@ -45,7 +45,11 @@ class ConsultMixin:
             brief["window"] = obs.window
             brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 600))]
             skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
-            pool = [a for a in (affs or obs.affordances) if a.channel not in skip]
+            # …except the apps the goal names, first. Shown only the apps that happened to be running, a planner
+            # routed a lookup the goal put in 「词典」 through the person's own browser and terminal, because
+            # nothing it was shown said 词典 is an app on this Mac.
+            named = [a for a in (affs or obs.affordances) if a.target.get("named")]
+            pool = named + [a for a in (affs or obs.affordances) if a.channel not in skip]
             brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
             if "open_windows" in obs.notes:
                 brief["open_windows"] = obs.notes["open_windows"] or "none: the app has no window open"
@@ -93,6 +97,10 @@ class ConsultMixin:
         planning = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id)
         try:
             ctx_brief = self._brief(task, ctx, obs, affs)
+            # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
+            # terminal for a chip model, a file count, a deletion and a Safari version — each one a stop to ask
+            # the user (a command is `execute`) on a task that had a route through the apps' own windows.
+            ctx_brief["asks_the_user_first"] = list(self.floor_categories().values())
             plan = planning.plan(task.goal, ctx_brief) if task.plan is None else \
                 planning.replan(task.goal, ctx_brief, [s.action for s in task.steps], problem)
         except PlannerError as exc:
