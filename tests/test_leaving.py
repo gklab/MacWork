@@ -154,11 +154,12 @@ def test_the_planner_is_told_what_stops_to_ask_the_user(tmp_path):
     eng.do("make a new document")
 
     prompt = eng._planner.prompts[0]
-    told = json.loads(prompt.split("What is known (app, screen, commands it offers, what was learned before): ", 1)[1]
-                      .split("\n", 1)[0])["asks_the_user_first"]
+    line = next(x for x in prompt.splitlines() if x.startswith("Asks the user first: "))
+    told = json.loads(line.split(": ", 1)[1])
     floor = Config.load().policy["confirm"]
     assert floor["categories"]["execute"]["what"] in told, "a command in a terminal is a stop to ask the user"
     assert len(told) == len(floor["categories"]) + 1, "every category, in policy's own words, and the catch-all"
+    assert prompt.index("Asks the user first") < prompt.index("Goal:"), "the same on every call: before what is not"
 
 
 def test_an_option_for_one_kind_of_link_opens_no_other(tmp_path, monkeypatch):

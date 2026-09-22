@@ -135,6 +135,26 @@ def _json_from(text: str) -> dict[str, Any]:
     raise PlannerError(f"no JSON in planner reply: {text[:200]!r}")
 
 
+def _whole_object(text: str) -> bool:
+    """Has one whole JSON object arrived — its closing brace outside any string — past any reasoning block?"""
+    think = text.rfind("</think>")
+    if "<think>" in text and think == -1:
+        return False                          # still reasoning: a brace in there is not the answer
+    depth, in_str, esc, opened = 0, False, False, False
+    for ch in text[think + len("</think>") if think != -1 else 0:]:
+        if in_str:
+            esc, in_str = (not esc and ch == "\\"), in_str and (esc or ch != '"')
+        elif ch == '"':
+            in_str = opened
+        elif ch == "{":
+            depth, opened = depth + 1, True
+        elif ch == "}" and opened:
+            depth -= 1
+            if depth == 0:
+                return True
+    return False
+
+
 class OpenAICompatPlanner:
     """Any OpenAI-compatible chat endpoint, named in ``planner.endpoints``: DeepSeek's official API, or a local
     server (LM Studio, Ollama, mlx_lm.server, vLLM). Keys come from an env var or the Keychain, never a file."""
@@ -150,6 +170,7 @@ class OpenAICompatPlanner:
         self.json_mode = bool(conf.get("json_mode", False))
         self.max_tokens = conf.get("max_tokens")
         self.local = bool(conf.get("local", False))
+        self.stream = bool(conf.get("stream", False))   # read the reply as it is written (see `_stream`)
         self.extra = conf.get("extra") or {}
         env = conf.get("api_key_env")
         self.key = (os.environ.get(env, "").strip() if env else "") or \
@@ -161,6 +182,38 @@ class OpenAICompatPlanner:
         handlers = [urllib.request.ProxyHandler({})] if self.local else []   # a local server is never reached through a proxy
         with urllib.request.build_opener(*handlers).open(req, timeout=timeout) as r:
             return json.loads(r.read())
+
+    def _stream(self, body: dict[str, Any]) -> str:
+        """The reply's text, read as the server writes it, the connection closed as soon as one whole JSON
+        object has arrived.
+
+        Asked for all at once, a server says nothing until it has finished, so the only timeout there can be
+        is on the whole answer. On a busy Mac a local model's plan ran past 45 s, was given up on and asked
+        again — and the server, never told, went on writing the first answer beside the second: one plan took
+        87 s that takes 11 s on its own. Streamed, the timeout is on silence, not on length, and closing the
+        connection is how a server is told to stop (mlx_lm stops at its next write). Nothing after the object
+        is waited for either.
+        """
+        req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps({**body, "stream": True}).encode(),
+                                     headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {self.key}"} if self.key else {})})
+        handlers = [urllib.request.ProxyHandler({})] if self.local else []
+        text = ""
+        with urllib.request.build_opener(*handlers).open(req, timeout=self.timeout) as r:
+            for raw in r:                                   # server-sent events, one line at a time
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue                                # blank separators, ": keepalive" while the prompt is read
+                data = line[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                text += ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content") or ""
+                if _whole_object(text):
+                    break
+        return text
 
     def available(self) -> bool:
         if not self.base:
@@ -203,21 +256,28 @@ class OpenAICompatPlanner:
 
     def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         example = {k: ([] if v.get("type") == "array" else {} if v.get("type") == "object" else "") for k, v in schema.get("properties", {}).items()}
+        # On one line: indentation is written a token at a time, and on this Mac's local model every token
+        # of output costs 70 ms.
         body: dict[str, Any] = {"messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": f"{prompt}\n\nReply with one JSON object only, shaped like this example: {json.dumps(example)}"}],
+            {"role": "user", "content": f"{prompt}\n\nReply with one JSON object only, on a single line without indentation, "
+                                        f"shaped like this example: {json.dumps(example)}"}],
             **self.extra}
         if self.json_mode:
             body["response_format"] = {"type": "json_object"}
         if self.max_tokens:
             body["max_tokens"] = int(self.max_tokens)
         last: Exception | None = None
-        for _ in range(2 + len(self.spare)):   # JSON mode may occasionally return empty content: ask once more
+        asked_again = False
+        while True:
             if self.model:
                 body["model"] = self.model
             try:
-                r = self._post("/chat/completions", body, self.timeout)
-                content = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                if self.stream:
+                    content = self._stream(body)
+                else:
+                    r = self._post("/chat/completions", body, self.timeout)
+                    content = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
                 if content.strip():
                     return _json_from(content)
                 last = PlannerError("empty reply")
@@ -225,10 +285,23 @@ class OpenAICompatPlanner:
                 if exc.code in (401, 403):
                     raise PlannerError(f"{self.name}: credentials rejected ({exc.code})", refused=True) from exc
                 last = exc
-                if exc.code in (400, 404) and not self._next_model():   # this server cannot serve this model
+                if exc.code in (400, 404):              # this server cannot serve this model: name another, if any
+                    if self._next_model():
+                        continue
                     break
-            except (OSError, urllib.error.URLError, ValueError, PlannerError) as exc:
+            except (TimeoutError, urllib.error.URLError) as exc:
+                # Not asked again. A timeout means the server is still at work on this request, or cannot keep
+                # up: a second copy only doubles what it has to do, and a server that is not told the first was
+                # given up on writes both. The loop that asked carries on without a plan, as it does for any
+                # planner error.
+                if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+                    raise PlannerError(f"{self.name}: no reply within {self.timeout:.0f} s") from exc
                 last = exc
+            except (OSError, ValueError, PlannerError) as exc:
+                last = exc
+            if asked_again:              # an empty or unreadable reply is asked for once more, and only once
+                break
+            asked_again = True
         raise PlannerError(f"{self.name}: {last}")
 
 
@@ -441,14 +514,17 @@ class Planning:
         words = out.get("words") if isinstance(out, dict) else None
         return {k: [str(w) for w in v if str(w).strip()] for k, v in (words or {}).items() if k in categories and isinstance(v, list)}
 
-    def plan(self, goal: str, context: dict[str, Any]) -> dict[str, Any]:
-        out = self._ask("planner_plan", PLAN_SCHEMA, goal=goal, context=context)
+    def plan(self, goal: str, context: dict[str, Any], asks_first: list[str] | None = None) -> dict[str, Any]:
+        """`asks_first`: what the safety floor stops to ask the user about, in policy's words."""
+        out = self._ask("planner_plan", PLAN_SCHEMA, goal=goal, context=context, asks_first=list(asks_first or []))
         steps, evidence = _steps(out.get("steps"), self.max_steps)
         return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}
 
-    def replan(self, goal: str, context: dict[str, Any], done: list[str], problem: str) -> dict[str, Any]:
-        out = self._ask("planner_replan", PLAN_SCHEMA, goal=goal, context=context, done=done, problem=problem)
+    def replan(self, goal: str, context: dict[str, Any], done: list[str], problem: str,
+               asks_first: list[str] | None = None) -> dict[str, Any]:
+        out = self._ask("planner_replan", PLAN_SCHEMA, goal=goal, context=context, done=done, problem=problem,
+                        asks_first=list(asks_first or []))
         steps, evidence = _steps(out.get("steps"), self.max_steps)
         return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}

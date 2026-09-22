@@ -36,29 +36,45 @@ class ConsultMixin:
             self._planner = make_planner(self.cfg, self.helper) or False
         return self._planner or None
 
-    def _brief(self, task: Task, ctx: Ctx | None, obs: Observation | None, affs: list[Affordance] | None = None) -> dict[str, Any]:
-        brief: dict[str, Any] = {"running_apps": [a.get("name") for a in (ctx.running if ctx else [])][:30]}
+    def _brief(self, task: Task, ctx: Ctx | None, obs: Observation | None, affs: list[Affordance] | None = None,
+               acting: bool = True) -> dict[str, Any]:
+        """What the planner is told.
+
+        `acting=False` is for a question about what the screen already shows — is the goal done, what is the
+        answer, what goes into this field. The actions on offer, the app's declared commands and the other
+        running apps are what a route is made of: prompt to be read and nothing such a question needs. On this
+        Mac's local model every thousand tokens of prompt is about three seconds, and the second opinion on
+        "done" is asked at the end of nearly every task. What fields hold and which menu items are checked is
+        told instead, since the action labels were where that used to be read.
+        """
+        brief: dict[str, Any] = {"running_apps": [a.get("name") for a in (ctx.running if ctx else [])][:30]} if acting else {}
         if ctx and ctx.app:
             brief["app"] = ctx.app.get("name")
-            brief["app_model"] = self.models.brief(ctx.app)
+            if acting:
+                brief["app_model"] = self.models.brief(ctx.app)
         if obs:
             brief["window"] = obs.window
             brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 600))]
-            skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
-            # …except the apps the goal names, first. Shown only the apps that happened to be running, a planner
-            # routed a lookup the goal put in 「词典」 through the person's own browser and terminal, because
-            # nothing it was shown said 词典 is an app on this Mac.
-            named = [a for a in (affs or obs.affordances) if a.target.get("named")]
-            pool = named + [a for a in (affs or obs.affordances) if a.channel not in skip]
-            brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
+            if acting:
+                skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
+                # …except the apps the goal names, first. Shown only the apps that happened to be running, a
+                # planner routed a lookup the goal put in 「词典」 through the person's own browser and terminal,
+                # because nothing it was shown said 词典 is an app on this Mac.
+                named = [a for a in (affs or obs.affordances) if a.target.get("named")]
+                pool = named + [a for a in (affs or obs.affordances) if a.channel not in skip]
+                brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
+            else:
+                brief.update({k: v for k, v in self._evidence(obs).items() if k != "controls_on_screen"})
             if "open_windows" in obs.notes:
                 brief["open_windows"] = obs.notes["open_windows"] or "none: the app has no window open"
-        routines = [sk["goal"] for sk in self.skills.for_app((ctx.app or {}).get("bundle_id") if ctx else None)]
-        if routines:
-            brief["learned_routines"] = routines[:10]
+        if acting:
+            routines = [sk["goal"] for sk in self.skills.for_app((ctx.app or {}).get("bundle_id") if ctx else None)]
+            if routines:
+                brief["learned_routines"] = routines[:10]
         if task.steps:
             brief["done_so_far"] = [s.action for s in task.steps[-8:]]
-            brief["tried_without_effect"] = sorted({s.action for s in task.steps if not s.ok or not s.events})[:20]
+            if acting:
+                brief["tried_without_effect"] = sorted({s.action for s in task.steps if not s.ok or not s.events})[:20]
         return brief
 
     def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str, affs: list[Affordance] | None = None) -> bool:
@@ -100,14 +116,25 @@ class ConsultMixin:
             # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
             # terminal for a chip model, a file count, a deletion and a Safari version — each one a stop to ask
             # the user (a command is `execute`) on a task that had a route through the apps' own windows.
-            ctx_brief["asks_the_user_first"] = list(self.floor_categories().values())
-            plan = planning.plan(task.goal, ctx_brief) if task.plan is None else \
-                planning.replan(task.goal, ctx_brief, [s.action for s in task.steps], problem)
+            # Beside the instructions rather than in the context: it is the same on every call, so it belongs
+            # in the part of the prompt a local server keeps.
+            asks_first = list(self.floor_categories().values())
+            plan = planning.plan(task.goal, ctx_brief, asks_first) if task.plan is None else \
+                planning.replan(task.goal, ctx_brief, [s.action for s in task.steps], problem, asks_first)
         except PlannerError as exc:
             log.info("planner: %s", exc)
             task.outputs.setdefault("planner_errors", []).append(str(exc)[:200])
             return False
         self.spend_allowance(task, "corrections" if went_wrong else "replans")
+        # Asked again, the planner may give the plan it gave last time. A real task was handed the same two
+        # sub-goals three times running, 25-40 s apiece on this Mac's local model, and each time looked again
+        # instead of acting. The same answer is no new route — which is what `max_fruitless_rethinks` counts,
+        # and past it the task says why it is stuck instead of asking a fourth time.
+        route = list(plan["steps"]) + [self._suggestion_label(t) for t in plan.get("try") or []]
+        if route and route == task.memory.last_route and not plan.get("blocked"):
+            log.info("planner: the same route as last time")
+            return False
+        task.memory.last_route = route
         task.blocked_reason = plan.get("blocked") or ""
         dead = task.memory.no_effect_handles()
         task.tries = [t for t in plan.get("try") or [] if self._suggestion_label(t) not in dead]   # facts beat suggestions
@@ -128,7 +155,7 @@ class ConsultMixin:
         backend = self.planning_backend
         if backend is None:
             return
-        brief = self._brief(task, None, obs)
+        brief = self._brief(task, None, obs, acting=False)
         brief["screen_text"] = (task.outputs.get("result_screen") or {}).get("text") or brief.get("screen_text", "")
         if task.memory.facts and task.memory.facts.seen:
             # what the task saw in each app, window titles included. Without it the answer was written from the
@@ -211,7 +238,7 @@ class ConsultMixin:
         if backend is None or not self.cfg.get("planner.fill_inputs", True):
             return None
         step = task.plan[task.plan_i] if task.plan and task.plan_i < len(task.plan) else task.goal
-        brief = self._brief(task, ctx, obs)
+        brief = self._brief(task, ctx, obs, acting=False)
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
         try:

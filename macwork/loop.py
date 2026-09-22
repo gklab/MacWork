@@ -743,7 +743,7 @@ class LoopMixin:
             return ""
         try:
             agrees, why = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).judge_done(
-                task.goal, self._brief(task, look.ctx, look.obs, look.affs))
+                task.goal, self._brief(task, look.ctx, look.obs, look.affs, acting=False))
         except Exception as exc:  # noqa: BLE001  (an opinion that could not be had is no opinion; it never fails the task)
             log.info("second opinion on done: %s", exc)
             return ""

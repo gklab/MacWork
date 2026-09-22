@@ -271,6 +271,8 @@ planner:
       base_url: http://127.0.0.1:1234/v1
       model: ""                  # empty: the server's first model
       local: true
+      stream: true               # read as written: the timeout is then on silence, not on length, a reply is not
+                                 # waited out past its JSON, and a request given up on is stopped, not left running
       timeout_s: 45              # a dense 27B model needs ~15–25 s per plan; a cold one pages back in first
       max_tokens: 1500
       extra: {chat_template_kwargs: {enable_thinking: false}}   # plans, not reasoning transcripts (ignored by models without it)
