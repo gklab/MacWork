@@ -615,7 +615,10 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         except HelperError:
             nodes = []
         whole = " / ".join(dict.fromkeys(str(n.get(k)) for n in nodes for k in ("title", "value", "desc") if n.get(k)))
-        if _window_id(w) not in seen and oc.get("read_by_sight", True) and w.get("frame"):
+        if seen and _window_id(w) not in seen and oc.get("read_by_sight", True) and w.get("frame"):
+            # `seen` empty is the first look: everything is new then, and reading four windows by sight
+            # before the first decision would cost seconds for what the first look is not about. The first
+            # look records what was there; what appears after an action is what gets read.
             # What its tree cannot say, the screen can — for a window of another process too. Notification
             # Center, dropped down by the menu bar clock, names its notifications in its tree and draws its
             # widgets, and the date a task was sent for was in a widget. Once, when the window first

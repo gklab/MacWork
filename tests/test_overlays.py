@@ -187,6 +187,13 @@ def test_a_window_that_just_appeared_is_read_from_the_screen_too():
         return obs.notes["covered_by"][0]["text"]
 
     first = look_with()
-    assert "22 September" in first and first.count("Today") == 1, first
+    assert "22 September" not in first and not getattr(h, "ocr", []), "the first look records what is there; nothing is read by sight yet"
+    h.windows = [panel, APP]                       # it stays; nothing new: still nothing read
     look_with()
-    assert getattr(h, "ocr", []) == [13], "read once, when it first appeared"
+    assert not getattr(h, "ocr", [])
+    dropped = {**win(14, "Control Center", [1200, 30, 300, 400]), "id": 4}   # appeared after an action
+    h.windows, h.trees = [dropped, panel, APP], {13: [node("Today")], 14: [node("Today")]}
+    said = look_with()
+    assert "22 September" in said and said.count("Today") == 1, said
+    look_with()
+    assert getattr(h, "ocr", []) == [14], "read once, when it first appeared"
