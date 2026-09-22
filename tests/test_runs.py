@@ -92,3 +92,22 @@ def test_three_actions_from_one_unchanged_screen_is_said_and_asked_about(tmp_pat
     assert "stuck_on_this_screen" in look.state and "3 actions" in look.state["stuck_on_this_screen"]
     assert back.prompts, "the planner was asked for a route from here"
     assert any("cmd+n" in v for v in look.options.values()), "and what it suggested is among the options"
+
+
+def test_the_planners_blocked_is_an_opinion_until_the_decider_agrees(tmp_path):
+    """A real run ended `blocked` at step 0: the planner, shown a path as ~/…, decided it "did not know the
+    real user name". The decider had said "find another route". Two judgements have to agree."""
+    from tests.test_flex import FakeBackend
+    d = ScriptedDecider([{"pick": "New", "move": "rethink"}, {"pick": "New"}, {"pick": "done", "done": 0.95}])
+    eng = Engine(cfg(tmp_path), helper=EnglishMac(), decider=d)
+    eng._planner = FakeBackend([{"steps": [], "inputs": {}, "blocked": "the user must sign in first"}])
+    res = eng.do("make a new document")
+    assert res["status"] == "done", f"the planner's word alone ended the task: {res['status']} {res.get('reason')}"
+    later = [s for s, q in d.seen if "planner_thinks" in s]
+    assert later and "sign in" in later[0]["planner_thinks"], "the decider was shown the opinion"
+
+    d = ScriptedDecider([{"pick": "New", "move": "rethink"}, {"pick": "New", "move": "blocked"}])
+    eng = Engine(cfg(tmp_path), helper=EnglishMac(), decider=d)
+    eng._planner = FakeBackend([{"steps": [], "inputs": {}, "blocked": "the user must sign in first"}])
+    res = eng.do("make a new document")
+    assert res["status"] == "blocked" and "sign in" in res["reason"], "when the decider agrees, the planner's reason is the reason"
