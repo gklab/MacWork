@@ -262,11 +262,35 @@ def _real_windows(engine: Engine) -> dict[int, set[int]]:
     out: dict[int, set[int]] = {}
     for w in wins:
         f = w.get("frame") or [0, 0, 0, 0]
+        if w.get("id") is None or not w.get("alpha", 1):
+            continue
         # the ordinary level, visible, and big enough to be a window rather than a toolbar strip or a
         # tooltip: an afternoon of runs left a Mac full of windows on other Spaces that a sweep of the
         # current one called clean
-        if w.get("layer", 0) == 0 and w.get("alpha", 1) and w.get("id") is not None and f[2] > 100 and f[3] > 60:
+        if w.get("layer", 0) == 0 and f[2] > 100 and f[3] > 60:
             out.setdefault(int(w["pid"]), set()).add(int(w["id"]))
+        # …and a dialog *above* the ordinary level: a permission prompt an app the run launched made the
+        # system put up. It belongs to no app the sweep quits, it stays through everything that follows,
+        # and one of them sat over a whole suite — every task pressed Escape at it and ended blocked.
+        # Big enough to be a dialog, not a menu bar item or a banner.
+        elif w.get("layer", 0) > 0 and f[2] >= 200 and f[3] >= 100:
+            out.setdefault(int(w["pid"]), set()).add(int(w["id"]))
+    return out
+
+
+def _dialogs_above(engine: Engine, before: dict[int, set[int]]) -> list[dict[str, Any]]:
+    """Windows above the ordinary level that were not there before, by owner — what no task can get past."""
+    try:
+        wins = engine.helper.call("screen.windows", all=True) or []
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for w in wins:
+        f = w.get("frame") or [0, 0, 0, 0]
+        if w.get("layer", 0) > 0 and f[2] >= 200 and f[3] >= 100 and w.get("id") is not None \
+                and int(w["id"]) not in before.get(int(w["pid"]), set()):
+            out.append({"app": w.get("owner") or "?", "pid": int(w["pid"]), "new_app": False, "windows": 1,
+                        "ids": [int(w["id"])], "dialog": True, "title": str(w.get("title") or "")[:80]})
     return out
 
 
@@ -289,6 +313,8 @@ def _leftovers(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> 
             extra = wins1.get(a["pid"], set()) - wins0.get(a["pid"], set())
             if extra:
                 out.append({"app": a["name"], "pid": a["pid"], "new_app": False, "windows": len(extra), "ids": sorted(extra)})
+    seen = {x["pid"] for x in out}
+    out += [d for d in _dialogs_above(engine, wins0) if d["pid"] not in seen]   # the system's own prompts: no app of the list owns them
     return out
 
 
@@ -362,6 +388,18 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
                     # an app of the harness's own making does not get to stay on the person's Mac
                     engine.helper.call("apps.quit", pid=item["pid"], force=True, timeout_ms=3000, timeout=15)
                     log_harness(f"sweep: {item['app']} would not quit and was forced")
+                continue
+            if item.get("dialog"):
+                # A prompt above every window, owned by the system on behalf of an app the run launched. The
+                # harness never answers it — Allow is a decision that is the person's — it steps back from it:
+                # Escape is the one key every such prompt takes as "not now".
+                log_harness(f"a dialog above every window is on screen: 「{item.get('title') or item['app']}」 — pressing Escape")
+                try:
+                    engine.helper.call("apps.activate", pid=item["pid"])
+                except Exception:  # noqa: BLE001
+                    pass
+                engine.helper.call("input.key", combo="escape")
+                time.sleep(0.5)
                 continue
             nodes = engine.helper.call("ax.snapshot", pid=item["pid"], scope="windows", max_depth=1, max_nodes=400).get("nodes", [])
             screen = {int(w["id"]): w for w in engine.helper.call("screen.windows") if w.get("pid") == item["pid"]}
@@ -628,6 +666,9 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         lap("launch")
         cleanup(engine, t, "setup")
         before = _desktop(engine)          # after setup: what the task itself must leave as it found it
+        above = _dialogs_above(engine, {})   # any prompt above every window, whoever left it: this run is not a clean one, and says so
+        if above:
+            log_harness("on screen before this task, above every window: " + "; ".join(f"「{d['title'] or d['app']}」" for d in above))
         text_before = _text_of(engine, t.get("app"))[1] if "app_changed" in (t.get("check") or {}) else ""
         lap("setup")
         expected = _expected(t)
@@ -712,6 +753,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                       # where none are, and a total cannot show it
                       "answered_anyway": bool((res.get("outputs") or {}).get("unfinished_but_answered")),
                       "harness_s": phase, "left_by_engine": left_by_engine,
+                      "on_screen_before": [d["title"] or d["app"] for d in above],   # a prompt from an earlier task, still up: not a clean run
                       "left_after_sweep": [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in stuck]}
         progress(f"   {'PASS' if ok else 'FAIL'} {row['status']} {row['steps']} steps {seconds}s ({why})"
                  + (f" — left behind by the engine: {left_by_engine}" if left_by_engine else ""))
@@ -762,6 +804,7 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
                "total_cost_usd": round(sum(r["cost_usd"] for r in rows), 5), "decider_calls": sum(r["decider_calls"] for r in rows),
                "categories": {c: _rate(rs) for c, rs in sorted(cats.items())},
                "tasks_leaving_things_behind": sum(bool(r.get("left_by_engine")) for r in valid),
+               "runs_with_a_prompt_already_up": sum(bool(r.get("on_screen_before")) for r in valid),
                "passed_by_answering_anyway": sum(bool(r.get("answered_anyway")) and r["passed"] for r in valid),
                "runs_with_broken_invariants": sum(bool(r.get("invariants_broken")) for r in valid),
                "at": time.strftime("%Y-%m-%d %H:%M")}
