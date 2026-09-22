@@ -12,7 +12,7 @@ message, and cannot be paired with anything now. A baseline that is in the repos
 | `behaviour.yaml` | 2026-09-22 11:38 | ×3 | 5/6 tasks, 14/18 runs | `ae5e75d0df7a05a8` | decider jev, planner deepseek-flash (thinking off). The two Numbers tasks are `invalid` on this Mac (not installed) and never counted. `reaches-the-menu-bar-extras` 0/3; `hands-back-when-the-turn-is-spent` 2/3 |
 | `heldout.yaml` | 2026-09-22 12:37 | ×3 | 3/8 tasks, 9/24 runs | `36c57c5379494076` | **sealed**: apps never used while building. Its traces are not read to fix anything; only this number is watched, and the gap between it and the dev suites is what generalisation means here |
 | `sampled.yaml` | 2026-09-22 12:54 | ×3 | 5/12 tasks, 17/36 runs | `b5e3caf936dccecd` | apps this repository had never named, drawn at run time (six here: AppKit ×2, Catalyst, Electron, Qt, Java). `version-in-about` 4/6 apps every time; `settings-window` 1/6. Qt 0/6 |
-| `v2.yaml` | — | — | — | — | **no report was kept.** The 14/29 in `docs/benchmarks.md` has no file behind it; a ×3 run on 2026-09-22 was stopped by hand before it finished |
+| `v2.yaml` | 2026-09-22 13:06 | ×1 | 13/27 tasks | `9777a7ba417c5e43` | the first v2 report ever kept. One run: pair with care. Keynote and Numbers are not on this Mac, so two tasks are `invalid` |
 
 ## Replacing one
 

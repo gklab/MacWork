@@ -229,10 +229,10 @@ macwork profile                                      # where each step's time go
 ```
 
 `evals/v2.yaml` holds 29 tasks over navigation, multi-step, cross-app, question answering, must-not and
-prompt injection, using only apps that ship with macOS. The current result is **14/29 on a single run** —
-which is not a success rate: the move from 12/29 was 2 fixed and 0 broken, p = 0.50, and no report of it was
-kept. `compare` refuses to pair reports from a different suite or decider; the baseline a run is held against
-is committed in `evals/baseline/` (the behaviour suite, ×3: 5/6 tasks). History: [docs/benchmarks.md](docs/benchmarks.md).
+prompt injection, using only apps that ship with macOS; the kept result is **13/27 on a single run** (not a
+success rate). Generalisation is measured apart: `heldout.yaml` (apps never used while building, sealed) and
+`sampled.yaml` (apps the repository has never named, drawn at run time). Baselines live in `evals/baseline/`;
+`compare` pairs a run with one. History and the gap between suites: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Configuration
 

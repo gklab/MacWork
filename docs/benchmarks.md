@@ -46,6 +46,23 @@ Paired against the ×1 baseline: 3 fixed, 0 broken, exact McNemar p = 0.25 — t
 alone does that a quarter of the time. The two Numbers tasks are `invalid` on this Mac, which has no
 Numbers, and are counted nowhere.
 
+### Four suites, one afternoon (2026-09-22, engine at commit db10806 or a few before it)
+
+| suite | what it measures | ×N | tasks | runs | where it stands |
+|---|---|---|---|---|---|
+| `behaviour.yaml` | dev suite, behaviours v2 predates | ×3 | 3/5 | 10/15 | paired with the ×3 baseline: 0 fixed, 1 broken (p = 1.0) — the broken one pastes what the clipboard happened to hold |
+| `v2.yaml` | dev suite, 29 tasks in six categories | ×1 | 13/27 | 13/27 | the first v2 report ever kept. A 5/5 · B 0/5 · C 1/5 · D 2/5 · E 3/4 · F 2/3 |
+| `heldout.yaml` | apps never used while building — **sealed** | ×3 | 3/8 | 9/24 | only this number is watched; its traces are never read to fix anything |
+| `sampled.yaml` | apps the repository has never named, drawn at run time | ×3 | 5/12 | 17/36 | AppKit 7/12 · Java 4/6 · Catalyst 3/6 · Electron 3/6 · Qt 0/6; `version-in-about` 4/6 apps every time, `settings-window` 1/6 |
+
+**The generalisation gap.** Dev suites pass 48–67% of runs; held-out apps 38%; never-named apps 47%.
+The gap is the number to move: a change that lifts the dev suites and not the other two is tuning, not
+generalisation. What the never-named apps showed, all general: a version number V8.1.3.8 was pseudonymised
+as an IP address; an About panel a Qt app draws itself was "a picture that changed where no text did" and
+nothing read it; settings that open *in* the window failed a check that counted windows; and the first draw
+took an onboarding panel for an app. Each is fixed in the commits after `db10806`; the numbers above are
+from before those fixes and stay as the baseline until the next ×3 run.
+
 The first time the suite ran, it crashed. Nine things surfaced that no amount of reading the code had
 found, among them: the harness called a function it never imported (436 unit tests were green over a
 harness that could not start); the local planner named the first model the server *listed* rather than the
