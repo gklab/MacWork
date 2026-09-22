@@ -19,7 +19,9 @@ from .decider import DeciderError, choice, noul
 from .helper import HelperError
 from .model import Affordance, Task
 from .observe import Ctx
+from .planner import Planning
 from .privacy import Redactor
+from .words import languages_wanted
 
 log = logging.getLogger(__name__)
 
@@ -71,18 +73,36 @@ class PolicyMixin:
     def _floor_hits(self, a: Affordance) -> list[str]:
         """Floor categories whose *words* appear in the action — a hint, never a verdict.
 
-        The patterns in policy.yaml are written in English and Chinese, so "Löschen", "削除", "Supprimer" and
-        "Удалить" match nothing at all. Letting a miss mean "safe" would switch the floor off for every other
-        language, which is why nothing here decides on its own: hits only say what to classify first, and which
-        categories to offer the classifier.
+        The patterns in policy.yaml are written in English and Chinese; the words for every other language
+        this Mac's interface uses are derived once from what each category means (`words.py`), so "Löschen"
+        is a hit on a German Mac the way "Delete" is on an English one. Letting a miss mean "safe" would still
+        switch the floor off wherever nothing could be derived, which is why nothing here decides on its own:
+        hits only say what to classify first, which categories to offer the classifier, and how sure it has
+        to be.
         """
         conf = self.cfg.policy.get("confirm", {}) or {}
         text = f"{a.verb} {a.label} {a.context}"
+        derived = self._floor_words()
         hits = [name for name, c in (conf.get("categories") or {}).items()
-                if any(re.search(rx, text) for rx in (c or {}).get("patterns") or [])]
+                if any(re.search(rx, text) for rx in list((c or {}).get("patterns") or []) + derived.get(name, []))]
         if any(re.search(rx, text) for rx in conf.get("patterns") or []):
             hits.append("other")
         return hits
+
+    def _floor_words(self) -> dict[str, list[str]]:
+        """The derived patterns per category for the languages of this Mac the seed lists do not cover."""
+        if "floor.words" not in self.cache:
+            conf = self.cfg.policy.get("confirm", {}) or {}
+            covered = [str(x).lower() for x in conf.get("languages") or []]
+            wanted = languages_wanted(self.system(), covered)
+            self.cache["floor.words"] = self.floor_words.patterns(conf.get("categories") or {}, wanted, self._derive_floor_words) if wanted else {}
+        return self.cache["floor.words"]
+
+    def _derive_floor_words(self, lang: str, meanings: dict[str, str]) -> dict[str, list[str]] | None:
+        backend = self.planning_backend
+        if backend is None:
+            return None
+        return Planning(self.cfg, backend, None, self.audit).floor_words(lang, meanings)
 
     def _floor_key(self, ctx: Ctx, a: Affordance) -> str:
         """Per app *version*: an update can move a command or change what a label means.

@@ -78,6 +78,8 @@ def _tries(raw: Any) -> list[dict[str, Any]]:
         if len(item) == 1:
             out.append(item)
     return out
+from .words import WORDS_SCHEMA  # noqa: E402
+
 TEXT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False}
 ANSWER_SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"], "additionalProperties": False}
 DONE_SCHEMA = {"type": "object", "properties": {"done": {"type": "boolean"}, "why": {"type": "string"}},
@@ -427,6 +429,13 @@ class Planning:
                 tried = list(getattr(self.p, "tried", []) or [str(getattr(self.p, "name", "?"))])
                 self.audit.record("plan", answered_by=tried[-1] if tried else "?", tried=tried, prompt=prompt)
         return self.redactor.restore(out) if self.redactor is not None else out
+
+    def floor_words(self, language: str, categories: dict[str, str]) -> dict[str, list[str]]:
+        """The words that mean each floor category in one interface language: asked once per language, kept
+        on disk by `words.FloorWords`. Nothing of the user's is in the question."""
+        out = self._ask("floor_words", WORDS_SCHEMA, language=language, categories=categories)
+        words = out.get("words") if isinstance(out, dict) else None
+        return {k: [str(w) for w in v if str(w).strip()] for k, v in (words or {}).items() if k in categories and isinstance(v, list)}
 
     def plan(self, goal: str, context: dict[str, Any]) -> dict[str, Any]:
         out = self._ask("planner_plan", PLAN_SCHEMA, goal=goal, context=context)

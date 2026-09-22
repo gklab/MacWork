@@ -174,6 +174,15 @@ planner_done: |-
   its text, what was done so far — is it? Be strict: a dialog that is merely open, a value not yet entered, a
   result not yet on screen, a wrong window in front, is not done. Reply with JSON: {{"done": true or false,
   "why": "one short sentence"}}.
+floor_words: |-
+  A safety floor classifies actions on a Mac whose interface language is "{language}". For each category below,
+  list the words and short phrases that a menu item, button or dialog in that language would use to mean it —
+  the verbs and nouns a native speaker would see on screen (for "delete": what that language's Delete, Remove,
+  Move to Trash, Discard, Don't Save say). 3 to 12 entries per category, in the interface language only, no
+  explanations, no English unless the interface language is English.
+  Categories: {categories}
+  Reply in "words": an object from category name to a list of strings.
+
 planner_fill: |-
   Goal: {goal}
   Current step: {step}

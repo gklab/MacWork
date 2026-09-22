@@ -26,6 +26,7 @@ from .appmodel import AppModels
 from .config import Config
 from .budget import BudgetMixin
 from .invariants import check_ending
+from .words import FloorWords
 from .consult import ConsultMixin
 from .decider import Decider, DeciderError, make_decider
 from .effects import EffectsMixin
@@ -90,6 +91,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         self.skills = Skills(self.cfg)
         self.store = Store(self.cfg)
         self.grants = Grants(self.cfg)
+        self.floor_words = FloorWords(self.grants.path.parent)   # the floor's words for this Mac's languages, kept beside the grants
         self.cache["appmodels"] = self.models
         self.cache["skills"] = self.skills
         self._planner: Any = None

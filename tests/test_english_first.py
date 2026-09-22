@@ -30,6 +30,7 @@ DEFAULTS = {"policy.yaml", "privacy.yaml"}
 # A test is written in English (tests/english_mac.py and tests/test_engine.py are the fake Macs for it) unless
 # another language or script is the very thing it tests. Each such file is named here with what it tests.
 LANGUAGE_IS_THE_SUBJECT = {
+    "test_floor_words.py": "German menu labels, which the words derived for a German Mac must recognise",
     "test_floor.py": "the safety floor in German, Chinese, Japanese, French and Russian",
     "test_floor_threshold.py": "the same verdict on a German, a Japanese, a Russian, a Chinese and an English Mac",
     "test_privacy.py": "redaction of names, addresses and numbers written in other scripts",

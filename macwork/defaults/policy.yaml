@@ -86,6 +86,11 @@ confirm:
     # run, for a goal that asked for exactly that. Narrowed to the app's own controls: a Shortcut, a
     # service or a script that "creates" can create anywhere, and stays gated.
     create: [channel:window, channel:menu, channel:keys]
+  # The languages the seed patterns below are written in. For every other language this Mac's interface uses
+  # (system.locale), the words that mean each category are derived once from its `what` by the planner and kept
+  # beside the grants (floor-words.<lang>.json) — so a German "Löschen" is a hit the way "Delete" is, and the
+  # higher bar applies. Nothing derived: the seed lists, logged.
+  languages: [en, zh]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something

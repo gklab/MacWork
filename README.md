@@ -189,8 +189,8 @@ browser is an app. The cost is stated honestly: Chrome puts no page content in t
 The safety floor in `policy.yaml` is a floor, not a way of deciding what to do.
 
 * **Every action about to run is classified** from what it is and where it sits, never from screen text —
-  the defence against prompt injection. The word lists only say what to classify first; a German `Löschen`
-  matching none of them must never read as safe.
+  the defence against prompt injection. The word lists only say what to classify first and how sure to be;
+  written in two languages, derived once for every other language the Mac uses, so `Löschen` is a hit like `Delete`.
 * **A verdict cannot release what it does not cover.** "It only edits this window" is a judgement; "this
   channel moves files" is a fact about the action, and the classifier does not overrule a fact.
 * **Approval is per action and spent on use.** Confirming one action does not confirm the next.

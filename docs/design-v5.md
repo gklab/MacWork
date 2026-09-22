@@ -116,4 +116,6 @@ class of bug rather than one instance.
   moves the B (multi-step) and C (cross-app) categories is for the next run to say.
 * **Short sequences without a decision.** Every step is one decider round trip; the only structural way
   below ~3 s a step is to carry out a planner's short sequence while each step's precondition holds.
-* **Another interface language.** The floor's two bars still depend on which words the lists know.
+* **Another interface language, measured.** The floor's words are now derived once per interface language
+  the Mac uses (`words.py`), so the higher bar applies to a German or Japanese delete as it does to an
+  English one; what the planner answers for a language nobody here reads is unverified.
