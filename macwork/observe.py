@@ -541,6 +541,24 @@ def _overlap(a: list[int], b: list[int]) -> bool:
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
+def _read_by_sight(ctx: Ctx, w: dict[str, Any], said: str) -> str:
+    """The text on a window as read from the screen, added to what its tree said (only what the tree did not)."""
+    vc = ctx.cfg.section("observe.vision")
+    try:
+        wanted = vc.get("languages")
+        res = ctx.helper.call("screen.ocr", pid=w["pid"], near=w.get("frame"),
+                              languages=[] if wanted in (None, "auto") else list(wanted),
+                              correct=bool(vc.get("language_correction", False)), fast=True,
+                              min_conf=float(vc.get("min_conf", 0.3)), timeout=15)
+    except HelperError:
+        return said
+    rtl = res.get("direction") == "rtl"
+    boxes = sorted((b for b in res.get("boxes", []) if b.get("text") and b.get("frame")),
+                   key=lambda b: (b["frame"][1] // 12, -b["frame"][0] if rtl else b["frame"][0]))
+    fresh = [b["text"] for b in boxes if b["text"] not in said]
+    return " / ".join(filter(None, [said, " / ".join(dict.fromkeys(fresh))]))
+
+
 def _window_id(w: dict[str, Any]) -> Any:
     """What tells one window from another: its number where the system gives one, else where it is."""
     return w["id"] if w.get("id") is not None else (w.get("pid"), tuple(w.get("frame") or ()))
@@ -597,6 +615,12 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         except HelperError:
             nodes = []
         whole = " / ".join(dict.fromkeys(str(n.get(k)) for n in nodes for k in ("title", "value", "desc") if n.get(k)))
+        if _window_id(w) not in seen and oc.get("read_by_sight", True) and w.get("frame"):
+            # What its tree cannot say, the screen can — for a window of another process too. Notification
+            # Center, dropped down by the menu bar clock, names its notifications in its tree and draws its
+            # widgets, and the date a task was sent for was in a widget. Once, when the window first
+            # appears: reading is not free (~0.3 s), and the seen set is what "first" means.
+            whole = _read_by_sight(ctx, w, whole)
         cap = int(oc.get("text_chars", 1200))
         text = whole[:cap]
         if not text:   # nothing readable (the Dock's transparent layer, effects): nothing to tell the decider

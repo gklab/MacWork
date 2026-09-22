@@ -29,6 +29,8 @@ class Helper:
         if method == "ax.snapshot":
             self.snapshots.append(p["pid"])
             return {"nodes": self.trees.get(p["pid"], [])}
+        if method == "screen.ocr":
+            return {"boxes": [], "frame": p.get("near"), "ms": 1}
         raise AssertionError(method)
 
 
@@ -160,3 +162,31 @@ def test_a_panel_that_says_more_than_fits_says_so_and_can_be_read_whole():
     assert "more characters, not shown" in said and len(said) < 300
     whole = [a for a in obs.affordances if a.verb == "read_all" and a.target["pid"] == 13]
     assert whole and "Notification Center" in whole[0].label and whole[0].target["interruption"]
+
+
+def test_a_window_that_just_appeared_is_read_from_the_screen_too():
+    """Notification Center names its notifications in its tree and draws its widgets; the date a task was
+    sent for was in a widget, and no run found it."""
+    class Sighted(Helper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.ocr":
+                self.ocr = getattr(self, "ocr", []) + [p.get("pid")]
+                return {"boxes": [{"text": "Tuesday, 22 September", "frame": [1210, 40, 200, 14]},
+                                  {"text": "Today", "frame": [1210, 60, 60, 14]}], "frame": p.get("near"), "ms": 5}
+            return super().call(method, timeout, **p)
+
+    cache: dict = {}
+    panel = {**win(13, "Notification Center", [1200, 30, 300, 400]), "id": 3}
+    h = Sighted([panel, APP], {13: [node("Today")]})
+
+    def look_with():
+        cfg = Config.load()
+        ctx = Ctx(cfg=cfg, helper=h, app={"pid": 1, "name": "Editor"}, goal="", inputs={}, task="t", gate=None, cache=cache)
+        obs = Observation(app=ctx.app, window="w", affordances=[])
+        get_provider("overlays")(ctx, obs)
+        return obs.notes["covered_by"][0]["text"]
+
+    first = look_with()
+    assert "22 September" in first and first.count("Today") == 1, first
+    look_with()
+    assert getattr(h, "ocr", []) == [13], "read once, when it first appeared"

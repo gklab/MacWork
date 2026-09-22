@@ -154,7 +154,14 @@ def _await_focus(ctx: Ctx, t: dict[str, Any]) -> None:
 def app_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     t = a.target
     if a.verb == "activate":
-        ctx.helper.call("apps.activate", pid=t["pid"])
+        # Asked once and assumed done: the step was recorded as taken while the app it left was still in
+        # front, and the contract check a moment later said so ("Calculator is in front, not the app that
+        # was asked for") — in a real run, the step that every cross-app task hinges on. It goes the way
+        # typing does: Accessibility first, LaunchServices second, verified against the front app each time.
+        try:
+            _bring_forward(ctx, t["pid"])
+        except NotInFront as exc:
+            return Outcome(False, error=str(exc), wait=False)
         return Outcome(True, watch_pid=t["pid"], target={"pid": t["pid"], "name": t.get("name"), "bundle_id": t.get("bundle_id")})
     if a.verb == "reopen":          # like clicking its Dock icon: LaunchServices sends the app a reopen event
         r = subprocess.run(["open", "-a", t["path"]], capture_output=True, text=True, timeout=15, check=False)

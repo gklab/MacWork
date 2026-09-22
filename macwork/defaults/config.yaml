@@ -68,6 +68,8 @@ observe:
                                  # a task that is not told one arrived carries on into a dialog it cannot see
     max_elsewhere: 4             # each costs one Accessibility snapshot (~4 ms here); unreadable ones are free
     elsewhere_actions: true      # false: read what they say but do not offer their buttons as options
+    read_by_sight: true          # a window that just appeared is read from the screen too, once: what its
+                                 # tree cannot say (a widget's date, a drawn panel) the screen can
     text_chars: 1200             # how much of what such a window says goes to the decider. Was a literal 400:
                                  # Notification Center, dropped down by the menu bar clock, held the date past
                                  # the cut. Past this, the cut is said and the whole panel can be read at once

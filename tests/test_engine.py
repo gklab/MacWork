@@ -80,6 +80,8 @@ class FakeHelper:
             return {"locale": "en_US", "languages": ["en-US"], "ocr_languages": ["en-US"], "region": "US"}
         if method == "screen.windows":
             return list(getattr(self, "screen", []))
+        if method == "screen.ocr":           # a screen with nothing drawn on it beyond what the tree says
+            return {"boxes": [], "frame": p.get("near") or [0, 0, 800, 600], "ms": 1}
         if method == "ping":
             return {"version": "fake", "ax_trusted": getattr(self, "ax_trusted", True), "screen_capture": True, "secure_input": self.secure_input}
         if method == "clipboard.read":

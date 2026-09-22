@@ -247,3 +247,52 @@ def test_a_suggestion_taken_is_a_suggestion_gone(tmp_path):
     chosen.label += " (menu Go ▸ Go to Folder…)"      # what the loop appends when the combo has a menu item
     eng._perform(task, eng._step_context(task), None, chosen, lambda m: None)
     assert task.tries == [{"type": "hello"}], task.tries
+
+
+def test_switching_to_an_app_is_verified_and_escalated(tmp_path):
+    """The switch every cross-app task hinges on was asked once and assumed: the step was recorded as taken
+    while the app it left was still in front."""
+    from macwork.act import CHANNELS
+
+    class Slow(FakeHelper):
+        """Activation takes; the front app changes only after a second ask (LaunchServices)."""
+        def __init__(self):
+            super().__init__()
+            self.front = 42
+            self.asked = 0
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "apps.frontmost":
+                return {"app": {"pid": self.front, "name": "TextEdit" if self.front == 42 else "Finder"}}
+            if method == "apps.activate":
+                self.asked += 1
+                return {"ok": True}
+            return super().call(method, timeout, **p)
+
+    h = Slow()
+    c = Ctx(cfg(tmp_path, config={"engine": {"activate_wait_s": 0.2}}), h, app={"pid": 42, "name": "TextEdit"}, goal="", inputs={}, task="t",
+            gate=None, cache={}, running=h.call("apps.running"))
+    finder = Affordance("a1", "app", "activate", "switch to app Finder", {"pid": 7, "name": "Finder", "bundle_id": "com.apple.finder", "path": "/System/Library/CoreServices/Finder.app"})
+    import macwork.act as act
+    calls = []
+    original = act.subprocess.run
+
+    def fake_open(cmd, **kw):
+        calls.append(cmd)
+        h.front = 7                     # LaunchServices did what Accessibility could not
+        class R: returncode, stderr, stdout = 0, "", ""
+        return R()
+    act.subprocess.run = fake_open
+    try:
+        out = CHANNELS["app"](c, finder, {})
+    finally:
+        act.subprocess.run = original
+    assert out.ok and h.asked == 1 and calls and calls[0][:2] == ["open", "-a"]
+
+    h.front = 42
+    act.subprocess.run = lambda cmd, **kw: type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+    try:
+        out = CHANNELS["app"](c, finder, {})
+    finally:
+        act.subprocess.run = original
+    assert not out.ok and "front" in out.error, "nothing came forward: the step says so instead of pretending"
