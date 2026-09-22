@@ -482,7 +482,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             # reported `failed`, because it had gone on to flail in the app's sort options. The caller is not
             # served by "failed" with the right answer attached. The reason it gave itself is kept, and what
             # it did is not learned as a routine: the answer was right, the way it went about it was not.
-            if status in ("failed", "need_continue") and task.outputs.get("answer"):
+            # …and `blocked` too: a real run read the file, answered "金额最高的是显示器" correctly, then met
+            # the app's own recovery prompt and reported that only the user could go on — true of the
+            # app, not of the question, which was answered
+            if status in ("failed", "need_continue", "blocked") and task.outputs.get("answer"):
                 task.outputs["unfinished_but_answered"] = reason
                 status, reason, answered_anyway = "done", "the question is answered from what the task saw", ""
         if status == "need_confirm" and task.held is not None and not task.confirm_key:

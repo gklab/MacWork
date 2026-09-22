@@ -224,9 +224,28 @@ def cleanup(engine: Engine, task: dict[str, Any], key: str = "cleanup") -> None:
             continue
 
 
+def _real_windows(engine: Engine) -> dict[int, set[int]]:
+    """Windows a person would call windows, by owner: on screen, at the ordinary level.
+
+    The window server lists every window object a process owns — toolbars, tooltips, popovers, unrealised
+    panels at [0, 0, 100, 30] — and a task that took no step at all was reported as leaving four TextEdit
+    "windows" behind, which the sweep then could not find as anything Accessibility calls a window. What
+    tidy closes and what the sweep matches are Accessibility windows; this counts the same things.
+    """
+    try:
+        wins = engine.helper.call("screen.windows") or []
+    except Exception:  # noqa: BLE001  (a helper hiccup is not a leftover)
+        return {}
+    out: dict[int, set[int]] = {}
+    for w in wins:
+        if w.get("layer", 0) == 0 and w.get("alpha", 1) and w.get("id") is not None:
+            out.setdefault(int(w["pid"]), set()).add(int(w["id"]))
+    return out
+
+
 def _desktop(engine: Engine) -> tuple[dict[int, set[int]], set[int]]:
     """Windows on screen (per app) and running apps: what a task must leave as it found it."""
-    return engine._window_ids(), {a["pid"] for a in engine.helper.call("apps.running")}
+    return _real_windows(engine), {a["pid"] for a in engine.helper.call("apps.running")}
 
 
 def _leftovers(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[dict[str, Any]]:
@@ -439,6 +458,13 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         harness_pid = None
         if t.get("app") and suite.get("launch_first", True):
             harness_pid = _launch(engine, t["app"])   # apps restore their last state on launch: let setup and the pre-check see it
+            if not engine._resolve_app(t["app"], engine.helper.call("apps.running")) and not engine._installed_named(t["app"]):
+                # the task names an app this Mac does not have: whatever happens next is about another app
+                # (a real run sent two Numbers tasks to whichever app opens a .csv here) and says nothing
+                # about the engine. Not counted, like a task that was already satisfied.
+                progress(f"   INVALID {t['app']} is not on this Mac (not counted)")
+                return base | {"status": "invalid", "passed": False, "valid": False, "why": f"{t['app']} is not installed on this Mac",
+                               "reason": "", "steps": 0, "seconds": 0.0, "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
         if _locked(engine):   # nothing on screen can be judged or operated: says nothing about ability
             progress("   ERROR the screen is locked (not counted)")
             return base | _error_row(t, "the screen is locked")

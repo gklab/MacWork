@@ -4,6 +4,7 @@ turning its concrete suggestions into options for the decider."""
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -259,7 +260,15 @@ class ConsultMixin:
             elif t.get("type"):
                 out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t), {"text": t["type"]}))
             elif t.get("open_url"):
-                out.append(Affordance(f"t{i}", "file", "open", self._suggestion_label(t), {"path": "", "url": t["open_url"]}))
+                # the planner sees this Mac's home as `~` (privacy.replace) and writes it back that way — a
+                # real run suggested `file://~/Library/...`, which nothing can open. Pseudonyms are restored
+                # by the redactor; this replacement is one-way, so it is undone here, for a path only.
+                url = str(t["open_url"])
+                if url.startswith("file://~"):
+                    url = "file://" + os.path.expanduser(url[len("file://"):])
+                elif url.startswith("~/"):
+                    url = os.path.expanduser(url)
+                out.append(Affordance(f"t{i}", "file", "open", self._suggestion_label({**t, "open_url": url}), {"path": "", "url": url}))
             elif t.get("drag") and obs is not None:
                 a, b = (_where(obs, name) for name in t["drag"])
                 if a and b:

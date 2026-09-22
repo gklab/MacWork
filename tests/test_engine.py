@@ -966,7 +966,7 @@ def test_floor_words_are_candidates_the_decider_classifies_them(tmp_path):
     state, asked = next((s, q) for s, q in d.side if any(k.startswith("floor") for k in q))
     assert "screen_text" not in state and "actions" in state                 # judged without page content
     mine = next(q for k, q in asked.items() if k.startswith("floor") and "Show Replace" in q["instructions"])
-    releases = set(Config.load().policy["confirm"]["release"]) - {"enter"}   # enter is offered for typing only
+    releases = set(Config.load().policy["confirm"]["release"]) - {"enter", "read"}   # enter is offered for typing only, read for reads
     assert set(mine["criteria"]) == releases | {"write"}                     # the releases, plus the words it hit
     d2 = ScriptedDecider([{"pick": "Show Replace"}])
     d2.what = {"navigate": 0.6, "write": 0.4}            # not sure enough: the floor stands

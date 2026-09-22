@@ -32,6 +32,7 @@ NOT_BY_NAME = {
     "confirm.enter": "read via the names in confirm.release",
     "confirm.edit": "read via the names in confirm.release",
     "confirm.back_out": "read via the names in confirm.release",
+    "confirm.read": "read via the names in confirm.release",
     "confirm.release_only_for.*": "read via the names in confirm.release",
     # name -> regex, and regex -> replacement: both iterated whole, so no individual one is written down
     "redact.patterns.*": "iterated as name -> regex",

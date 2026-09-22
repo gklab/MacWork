@@ -48,7 +48,10 @@ confirm:
     touched, nothing is saved, sent or installed, and nothing anyone typed is thrown away by it. Answering a
     permission, consent or payment prompt is never this, whichever way it is answered: refusing is a decision
     too, and the system remembers it
-  release: [navigate, enter, edit, back_out]   # the verdicts that let an action through; every other one asks the user
+  read: >-
+    it only reads what is already there — a file's text, everything a window says, the controls a window has —
+    and hands it to the task; nothing on the Mac changes, nothing is opened, sent, saved or run
+  release: [navigate, enter, edit, back_out, read]   # the verdicts that let an action through; every other one asks the user
   # A verdict narrowed to the actions it can honestly apply to. Entries are verbs or channel:<name>, and an
   # action that is neither cannot be released by that verdict however sure the classifier is. "It only changes
   # what this window holds" is a judgement about prose; "this is the channel that moves files" is a fact about
@@ -70,6 +73,11 @@ confirm:
     # Getting out of the way of a dialog is what this is for, and only a control on that screen can do it.
     # Quitting an app, trashing a file or running a command are not "backing out", whatever they are called.
     back_out: [channel:window, channel:keys, channel:menu, channel:pointer]
+    # Reading is a fact about these actions and nothing else: the file channel's read, a window read in
+    # full, the unlabeled controls of a window read by sight. "Open" is not a read, whatever opens.
+    # Measured on a real run: "read the text of long.txt" was judged navigate at 0.64, under the bar, and a
+    # task whose whole goal was to read a file asked the user before its first step.
+    read: [read, read_all, channel:vision]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something
