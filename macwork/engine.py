@@ -624,6 +624,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
     def _run(self, task: Task, progress: Progress | None) -> dict[str, Any]:
         with self._lock:
             d = self._decider
+            if d is not None and hasattr(d, "begin_task"):
+                d.begin_task()          # a task starts with the decider asked for, whatever the last one fell back to
             calls0, cost0 = (d.calls, d.cost_usd) if d else (0, 0.0)
             task.begin_run(calls0, cost0)   # steps and seconds are budgeted per turn, not across the caller's pauses
             try:

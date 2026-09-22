@@ -194,6 +194,7 @@ class ChainDecider:
 
     def __init__(self, deciders: list[Decider]) -> None:
         self.deciders = deciders
+        self._preferred = list(deciders)   # the order asked for; restored at the start of every task
         # Every step makes two `decide()` calls — the step's own, and the safety classification sent beside
         # it — so two failures can arrive together. Dropping the head with a bare pop(0) could then drop
         # two for one failure and empty the list, which wedges the engine for the rest of the session.
@@ -202,18 +203,33 @@ class ChainDecider:
     def __getattr__(self, attr: str) -> Any:      # name, calls, cost_usd, last_ms, warm…: whoever is in front
         return getattr(self.deciders[0], attr)
 
+    def begin_task(self) -> None:
+        """A new task starts with the decider asked for. A switch holds for the task it happened in — the
+        thresholds must mean one thing across a task — and no longer: one ten-second network blip during an
+        evaluation moved every later task of the session onto the uncalibrated fallback, and the run measured
+        that instead of the engine."""
+        with self._lock:
+            if self.deciders != self._preferred:
+                log.warning("decider: back to %s for the new task", getattr(self._preferred[0], "name", "?"))
+                self.deciders = list(self._preferred)
+
     def decide(self, state: Any, questions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        retried = False
         while True:
             head = self.deciders[0]
             try:
                 return head.decide(state, questions)
             except DeciderError as exc:
+                if not retried and len(self.deciders) > 1:
+                    retried = True        # a request lost to the network is asked once more before anyone is demoted
+                    log.info("decider %s could not answer (%s); asking once more", getattr(head, "name", "?"), exc)
+                    continue
                 with self._lock:
                     if self.deciders and self.deciders[0] is not head:
                         continue          # someone else already moved on; try whoever is in front now
                     if len(self.deciders) == 1:
                         raise
-                    log.warning("decider %s could not answer (%s); switching to %s for the rest of this session",
+                    log.warning("decider %s could not answer (%s); switching to %s for the rest of this task",
                                 getattr(head, "name", "?"), exc, getattr(self.deciders[1], "name", "?"))
                     self.deciders.pop(0)
 

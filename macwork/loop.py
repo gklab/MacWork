@@ -763,7 +763,7 @@ class LoopMixin:
             return AGAIN
         if task.blocked_reason or move == "blocked":
             return self._finish(task, "blocked", task.blocked_reason or task.outputs.get("planner_thinks_blocked") or self.cfg.question("blocked_reason"),
-                                {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]})
+                                {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]}, cause="needs_user")
         return self._finish(task, "failed", "judged unreachable on this Mac", {"tried": tried[-8:]}, cause="unreachable")
 
     def _on_rethink(self, task: Task, look: Look) -> _Again | dict[str, Any] | None:

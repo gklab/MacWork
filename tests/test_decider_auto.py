@@ -84,22 +84,36 @@ def test_dry_run_is_never_fallen_back_from(monkeypatch):
 
 # --------------------------------------------------------------------------- losing one mid-session
 
-def test_a_key_that_works_and_a_network_that_does_not_is_the_case_that_matters(monkeypatch):
+def test_one_lost_request_is_asked_again_and_answered_by_the_same_decider(monkeypatch):
     build(monkeypatch, {"jev": Fake("jev", fails=1), "local": Fake("local")})
+    assert D.make_decider(cfg()).decide({}, {})["q"]["_by"] == "jev"
+
+
+def test_a_key_that_works_and_a_network_that_does_not_is_the_case_that_matters(monkeypatch):
+    build(monkeypatch, {"jev": Fake("jev", fails=2), "local": Fake("local")})
     assert D.make_decider(cfg()).decide({}, {})["q"]["_by"] == "local"
+
+
+def test_the_switch_ends_with_the_task_not_with_the_session(monkeypatch):
+    """One ten-second blip during an evaluation moved every later task of the session onto the fallback."""
+    build(monkeypatch, {"jev": Fake("jev", fails=2), "local": Fake("local")})
+    d = D.make_decider(cfg())
+    assert d.decide({}, {})["q"]["_by"] == "local"
+    d.begin_task()
+    assert d.decide({}, {})["q"]["_by"] == "jev"
 
 
 def test_it_stays_switched_rather_than_alternating(monkeypatch):
     """Half a task decided by a calibrated model and half by an uncalibrated one makes the thresholds in
     config.yaml mean nothing in particular."""
-    jev = Fake("jev", fails=1)
+    jev = Fake("jev", fails=2)
     d = build(monkeypatch, {"jev": jev, "local": Fake("local")}) or D.make_decider(cfg())
     assert [d.decide({}, {})["q"]["_by"] for _ in range(3)] == ["local"] * 3
-    assert jev.calls == 1
+    assert jev.calls == 2     # asked, asked once more, then left alone for the task
 
 
 def test_the_switch_is_loud(monkeypatch, caplog):
-    build(monkeypatch, {"jev": Fake("jev", fails=1), "local": Fake("local")})
+    build(monkeypatch, {"jev": Fake("jev", fails=2), "local": Fake("local")})
     with caplog.at_level(logging.WARNING, logger="macwork.decider"):
         D.make_decider(cfg()).decide({}, {})
     assert "switching to local" in caplog.text
@@ -120,7 +134,7 @@ def test_an_answer_is_never_second_guessed_by_the_next_one(monkeypatch):
 
 
 def test_who_answered_is_reportable(monkeypatch):
-    build(monkeypatch, {"jev": Fake("jev", fails=1), "local": Fake("local")})
+    build(monkeypatch, {"jev": Fake("jev", fails=2), "local": Fake("local")})
     d = D.make_decider(cfg())
     assert d.name == "jev"
     d.decide({}, {})
