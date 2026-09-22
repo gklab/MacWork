@@ -35,9 +35,18 @@ Channel = Callable[[Ctx, Affordance, dict[str, Any]], Outcome]
 CHANNELS: dict[str, Channel] = {}
 
 
-def channel(name: str) -> Callable[[Channel], Channel]:
+THROUGH_THE_SYSTEM: set[str] = set()      # channels that do not act on whichever app is in front
+
+
+def channel(name: str, front: bool = True) -> Callable[[Channel], Channel]:
+    """`front=False`: this channel works through the system — LaunchServices, the `shortcuts` tool — and never
+    touches the app that happens to be in front. It matters to the policy: "never drive the app the caller
+    runs in" is about driving, and a task started from a terminal had every way of opening a file by its
+    path denied, because the terminal was in front when it looked."""
     def reg(fn: Channel) -> Channel:
         CHANNELS[name] = fn
+        if not front:
+            THROUGH_THE_SYSTEM.add(name)
         return fn
     return reg
 
@@ -141,7 +150,7 @@ def _await_focus(ctx: Ctx, t: dict[str, Any]) -> None:
         time.sleep(0.05)
 
 
-@channel("app")
+@channel("app", front=False)
 def app_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     t = a.target
     if a.verb == "activate":
@@ -314,7 +323,7 @@ def hold_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     return Outcome(True, watch_pid=(ctx.app or {}).get("pid"), output={"held": held}, wait=False, unseen=True)
 
 
-@channel("shortcut")
+@channel("shortcut", front=False)
 def shortcut_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     """Run one of the person's own Shortcuts.
 
@@ -396,7 +405,7 @@ def _window_count(ctx: Ctx) -> int:
         return -1
 
 
-@channel("file")
+@channel("file", front=False)
 def file_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     if a.verb == "read":        # its text becomes a fact, so the task may write what the file said
         path = str(a.target["path"])

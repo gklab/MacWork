@@ -1320,7 +1320,7 @@ def _squash(text: str) -> str:
 
 def _openers(ctx: Ctx, path: Path) -> list[dict[str, Any]]:
     """The apps this Mac would open a file with, asked of the system rather than guessed from the extension.
-    The default one is first, and it is left out here: opening with it is the plain "open" above."""
+    The default one is first and marked; the plain "open" is that one, and says so."""
     if path.is_dir():
         return []
     try:
@@ -1328,7 +1328,7 @@ def _openers(ctx: Ctx, path: Path) -> list[dict[str, Any]]:
                                limit=int(ctx.cfg.get("observe.files.openers", 4)) + 1) or []
     except HelperError:
         return []      # an older helper: the plain "open" is still there
-    return [a for a in apps if not a.get("default")][: int(ctx.cfg.get("observe.files.openers", 4))]
+    return apps[: int(ctx.cfg.get("observe.files.openers", 4)) + 1]
 
 
 # A path starts at a ~ or / that is not continuing a word — so "and/or" starts nothing, while a language
@@ -1403,15 +1403,20 @@ def files(ctx: Ctx, obs: Observation) -> None:
             # it is then a completed action, and offering one reads as "this still needs doing": with a file
             # open and the goal about its contents, a real run was offered eight ways to open it again.
             is_open = _same_file(obs.notes.get("window_document"), here)
+            openers = _openers(ctx, here)
+            usual = next((o for o in openers if o.get("default")), None)
             if not is_open:
-                obs.affordances.append(Affordance(f"p{named}", "file", "open",
-                                                  f"open the {what} {here} in whichever app this Mac opens it with",
-                                                  {"path": str(here)}))
+                # Which app that is, is known — and a goal that names it ("open it in WPS Office") was given
+                # "in whichever app this Mac opens it with" and four other apps by name. It went looking for
+                # the app by hand instead.
+                how = f"in {usual['name']}, the app this Mac opens it with" if usual and usual.get("name") \
+                    else "in whichever app this Mac opens it with"
+                obs.affordances.append(Affordance(f"p{named}", "file", "open", f"open the {what} {here} {how}", {"path": str(here)}))
             # …and in any of the apps the system says can open it. A goal that names one ("open it in Safari")
             # can only be followed if that is an option: with just the line above, a real task opened the page
             # in the default browser and the goal was not met.
             front = (ctx.app or {}).get("bundle_id")
-            for j, opener in enumerate(_openers(ctx, here)):
+            for j, opener in enumerate(o for o in openers if not o.get("default")):
                 if is_open and opener.get("bundle_id") == front:
                     continue                  # open in this very app; another app is still a different act
                 obs.affordances.append(Affordance(

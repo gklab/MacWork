@@ -54,7 +54,10 @@ class PolicyMixin:
     def _denied(self, a: Affordance, app: dict[str, Any] | None) -> bool:
         deny = self.cfg.policy.get("deny", {}) or {}
         allow = self.cfg.policy.get("allow", {}) or {}
-        bundle = a.target.get("bundle_id") or (app or {}).get("bundle_id")
+        # Which app this action touches: the one it names, else — for a channel that drives the UI — the one
+        # in front. A channel that works through the system touches neither unless it names one.
+        from .act import THROUGH_THE_SYSTEM
+        bundle = a.target.get("bundle_id") or (None if a.channel in THROUGH_THE_SYSTEM else (app or {}).get("bundle_id"))
         if bundle and bundle in (deny.get("bundle_ids") or []):
             return True
         if bundle and deny.get("host_app", True) and bundle in self._host_bundles():
