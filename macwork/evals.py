@@ -256,12 +256,16 @@ def _real_windows(engine: Engine) -> dict[int, set[int]]:
     tidy closes and what the sweep matches are Accessibility windows; this counts the same things.
     """
     try:
-        wins = engine.helper.call("screen.windows") or []
+        wins = engine.helper.call("screen.windows", all=True) or []   # every Space: a window left on another one is still left
     except Exception:  # noqa: BLE001  (a helper hiccup is not a leftover)
         return {}
     out: dict[int, set[int]] = {}
     for w in wins:
-        if w.get("layer", 0) == 0 and w.get("alpha", 1) and w.get("id") is not None:
+        f = w.get("frame") or [0, 0, 0, 0]
+        # the ordinary level, visible, and big enough to be a window rather than a toolbar strip or a
+        # tooltip: an afternoon of runs left a Mac full of windows on other Spaces that a sweep of the
+        # current one called clean
+        if w.get("layer", 0) == 0 and w.get("alpha", 1) and w.get("id") is not None and f[2] > 100 and f[3] > 60:
             out.setdefault(int(w["pid"]), set()).add(int(w["id"]))
     return out
 
@@ -353,6 +357,11 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
                     engine._quit(task, {"pid": item["pid"], "name": item["app"]})
                     if not _alive(engine, item["pid"]) or not _discard_prompt(engine, item["pid"]):
                         break
+                if _alive(engine, item["pid"]):
+                    # it was not running when the run began, it was asked politely, and it is still here:
+                    # an app of the harness's own making does not get to stay on the person's Mac
+                    engine.helper.call("apps.quit", pid=item["pid"], force=True, timeout_ms=3000, timeout=15)
+                    log_harness(f"sweep: {item['app']} would not quit and was forced")
                 continue
             nodes = engine.helper.call("ax.snapshot", pid=item["pid"], scope="windows", max_depth=1, max_nodes=400).get("nodes", [])
             screen = {int(w["id"]): w for w in engine.helper.call("screen.windows") if w.get("pid") == item["pid"]}
@@ -549,7 +558,8 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
     finally:
         final = sweep(engine, start)       # whatever happens, the desktop goes back to how the run found it
         if final:
-            progress(f"harness: still left after the run: {final}")
+            progress("harness: LEFT OPEN after the run — close these by hand: "
+                     + "; ".join(f"{x['app']} ({'launched by the run' if x.get('new_app') else str(x.get('windows')) + ' window(s)'})" for x in final))
     report = _report(suite_path, raw, rows, runs, out_dir)
     report["summary"]["left_after_run"] = [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in final]
     return report

@@ -67,10 +67,40 @@ def test_the_harness_counts_windows_a_person_would_call_windows(tmp_path):
         screen = [{"pid": 42, "id": 1, "layer": 0, "alpha": 1, "frame": [0, 0, 800, 600]},
                   {"pid": 42, "id": 2, "layer": 8, "alpha": 1, "frame": [0, 0, 100, 30]},      # a tooltip
                   {"pid": 42, "id": 3, "layer": 0, "alpha": 0, "frame": [0, 0, 640, 480]},     # invisible
+                  {"pid": 42, "id": 5, "layer": 0, "alpha": 1, "frame": [0, 0, 1512, 33]},    # a strip, not a window
+                  {"pid": 42, "id": 6, "layer": 0, "alpha": 1, "frame": [0, 0, 700, 500], "on_screen": False},  # another Space
                   {"pid": 7, "id": 4, "layer": 0, "alpha": 1, "frame": [0, 0, 300, 300]}]
 
     eng = Engine(cfg(tmp_path), helper=Helper(), decider=ScriptedDecider([]))
-    assert evals._real_windows(eng) == {42: {1}, 7: {4}}
+    assert evals._real_windows(eng) == {42: {1, 6}, 7: {4}}, "a window left on another Space is still left"
+    assert eng.helper.did("screen.windows")[-1].get("all") is True
+
+
+def test_an_app_the_run_launched_that_will_not_quit_is_forced(tmp_path, monkeypatch):
+    """An afternoon of runs left the Mac full of apps that had been asked politely and stayed."""
+    class Stubborn(FakeHelper):
+        def __init__(self):
+            super().__init__()
+            self.gone = False
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "apps.running":
+                base = super().call(method, timeout, **p)
+                return base + ([] if self.gone else [{"pid": 99, "name": "Stubborn", "bundle_id": "x.stubborn"}])
+            if method == "apps.quit":
+                self.calls.append((method, p))
+                if p.get("force"):
+                    self.gone = True
+                return {"terminated": self.gone, "asked": True}
+            return super().call(method, timeout, **p)
+
+    h = Stubborn()
+    eng = Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([]))
+    monkeypatch.setattr(evals, "_discard_prompt", lambda engine, pid: False)
+    monkeypatch.setattr(eng, "still_the_app", lambda app: True)
+    monkeypatch.setattr(eng, "_back_out", lambda task, app, what: None)
+    left = evals.sweep(eng, ({}, {42, 7}))          # 99 was not running when the run began
+    assert not left and any(p.get("force") for m, p in h.calls if m == "apps.quit")
 
 
 def test_a_task_naming_an_app_this_mac_lacks_is_not_counted(tmp_path, monkeypatch):

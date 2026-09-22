@@ -21,7 +21,9 @@ func appsQuit(_ p: Params) throws -> Any {
     guard let pidNum = p["pid"] as? Int, let app = NSRunningApplication(processIdentifier: pid_t(pidNum)) else {
         return ["terminated": true]
     }
-    let asked = app.terminate()
+    // force: for an app the eval harness launched itself and that will not quit politely — never for one
+    // the person had open. The engine's tidy never passes it.
+    let asked = (p["force"] as? Bool ?? false) ? app.forceTerminate() : app.terminate()
     let deadline = Date().addingTimeInterval(Double(p["timeout_ms"] as? Int ?? 3000) / 1000)
     while !app.isTerminated && Date() < deadline {
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
