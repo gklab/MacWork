@@ -389,7 +389,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 seen_text.add(t)
                 texts.append(t)
     if texts:
-        obs.screen_text = "\n".join(filter(None, [obs.screen_text] + texts))[: int(wcfg.get("screen_text_chars", 1500))]
+        _more_text(ctx, obs, texts)
 
 
 def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
@@ -404,6 +404,35 @@ def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
                            known_actions=list((ctx.cfg.get("observe.window.action_labels") or {}).keys()),
                            max_offscreen=int(ctx.cfg.get("observe.ax.max_offscreen", 200)),
                            skip_roles=(ax.get("window_skip_roles") or []) if scope == "focused_window" else [])
+
+
+def _more_text(ctx: Ctx, obs: Observation, lines: list[str]) -> None:
+    """Add to the screen text, up to the cap — and say when the cap cut something.
+
+    Three providers wrote to one pool, each cutting it to the cap as it went, and none said so: a prompt read
+    after a long window lost its words, and the decider was told nothing was missing. The cap stays (it is
+    what the decider reads on every step); the cut is a fact about the observation, and is noted.
+    """
+    cap = int(ctx.cfg.get("observe.window.screen_text_chars", 1500))
+    joined = "\n".join(filter(None, [obs.screen_text] + list(lines)))
+    if len(joined) > cap:
+        obs.notes["screen_text_cut"] = int(obs.notes.get("screen_text_cut", 0)) + len(joined) - cap
+    obs.screen_text = joined[:cap]
+
+
+def _note_ax_trust(ctx: Ctx, obs: Observation) -> None:
+    """An empty tree can mean no window, or no permission — and the two looked the same: `open_windows: []`,
+    which then switched reading the screen off as well. Asked once, and again after a refusal, since the
+    permission may have been granted meanwhile."""
+    trusted = ctx.cache.get("ax_trusted")
+    if trusted is not True:
+        try:
+            trusted = bool(ctx.helper.call("ping", timeout=5).get("ax_trusted", True))
+        except HelperError:
+            return
+        ctx.cache["ax_trusted"] = trusted
+    if not trusted:
+        obs.notes["ax_trusted"] = False
 
 
 @provider("window")
@@ -425,6 +454,8 @@ def window(ctx: Ctx, obs: Observation) -> None:
             s = s2
             obs.notes["manual_accessibility"] = True
     nodes = s.get("nodes", [])
+    if not nodes:
+        _note_ax_trust(ctx, obs)
     if nodes and nodes[0].get("role") == "AXWindow":
         obs.window = nodes[0].get("title") or obs.window
         obs.notes["window_frame"] = nodes[0].get("frame")
@@ -462,6 +493,11 @@ def _overlap(a: list[int], b: list[int]) -> bool:
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
+def _window_id(w: dict[str, Any]) -> Any:
+    """What tells one window from another: its number where the system gives one, else where it is."""
+    return w["id"] if w.get("id") is not None else (w.get("pid"), tuple(w.get("frame") or ()))
+
+
 @provider("overlays")
 def overlays(ctx: Ctx, obs: Observation) -> None:
     """Windows from other processes that are on screen but belong to no app being worked in — a permission
@@ -492,8 +528,9 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
     if not mine and not elsewhere_left:
         return
     for i, w in enumerate(wins):
+        # one entry per *window*: keyed on the process, a second dialog from the same one was invisible
         if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] \
-           or any(o["pid"] == w["pid"] for o in found):
+           or any(o["window"] == _window_id(w) for o in found):
             continue
         over = i < front and any(_overlap(w["frame"], f) for f in frames)
         if not over:
@@ -512,7 +549,7 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         where = "in front of the app" if over else "elsewhere on screen"
         # which interruption this is, across looks: who put it up and what it says (its position may move)
         key = f"{w.get('owner', '')}|{hashlib.sha1(text.encode()).hexdigest()[:10]}"
-        found.append({"pid": w["pid"], "from": w.get("owner", ""), "text": text, "where": where,
+        found.append({"pid": w["pid"], "window": _window_id(w), "from": w.get("owner", ""), "text": text, "where": where,
                       "key": key, "frame": w.get("frame"), "over": bool(over)})
         # its controls: pressed through Accessibility like the app's own; the effect is watched on the app
         sub = Ctx(ctx.cfg, ctx.helper, ctx.goal, ctx.inputs, {"pid": w["pid"], "name": w.get("owner", "")}, ctx.running, ctx.cache)
@@ -529,7 +566,7 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         lines = [f"[{o['where']}, from {o['from']}: {o['text']}]" for o in found]
         # after the app's own text, not before it. At the top, a prompt that had nothing to do with the goal
         # was the first thing the decider read on every look — and the first thing it then chose.
-        obs.screen_text = "\n".join(([obs.screen_text] if obs.screen_text else []) + lines)
+        _more_text(ctx, obs, lines)
 
 
 @provider("menubar_extras")
@@ -950,14 +987,14 @@ def vision(ctx: Ctx, obs: Observation) -> None:
                     continue          # nested unlabeled containers see the same text: offer it once
                 obs.notes["_vision_spots"].add(spot)
                 obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click 「{b['text']}」{where_c}",
-                                                  {"x": x, "y": y, "frame": b["frame"]}, context=u.get("context", "")))
+                                                  {"x": x, "y": y, "frame": b["frame"], "window_frame": win}, context=u.get("context", "")))
             for e in empty_crossings(inside_boxes, int(vc.get("max_empty_places", 12))):
                 beside = " ".join(f"「{t[:20]}」" for t in e["row"][:3])
                 under = " ".join(f"「{t[:20]}」" for t in e["column"][:5])
                 obs.affordances.append(Affordance(
                     f"o{len(obs.affordances)}", "pointer", "click",
                     f"click the empty place in the row of {beside}, in line with {under}{where_c}",
-                    {"x": e["x"], "y": e["y"]}, context=u.get("context", "")))
+                    {"x": e["x"], "y": e["y"], "window_frame": win}, context=u.get("context", "")))
             continue
         inside = [b["text"] for b in inside_boxes]
         name = " ".join(inside)
@@ -1002,7 +1039,7 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         for b in uncovered[: int(vc.get("max_text_targets", 80))]:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
-                                              {"x": x, "y": y, "frame": b["frame"]}))
+                                              {"x": x, "y": y, "frame": b["frame"], "window_frame": win}))
         _right_click_by_name(ctx, obs, vc, boxes)
         # right-to-left text read left-to-right comes back as a different sentence, so which way a line runs
         # is asked of the system (Locale.characterDirection for the languages actually recognised)
@@ -1011,7 +1048,7 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         # in twice spends the budget on repeating itself
         lines = [b["text"] for b in sorted(uncovered, key=lambda b: (b["frame"][1] // 12,
                                                                      -b["frame"][0] if rtl else b["frame"][0]))]
-        obs.screen_text = "\n".join(filter(None, [obs.screen_text] + lines))[: int(ctx.cfg.get("observe.window.screen_text_chars", 1500))]
+        _more_text(ctx, obs, lines)
     obs.notes.pop("_vision_spots", None)   # internal: notes go back to MCP clients as JSON
     obs.notes["vision_ms"] = res.get("ms")
     obs.notes["vision_boxes"] = len(boxes)
@@ -1148,6 +1185,11 @@ def typing(ctx: Ctx, obs: Observation) -> None:
     """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller)."""
     tc = ctx.cfg.section("observe.typing")
     needs = tc.get("requires_input")   # only when the caller gave text: otherwise it lures the decider into typing junk
+    if (obs.focused or {}).get("secure_input"):
+        # a password field has the keyboard: the helper refuses every keystroke while that is so, and the
+        # option was offered anyway — steps spent reaching a refusal that was known before they were taken
+        obs.notes["typing_withheld"] = "a password field has focus: keystrokes are refused while that is so"
+        return
     if ctx.app and tc.get("enabled", True) and (not needs or ctx.inputs.get(needs)):
         where = _cursor_note(ctx, obs)
         obs.affordances.append(Affordance("y0", "keys", "type", str(tc.get("label") or "type the given text at the cursor") + where, {},

@@ -68,9 +68,12 @@ def test_a_cursor_in_another_app_is_said_so_because_the_text_would_land_there():
 
 
 def test_secure_input_is_reported_rather_than_typed_into():
+    """It used to be offered with a note in its label. The helper refuses every keystroke while a password
+    field has the keyboard, so the option cost steps to reach a refusal known before they were taken: it is
+    withheld now, and the note goes to the decider as evidence instead."""
     obs = look(Helper(secure_input=True))
-    typing = [a for a in obs.affordances if a.verb == "type"]
-    assert typing and ("password" in typing[0].label or "Password" in typing[0].label)
+    assert not any(a.verb == "type" for a in obs.affordances)
+    assert "password" in obs.notes["typing_withheld"]
 
 
 def test_what_the_focused_element_holds_is_never_put_in_an_affordance():

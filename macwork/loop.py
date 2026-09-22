@@ -904,6 +904,12 @@ class LoopMixin:
             out["covered_by"] = obs.notes["covered_by"]
         if obs.notes.get("clipboard"):            # what a "paste" would put there, by shape (contents stay here)
             out["on_the_clipboard"] = obs.notes["clipboard"]
+        if obs.notes.get("screen_text_cut"):      # the pool has a cap; what fell past it is not "not there"
+            out["screen_text_cut_short_by"] = f"{obs.notes['screen_text_cut']} characters"
+        if obs.notes.get("ax_trusted") is False:
+            out["accessibility"] = "not granted to the helper: no window can be read until it is (macwork doctor --ask)"
+        if obs.notes.get("typing_withheld"):
+            out["typing"] = obs.notes["typing_withheld"]
         if obs.notes.get("window_not_answering"):
             out["app_not_answering"] = "this app is not answering Accessibility; nothing of its window can be read"
         return out

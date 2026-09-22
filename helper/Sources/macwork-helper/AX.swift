@@ -38,6 +38,21 @@ final class AXStore {
         return ref
     }
 
+    private var transient = 0
+    let keepTransient: Int = 32
+
+    /// A reference for one element outside any snapshot — the focused element, asked for on every look and
+    /// polled while a field takes focus. Each of those opened a whole generation: sixteen a typing action,
+    /// against the 64 that are kept, so the menu and window trees the engine still held were pushed out by
+    /// its own polling. These live in a ring of their own and evict nothing but each other.
+    func addTransient(_ el: AXUIElement) -> String {
+        transient += 1
+        let ref = "f\(transient)"
+        elements[ref] = el
+        elements["f\(transient - keepTransient)"] = nil
+        return ref
+    }
+
     /// "g3.17" from a snapshot, or "app:<pid>" for an application root.
     func get(_ ref: String) throws -> AXUIElement {
         if ref.hasPrefix("app:"), let pid = pid_t(ref.dropFirst(4)) { return AXUIElementCreateApplication(pid) }
@@ -411,7 +426,7 @@ func axFocused(_ p: Params) throws -> Any {
         node["value"] = nil
         node["selected_text"] = nil
     }
-    node["ref"] = store.add(el, gen: store.newGeneration(), n: 0)
+    node["ref"] = store.addTransient(el)
     var out: [String: Any] = ["focused": node, "pid": Int(pid), "secure_input": secure]
     // which app the cursor is in: the caller has a pid and would otherwise list every running app to name it
     if let app = NSRunningApplication(processIdentifier: pid) {

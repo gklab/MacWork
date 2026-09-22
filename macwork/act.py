@@ -376,8 +376,16 @@ def service_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 
 @channel("clipboard")
 def clipboard_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
+    """Put text on the clipboard. The pasteboard counts its changes, so whether the write took is a fact."""
+    try:
+        before = (ctx.helper.call("clipboard.read", timeout=5) or {}).get("change_count")
+    except HelperError:
+        before = None
     out = ctx.helper.call("clipboard.write", text=str(params.get("text", "")))
-    return Outcome(True, output={"clipboard_change_count": out.get("change_count")}, wait=False)
+    after = out.get("change_count")
+    if before is not None and after is not None and after == before:
+        return Outcome(False, error="the clipboard did not change", wait=False)
+    return Outcome(True, output={"clipboard_change_count": after}, wait=False)
 
 
 def _until(ctx: Ctx, ready: Callable[[], bool], ceiling: float, poll: float = 0.05) -> bool:
@@ -540,6 +548,25 @@ def pointer_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         ctx.helper.call("input.click", x=frame[0] + frame[2] / 2, y=frame[1] + frame[3] / 2,
                         button=t.get("button", "left"), count=int(t.get("count", 1)))
         return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+    if t.get("window_frame") and ctx.app and _window_moved(ctx, t["window_frame"]):
+        # the point was read in a window that has since moved or gone: a click there lands on whatever is
+        # under it now. Nothing here can verify a click after the fact, so this is checked before it.
+        return Outcome(False, error="the window has moved since it was read: observe again", wait=False)
     ctx.helper.call("input.click", x=float(t["x"]), y=float(t["y"]),
                     button=t.get("button", "left"), count=int(t.get("count", 1)))
     return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+
+
+def _window_moved(ctx: Ctx, was: list[float]) -> bool:
+    """Is no window of the app still where ``was`` says? Asked of the window server, not the tree: cheap, and
+    it does not need the app to answer."""
+    try:
+        wins = ctx.helper.call("screen.windows", timeout=5) or []
+    except HelperError:
+        return False              # cannot tell: not a reason to refuse
+    tol = 3
+    for w in wins:
+        f = w.get("frame")
+        if w.get("pid") == ctx.app["pid"] and f and all(abs(float(a) - float(b)) <= tol for a, b in zip(f, was)):
+            return False
+    return True

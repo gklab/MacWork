@@ -77,6 +77,13 @@ class FakeHelper:
             return {"locale": "en_US", "languages": ["en-US"], "ocr_languages": ["en-US"], "region": "US"}
         if method == "screen.windows":
             return list(getattr(self, "screen", []))
+        if method == "ping":
+            return {"version": "fake", "ax_trusted": getattr(self, "ax_trusted", True), "screen_capture": True, "secure_input": self.secure_input}
+        if method == "clipboard.read":
+            return {"change_count": getattr(self, "clipboard_count", 0), "types": [], "chars": 0}
+        if method == "clipboard.write":
+            self.clipboard_count = getattr(self, "clipboard_count", 0) + (0 if getattr(self, "clipboard_stuck", False) else 1)
+            return {"ok": True, "change_count": self.clipboard_count}
         if method == "ax.snapshot":
             if p.get("scope") == "menubar":
                 return MENUBAR

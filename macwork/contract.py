@@ -113,5 +113,10 @@ def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list
             return False, f"{front.get('name')} is in front, not the app that was asked for"
         return True, "that app is in front"
     if events:
+        pid = (ctx.app or {}).get("pid")
+        # a window that changes with nobody acting — a clock, live figures — reacts to everything. The
+        # engine measures that once per window (`ambient`); its events are not evidence of this action
+        if pid is not None and any(k.startswith(f"{pid}|") for k in ctx.cache.get("ambient", set())):
+            return None, "the screen moved, but this app's window moves by itself"
         return True, "the screen reacted"
     return None, "nothing to check"
