@@ -329,7 +329,10 @@ class LoopMixin:
                 wanted.add(key)
                 sight_provider = get_provider("vision")
                 if sight_provider is not None:
-                    sight_provider(ctx, obs)
+                    try:
+                        sight_provider(ctx, obs)
+                    except Exception as exc:  # noqa: BLE001  (a look must not fail because the screen could not be read)
+                        obs.notes["vision_error"] = str(exc)[:200]
         here = exact_state(sig, obs.screen_text)
         self._note_return(task, here, obs.notes.get("glance"))
         if obs.notes.get("glance"):        # what this state looked like the first time it was seen
