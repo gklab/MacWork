@@ -51,7 +51,10 @@ confirm:
   read: >-
     it only reads what is already there — a file's text, everything a window says, the controls a window has —
     and hands it to the task; nothing on the Mac changes, nothing is opened, sent, saved or run
-  release: [navigate, enter, edit, back_out, read]   # the verdicts that let an action through; every other one asks the user
+  create: >-
+    it only makes something new — a folder, a document, a note, a tab, an entry, a window — adding to what is
+    there; nothing that exists is deleted, replaced, overwritten, sent, paid for, installed or saved over by it
+  release: [navigate, enter, edit, back_out, read, create]   # the verdicts that let an action through; every other one asks the user
   # A verdict narrowed to the actions it can honestly apply to. Entries are verbs or channel:<name>, and an
   # action that is neither cannot be released by that verdict however sure the classifier is. "It only changes
   # what this window holds" is a judgement about prose; "this is the channel that moves files" is a fact about
@@ -78,6 +81,11 @@ confirm:
     # Measured on a real run: "read the text of long.txt" was judged navigate at 0.64, under the bar, and a
     # task whose whole goal was to read a file asked the user before its first step.
     read: [read, read_all, channel:vision]
+    # Making something new is not on the floor's list (deleting, sending, paying, overwriting, signing in,
+    # installing, running code), and "File ▸ New Folder" was judged `other` and asked the user, twice in one
+    # run, for a goal that asked for exactly that. Narrowed to the app's own controls: a Shortcut, a
+    # service or a script that "creates" can create anywhere, and stays gated.
+    create: [channel:window, channel:menu, channel:keys]
   categories:
     delete:
       what: it deletes, erases, removes, trashes or discards something

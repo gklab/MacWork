@@ -123,3 +123,19 @@ def test_an_answer_that_says_there_is_no_answer_does_not_end_the_task_as_done(tm
     task.wants_answer = 1.0
     task.memory.facts.record("Clock", "World Clock", "Beijing, 11:23, Daytime, Today", 0)
     assert eng._finish(task, "failed", "ran out")["status"] == "done"
+
+
+def test_making_something_new_is_not_gated(tmp_path):
+    """"File ▸ New Folder" was judged `other` and asked the user, twice in one run, for a goal that asked for
+    exactly that. Making something new is not what the floor is for."""
+    class Judges(ScriptedDecider):
+        def _classify(self, q):
+            pick = "create" if "New Folder" in worded(q) else "navigate"
+            return {"type": "choice", "choice": pick, "probabilities": {pick: 0.8}}
+
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=Judges([]))
+    ctx = Ctx(eng.cfg, eng.helper, app={"pid": 42, "bundle_id": "com.apple.finder"})
+    ctx.gate = eng.gate
+    assert eng._floor("t", ctx, Affordance("m1", "menu", "press", "menu File ▸ New Folder (⇧⌘N)", {}, context="File")) == []
+    made_elsewhere = Affordance("s1", "shortcut", "run", "run shortcut 「New Folder」", {"name": "New Folder"})
+    assert eng._floor("t", ctx, made_elsewhere) != [], "a Shortcut that 'creates' can create anywhere: still gated"

@@ -575,7 +575,14 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
     elsewhere_left = int(oc.get("max_elsewhere", 4)) if oc.get("elsewhere", True) else 0
     if not mine and not elsewhere_left:
         return
-    for i, w in enumerate(wins):
+    # A window that appeared since the last look is what the last action most likely opened — the panel a
+    # status item drops down, the sheet a button raised — and it was read in the window server's order,
+    # behind whatever else was on screen, or not at all once the elsewhere budget was spent. A real task
+    # pressed the menu bar clock three times and never read what came down. New first.
+    seen: set[Any] = ctx.cache.setdefault("windows.seen", {}).setdefault(ctx.task or "observe", set())
+    order = sorted(range(len(wins)), key=lambda i: (_window_id(wins[i]) in seen, i))
+    for i in order:
+        w = wins[i]
         # one entry per *window*: keyed on the process, a second dialog from the same one was invisible
         if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] \
            or any(o["window"] == _window_id(w) for o in found):
@@ -608,6 +615,7 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
             a.target["interruption"] = key      # the loop decides what these are *for* before any is offered
         if not over and not oc.get("elsewhere_actions", True):
             del obs.affordances[n0:]    # read it, but do not offer its controls
+    seen.update(_window_id(w) for w in wins)
     if found:
         obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"], "where": o["where"]} for o in found]
         obs.notes["interruptions"] = [{k: o[k] for k in ("key", "from", "text", "where", "frame", "over")} for o in found]

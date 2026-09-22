@@ -424,7 +424,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
 
     # What the cache keeps per task, keyed on the task id. Collected with the task: the pictures alone are
     # about 1.4 KB a screen, up to 200 screens, and nothing dropped them for the life of the process.
-    PER_TASK_CACHES = ("pictures", "vision.wanted")
+    PER_TASK_CACHES = ("pictures", "vision.wanted", "windows.seen")
 
     def _gc(self) -> None:
         ttl = float(self.cfg.get("engine.tasks_ttl_s", 1800))

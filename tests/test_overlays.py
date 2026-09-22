@@ -124,3 +124,23 @@ def test_how_many_are_looked_at_is_bounded():
 def test_it_can_be_switched_off():
     h = Helper([BANNER, APP], {9: [node("Close")]})
     assert not look(h, elsewhere=False).notes.get("covered_by")
+
+
+def test_a_window_that_just_appeared_is_read_before_the_ones_that_were_always_there():
+    """A real task pressed the menu bar clock three times and never read what came down: the panel was
+    listed behind the windows that had been there all along, past the elsewhere budget."""
+    cache: dict = {}
+
+    def look_with(windows, trees):
+        cfg = Config.load(overrides={"config": {"observe": {"overlays": {"max_elsewhere": 2}}}})
+        ctx = Ctx(cfg=cfg, helper=Helper(windows, trees), app={"pid": 1, "name": "Editor"}, goal="", inputs={}, task="t",
+                  gate=None, cache=cache)
+        obs = Observation(app=ctx.app, window="w", affordances=[])
+        get_provider("overlays")(ctx, obs)
+        return [c["from"] for c in obs.notes.get("covered_by", [])]
+
+    old1 = {**win(11, "Old One", [1000, 0, 200, 60]), "id": 1}
+    old2 = {**win(12, "Old Two", [1000, 100, 200, 60]), "id": 2}
+    assert look_with([old1, old2, APP], {11: [node("A")], 12: [node("B")]}) == ["Old One", "Old Two"]
+    panel = {**win(13, "Control Center", [1200, 30, 300, 400]), "id": 3}      # dropped down by the last action, listed last
+    assert look_with([old1, old2, panel, APP], {11: [node("A")], 12: [node("B")], 13: [node("Today")]})[0] == "Control Center"
