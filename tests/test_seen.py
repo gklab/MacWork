@@ -113,3 +113,28 @@ def test_a_window_that_moves_by_itself_is_no_witness(tmp_path):
     assert ok is None and "by itself" in why
     c.cache["ambient"] = set()
     assert kept(c, a, {}, Outcome(True), ["AXValueChanged"])[0] is True
+
+
+def test_a_picture_that_changed_where_no_text_did_is_read_by_sight_at_once(tmp_path):
+    """A Qt app's 关于 panel: "the picture changed (3% of it, at the bottom left); no text on screen did",
+    and the engine had nothing to read it with. What the tree cannot say, the screen can."""
+    from macwork.model import Step
+    from tests.english_mac import EnglishMac
+
+    class Painted(EnglishMac):
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.ocr":
+                self.calls.append((method, p))
+                return {"boxes": [{"text": "Version 10.9.12865", "frame": [20, 300, 120, 14]}], "frame": [0, 0, 400, 400], "ms": 5}
+            if method == "screen.capture":
+                return {"ok": True}
+            return super().call(method, timeout, **p)
+
+    h = Painted()
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "vision"]}}), helper=h, decider=ScriptedDecider([]))
+    task = eng._new_task("which version is this?", {}, None)
+    task.steps.append(Step(n=0, action="menu Help ▸ About", ok=True, events=[],
+                           outcome="the picture in the window changed (3% of it, at the bottom left); no text on screen did"))
+    look = eng._look(task, eng._step_context(task))
+    assert h.did("screen.ocr"), "the screen was read on this very look, not a step later"
+    assert "10.9.12865" in look.obs.screen_text

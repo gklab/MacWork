@@ -22,7 +22,7 @@ sample:
 templates:
   - id: settings-window
     goal: 打开 {app} 的设置窗口
-    check: {app_windows_grew: true}
+    check: {app_changed: true}       # a new window, or the same window now showing other things: settings open either way
     cleanup: [{activate: true, key: "cmd+w"}]
   - id: version-in-about
     goal: 看看 {app} 的版本号是多少

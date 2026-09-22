@@ -92,6 +92,13 @@ def check(engine: Engine, task: dict[str, Any], result: dict[str, Any], only: tu
             hit = [rx for rx in _wants(want) if re.search(rx, trace, re.I)]
             if hit:
                 return False, f"trace_excludes: {hit} in what was done"
+        elif key == "app_changed":
+            # the app shows something it did not before the task — a new window, or the same window now
+            # saying other things. Settings open in a window in one app and in the window in the next
+            # (an Electron app's route, a Catalyst app's pane), and a check that only counts windows
+            # failed two tasks the engine had done.
+            if not result.get("_app_changed"):
+                return False, "app_changed: the app shows nothing it did not before the task"
         elif key == "app_windows_grew":
             # a window of the task's app that was not there before it — a settings window, a document —
             # judged without knowing what the window is called in this app or this language
@@ -608,6 +615,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         lap("launch")
         cleanup(engine, t, "setup")
         before = _desktop(engine)          # after setup: what the task itself must leave as it found it
+        text_before = _text_of(engine, t.get("app"))[1] if "app_changed" in (t.get("check") or {}) else ""
         lap("setup")
         expected = _expected(t)
         if expected == ["done"] and any(k in (t.get("check") or {}) for k in SCREEN_CHECKS):
@@ -653,8 +661,12 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             cleanup(engine, t)
             progress(f"   ERROR {res['reason'][:120]}")
             return base | _error_row(t, res["reason"][:120])
-        if "app_windows_grew" in (t.get("check") or {}):
-            res["_windows_grew"] = {x["pid"]: x["windows"] for x in _leftovers(engine, before)}
+        if "app_windows_grew" in (t.get("check") or {}) or "app_changed" in (t.get("check") or {}):
+            grew = {x["pid"]: x["windows"] for x in _leftovers(engine, before)}
+            res["_windows_grew"] = grew
+            if "app_changed" in (t.get("check") or {}):
+                pid = (engine._resolve_app(t.get("app"), engine.helper.call("apps.running")) or {}).get("pid")
+                res["_app_changed"] = bool(grew.get(pid)) or _text_of(engine, t.get("app"))[1] != text_before
         seen_ok, why = check(engine, t, res)
         lap("check")
         status_ok = res.get("status") in expected

@@ -1,0 +1,1721 @@
+{
+ "summary": {
+  "suite": "evals/sampled.yaml",
+  "suite_sha256": "b5e3caf936dccecd",
+  "repeat": 3,
+  "tasks": 12,
+  "tasks_listed": 12,
+  "runs": 36,
+  "valid": 36,
+  "invalid": 0,
+  "errors": 0,
+  "passed": 17,
+  "rate": 0.472,
+  "passed_tasks": 5,
+  "ci95": [
+   0.193,
+   0.68
+  ],
+  "ci95_over": "tasks",
+  "pass_all": 5,
+  "success_rate": 0.472,
+  "median_seconds": 16.1,
+  "p90_seconds": 28.0,
+  "total_cost_usd": 0.2509,
+  "decider_calls": 620,
+  "categories": {
+   "appkit": {
+    "passed": 7,
+    "runs": 12,
+    "rate": 0.583,
+    "ci95": [
+     0.32,
+     0.807
+    ]
+   },
+   "catalyst": {
+    "passed": 3,
+    "runs": 6,
+    "rate": 0.5,
+    "ci95": [
+     0.188,
+     0.812
+    ]
+   },
+   "electron": {
+    "passed": 3,
+    "runs": 6,
+    "rate": 0.5,
+    "ci95": [
+     0.188,
+     0.812
+    ]
+   },
+   "java": {
+    "passed": 4,
+    "runs": 6,
+    "rate": 0.667,
+    "ci95": [
+     0.3,
+     0.903
+    ]
+   },
+   "qt": {
+    "passed": 0,
+    "runs": 6,
+    "rate": 0.0,
+    "ci95": [
+     0.0,
+     0.39
+    ]
+   }
+  },
+  "tasks_leaving_things_behind": 8,
+  "passed_by_answering_anyway": 0,
+  "at": "2026-09-22 12:54"
+ },
+ "rows": [
+  {
+   "id": "settings-window--com.netease.uuremote",
+   "run": 1,
+   "category": "appkit",
+   "app": "com.netease.uuremote",
+   "goal": "打开 UU远程 的设置窗口",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 10.1,
+   "decider_calls": 8,
+   "cost_usd": 0.004038,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 网易UU远程 ▸ 设置... (⌘,)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 10.3,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.3
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.apple.stocks",
+   "run": 1,
+   "category": "catalyst",
+   "app": "com.apple.stocks",
+   "goal": "打开 Stocks 的设置窗口",
+   "continued": 1,
+   "status": "need_input",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'need_input', expected ['done'] (result on screen)",
+   "reason": "this step needs text only the caller can provide",
+   "cause": "budget",
+   "steps": 14,
+   "seconds": 46.6,
+   "decider_calls": 48,
+   "cost_usd": 0.016701,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Apple ▸ System Settings…",
+    "press cmd+, (suggested by the planner)",
+    "press the escape key",
+    "press the return key",
+    "close button 「close button」",
+    "menu Apple ▸ System Settings…",
+    "bring back the main window of Stocks",
+    "menu Stocks ▸ About Stocks",
+    "close button 「close button」",
+    "menu Stocks ▸ About Stocks",
+    "close button 「close button」",
+    "press menu item 「Preferences...」",
+    "press close button 「close button」",
+    "menu Stocks ▸ About Stocks"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "Stocks: 000001.SS – SSE Composite Index",
+     "System Settings"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 46.6,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 1.0,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.electron.oss-browser",
+   "run": 1,
+   "category": "electron",
+   "app": "com.electron.oss-browser",
+   "goal": "打开 oss-browser 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 19.1,
+   "decider_calls": 16,
+   "cost_usd": 0.00624,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of oss-browser (failed)",
+    "press cmd+, (suggested by the planner)",
+    "bring back the main window of oss-browser",
+    "bring back the main window of oss-browser"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 19.1,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.xk72.Charles",
+   "run": 1,
+   "category": "java",
+   "app": "com.xk72.Charles",
+   "goal": "打开 Charles 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 20.8,
+   "decider_calls": 19,
+   "cost_usd": 0.00667,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of Charles",
+    "press cmd+, (suggested by the planner)",
+    "bring back the main window of Charles",
+    "bring back the main window of Charles"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 20.8,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 1.1
+   },
+   "left_by_engine": [
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": [
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ]
+  },
+  {
+   "id": "settings-window--com.lemon.lvpro",
+   "run": 1,
+   "category": "qt",
+   "app": "com.lemon.lvpro",
+   "goal": "打开 剪映专业版 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 13.8,
+   "decider_calls": 17,
+   "cost_usd": 0.006364,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of 剪映专业版 (failed)",
+    "press cmd+, (suggested by the planner)",
+    "press status menu 「剪映专业版」",
+    "press status menu 「剪映专业版」"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 13.8,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 3.6
+   },
+   "left_by_engine": [
+    {
+     "app": "剪映专业版",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": [
+    {
+     "app": "剪映专业版",
+     "new_app": false,
+     "windows": 1
+    }
+   ]
+  },
+  {
+   "id": "settings-window--de.RayLink",
+   "run": 1,
+   "category": "appkit",
+   "app": "de.RayLink",
+   "goal": "打开 RayLink 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 21.1,
+   "decider_calls": 16,
+   "cost_usd": 0.006273,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of RayLink",
+    "press cmd+, (suggested by the planner)",
+    "bring back the main window of RayLink",
+    "bring back the main window of RayLink"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "剪映专业版: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 21.1,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 3.2,
+    "sweep": 4.1
+   },
+   "left_by_engine": [
+    {
+     "app": "剪映专业版",
+     "new_app": false,
+     "windows": 1
+    },
+    {
+     "app": "RayLink",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": [
+    {
+     "app": "剪映专业版",
+     "new_app": false,
+     "windows": 1
+    },
+    {
+     "app": "RayLink",
+     "new_app": false,
+     "windows": 1
+    }
+   ]
+  },
+  {
+   "id": "version-in-about--com.netease.uuremote",
+   "run": 1,
+   "category": "appkit",
+   "app": "com.netease.uuremote",
+   "goal": "看看 UU远程 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 14.1,
+   "decider_calls": 12,
+   "cost_usd": 0.005313,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 网易UU远程 ▸ 关于",
+    "menu 网易UU远程 ▸ 关于"
+   ],
+   "answer": "屏幕上显示的UU远程版本号是 V4.17.0。",
+   "tidy": {
+    "closed": [
+     "RayLink: Dialog"
+    ],
+    "left_open": [
+     {
+      "window": "UU远程: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 14.1,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 5.9,
+    "sweep": 0.3
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.apple.stocks",
+   "run": 1,
+   "category": "catalyst",
+   "app": "com.apple.stocks",
+   "goal": "看看 Stocks 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 9.7,
+   "decider_calls": 9,
+   "cost_usd": 0.003003,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Stocks ▸ About Stocks"
+   ],
+   "answer": "Stocks 的版本号是 8.3 (1901)。",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 9.7,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 0.2,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.electron.oss-browser",
+   "run": 1,
+   "category": "electron",
+   "app": "com.electron.oss-browser",
+   "goal": "看看 oss-browser 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 7.1,
+   "decider_calls": 7,
+   "cost_usd": 0.00173,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu oss-browser ▸ About oss-browser"
+   ],
+   "answer": "oss-browser 的版本号是 1.18.0。",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 7.1,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.xk72.Charles",
+   "run": 1,
+   "category": "java",
+   "app": "com.xk72.Charles",
+   "goal": "看看 Charles 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 6.8,
+   "decider_calls": 6,
+   "cost_usd": 0.001648,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu Charles ▸ About Charles"
+   ],
+   "answer": "Charles 的版本号是 5.0.3。",
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "Charles: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 6.8,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 3.2,
+    "sweep": 0.6
+   },
+   "left_by_engine": [
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.lemon.lvpro",
+   "run": 1,
+   "category": "qt",
+   "app": "com.lemon.lvpro",
+   "goal": "看看 剪映专业版 的版本号是多少",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['10.9.12865'] in '未能在屏幕上找到剪映专业版的版本号。'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 20.4,
+   "decider_calls": 23,
+   "cost_usd": 0.010137,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 剪映专业版 ▸ 关于",
+    "menu 剪映专业版 ▸ 关于",
+    "menu Apple ▸ Recent Items ▸ Show “剪映专业版” in Finder",
+    "menu Apple ▸ Recent Items ▸ Show “剪映专业版” in Finder"
+   ],
+   "answer": "未能在屏幕上找到剪映专业版的版本号。",
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "Finder: Applications",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 20.4,
+    "check": 0.8,
+    "cleanup": 0.6,
+    "tidy": 4.8,
+    "sweep": 0.6
+   },
+   "left_by_engine": [
+    {
+     "app": "Finder",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--de.RayLink",
+   "run": 1,
+   "category": "appkit",
+   "app": "de.RayLink",
+   "goal": "看看 RayLink 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 12.8,
+   "decider_calls": 14,
+   "cost_usd": 0.00517,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu RayLink ▸ 关于RayLink",
+    "raise dialog 「About RayLink」"
+   ],
+   "answer": "版本号是 V8.1.3.8",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 12.8,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.netease.uuremote",
+   "run": 2,
+   "category": "appkit",
+   "app": "com.netease.uuremote",
+   "goal": "打开 UU远程 的设置窗口",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 9.4,
+   "decider_calls": 11,
+   "cost_usd": 0.005138,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of UU远程",
+    "press cmd+, (suggested by the planner) (menu 网易UU远程 ▸ 设置... (⌘,))"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": [
+     {
+      "window": "UU远程: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 9.4,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 5.0,
+    "sweep": 0.3
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.apple.stocks",
+   "run": 2,
+   "category": "catalyst",
+   "app": "com.apple.stocks",
+   "goal": "打开 Stocks 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 6,
+   "seconds": 28.0,
+   "decider_calls": 38,
+   "cost_usd": 0.01452,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "press cmd+, (suggested by the planner)",
+    "press menu item 「Settings」",
+    "press menu item 「Settings」",
+    "pick menu item 「Settings」",
+    "press the escape key",
+    "menu Apple ▸ System Settings…"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink",
+     "System Settings"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 28.0,
+    "check": 0.9,
+    "cleanup": 0.5,
+    "tidy": 2.7,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.electron.oss-browser",
+   "run": 2,
+   "category": "electron",
+   "app": "com.electron.oss-browser",
+   "goal": "打开 oss-browser 的设置窗口",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 4,
+   "seconds": 13.4,
+   "decider_calls": 16,
+   "cost_usd": 0.007838,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "click the text 「OSS Browser」 at top",
+    "open the context menu of text 「 设置」",
+    "open the context menu of text 「 设置」",
+    "link 「 设置」 → file:///Applications/oss-browser.app/Contents/Resources/app.asar/index.html"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 13.4,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.xk72.Charles",
+   "run": 2,
+   "category": "java",
+   "app": "com.xk72.Charles",
+   "goal": "打开 Charles 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 19.6,
+   "decider_calls": 24,
+   "cost_usd": 0.010714,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "raise dialog 「dialog」",
+    "press cmd+, (suggested by the planner)",
+    "press menu item 「Settings」",
+    "pick menu item 「Settings」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 19.6,
+    "check": 0.9,
+    "cleanup": 0.5,
+    "tidy": 2.8,
+    "sweep": 1.1
+   },
+   "left_by_engine": [
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": [
+    {
+     "app": "RayLink",
+     "new_app": false,
+     "windows": 1
+    },
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ]
+  },
+  {
+   "id": "settings-window--com.lemon.lvpro",
+   "run": 2,
+   "category": "qt",
+   "app": "com.lemon.lvpro",
+   "goal": "打开 剪映专业版 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 16.2,
+   "decider_calls": 19,
+   "cost_usd": 0.009164,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 剪映专业版 ▸ 全局设置",
+    "press cmd+, (suggested by the planner)",
+    "menu 剪映专业版 ▸ 全局设置",
+    "read all the text in this window, including what is scrolled out of sight"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 16.2,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 2.7,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--de.RayLink",
+   "run": 2,
+   "category": "appkit",
+   "app": "de.RayLink",
+   "goal": "打开 RayLink 的设置窗口",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 3,
+   "seconds": 16.1,
+   "decider_calls": 22,
+   "cost_usd": 0.009607,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "press cmd+, (suggested by the planner)",
+    "switch to the window 「RayLink」",
+    "menu RayLink ▸ 设置"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 16.1,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.netease.uuremote",
+   "run": 2,
+   "category": "appkit",
+   "app": "com.netease.uuremote",
+   "goal": "看看 UU远程 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 5.8,
+   "decider_calls": 6,
+   "cost_usd": 0.001791,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu 网易UU远程 ▸ 关于"
+   ],
+   "answer": "UU远程 的版本号是 V4.17.0。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": [
+     {
+      "window": "UU远程: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 5.8,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 4.9,
+    "sweep": 0.3
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.apple.stocks",
+   "run": 2,
+   "category": "catalyst",
+   "app": "com.apple.stocks",
+   "goal": "看看 Stocks 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 10.1,
+   "decider_calls": 9,
+   "cost_usd": 0.002886,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Stocks ▸ About Stocks"
+   ],
+   "answer": "Stocks 的版本号是 8.3 (1901)。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 10.1,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 2.7,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.electron.oss-browser",
+   "run": 2,
+   "category": "electron",
+   "app": "com.electron.oss-browser",
+   "goal": "看看 oss-browser 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 7.1,
+   "decider_calls": 7,
+   "cost_usd": 0.001729,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu oss-browser ▸ About oss-browser"
+   ],
+   "answer": "oss-browser 的版本号是 1.18.0。",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 7.1,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.xk72.Charles",
+   "run": 2,
+   "category": "java",
+   "app": "com.xk72.Charles",
+   "goal": "看看 Charles 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 6.9,
+   "decider_calls": 7,
+   "cost_usd": 0.001738,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu Charles ▸ About Charles"
+   ],
+   "answer": "Charles 的版本号是 5.0.3。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": [
+     {
+      "window": "Charles: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 6.9,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 5.0,
+    "sweep": 0.7
+   },
+   "left_by_engine": [
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.lemon.lvpro",
+   "run": 2,
+   "category": "qt",
+   "app": "com.lemon.lvpro",
+   "goal": "看看 剪映专业版 的版本号是多少",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['10.9.12865'] in '当前屏幕上没有显示剪映专业版的版本号，未能找到。'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 19.5,
+   "decider_calls": 22,
+   "cost_usd": 0.00975,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 剪映专业版 ▸ 关于",
+    "menu 剪映专业版 ▸ 全局设置",
+    "menu 剪映专业版 ▸ 更多 ▸ 用户协议",
+    "press cmd+, (suggested by the planner)"
+   ],
+   "answer": "当前屏幕上没有显示剪映专业版的版本号，未能找到。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 19.5,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 2.5,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--de.RayLink",
+   "run": 2,
+   "category": "appkit",
+   "app": "de.RayLink",
+   "goal": "看看 RayLink 的版本号是多少",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['8.1.3.8'] in ''",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 9,
+   "seconds": 42.5,
+   "decider_calls": 35,
+   "cost_usd": 0.014233,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "switch to the window 「About RayLink」",
+    "read all the text in this window, including what is scrolled out of sight",
+    "raise dialog 「About RayLink」",
+    "switch to the window 「RayLink」",
+    "menu RayLink ▸ 关于RayLink",
+    "click the text 「V VIP」 at top-left",
+    "scroll down in this window with the wheel",
+    "click the text 「V VIP」 at top-left",
+    "scroll up in this window with the wheel"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 42.5,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.netease.uuremote",
+   "run": 3,
+   "category": "appkit",
+   "app": "com.netease.uuremote",
+   "goal": "打开 UU远程 的设置窗口",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 14.0,
+   "decider_calls": 12,
+   "cost_usd": 0.005926,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu 网易UU远程 ▸ 设置... (⌘,)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 14.0,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.3
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.apple.stocks",
+   "run": 3,
+   "category": "catalyst",
+   "app": "com.apple.stocks",
+   "goal": "打开 Stocks 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 9,
+   "seconds": 20.3,
+   "decider_calls": 23,
+   "cost_usd": 0.00878,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Stocks ▸ About Stocks",
+    "close button 「close button」",
+    "press cmd+, (suggested by the planner)",
+    "menu Stocks ▸ About Stocks",
+    "close button 「close button」",
+    "press menu item 「Preferences...」",
+    "press close button 「close button」",
+    "pick menu item 「Preferences...」",
+    "press close button 「close button」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 20.3,
+    "check": 0.9,
+    "cleanup": 0.5,
+    "tidy": 2.5,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.electron.oss-browser",
+   "run": 3,
+   "category": "electron",
+   "app": "com.electron.oss-browser",
+   "goal": "打开 oss-browser 的设置窗口",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 5,
+   "seconds": 16.5,
+   "decider_calls": 17,
+   "cost_usd": 0.007901,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "click the text 「OSS Browser」 at top",
+    "open the context menu of text 「 设置」",
+    "press the return key",
+    "open the context menu of text 「 设置」",
+    "link 「 设置」 → file:///Applications/oss-browser.app/Contents/Resources/app.asar/index.html"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 16.5,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.xk72.Charles",
+   "run": 3,
+   "category": "java",
+   "app": "com.xk72.Charles",
+   "goal": "打开 Charles 的设置窗口",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 3,
+   "seconds": 15.7,
+   "decider_calls": 21,
+   "cost_usd": 0.01047,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "raise dialog 「dialog」",
+    "press cmd+, (suggested by the planner)",
+    "menu Charles ▸ Settings… (⌘,)"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "Charles: Session 1 * – Charles 5.0.3",
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 15.7,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 2.9,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--com.lemon.lvpro",
+   "run": 3,
+   "category": "qt",
+   "app": "com.lemon.lvpro",
+   "goal": "打开 剪映专业版 的设置窗口",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 16.3,
+   "decider_calls": 17,
+   "cost_usd": 0.00763,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 剪映专业版 ▸ 全局设置",
+    "press cmd+, (suggested by the planner)",
+    "menu 剪映专业版 ▸ 全局设置",
+    "提高 标准窗口 「剪映专业版」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 16.3,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 2.8,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "settings-window--de.RayLink",
+   "run": 3,
+   "category": "appkit",
+   "app": "de.RayLink",
+   "goal": "打开 RayLink 的设置窗口",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "app_windows_grew: no new window of the app is on screen",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 6,
+   "seconds": 24.5,
+   "decider_calls": 25,
+   "cost_usd": 0.010419,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "press cmd+, (suggested by the planner)",
+    "press the escape key",
+    "press the escape key",
+    "switch to the window 「RayLink」",
+    "menu RayLink ▸ 设置",
+    "radio button 「基本设置」"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 24.5,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.netease.uuremote",
+   "run": 3,
+   "category": "appkit",
+   "app": "com.netease.uuremote",
+   "goal": "看看 UU远程 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 19.2,
+   "decider_calls": 16,
+   "cost_usd": 0.007308,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu 网易UU远程 ▸ 关于"
+   ],
+   "answer": "显示的版本号是 V4.17.0。",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 19.2,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.3
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.apple.stocks",
+   "run": 3,
+   "category": "catalyst",
+   "app": "com.apple.stocks",
+   "goal": "看看 Stocks 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 10.4,
+   "decider_calls": 10,
+   "cost_usd": 0.003923,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Stocks ▸ About Stocks"
+   ],
+   "answer": "Stocks 的版本号是 8.3 (1901)。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 10.4,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 2.8,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.electron.oss-browser",
+   "run": 3,
+   "category": "electron",
+   "app": "com.electron.oss-browser",
+   "goal": "看看 oss-browser 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 6.4,
+   "decider_calls": 7,
+   "cost_usd": 0.001729,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu oss-browser ▸ About oss-browser"
+   ],
+   "answer": "oss-browser 的版本号是 1.18.0。",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 6.4,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.xk72.Charles",
+   "run": 3,
+   "category": "java",
+   "app": "com.xk72.Charles",
+   "goal": "看看 Charles 的版本号是多少",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 6.6,
+   "decider_calls": 7,
+   "cost_usd": 0.001738,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu Charles ▸ About Charles"
+   ],
+   "answer": "Charles 的版本号是 5.0.3。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": [
+     {
+      "window": "Charles: (untitled)",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 6.6,
+    "check": 0.8,
+    "cleanup": 0.5,
+    "tidy": 5.0,
+    "sweep": 0.6
+   },
+   "left_by_engine": [
+    {
+     "app": "Charles",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--com.lemon.lvpro",
+   "run": 3,
+   "category": "qt",
+   "app": "com.lemon.lvpro",
+   "goal": "看看 剪映专业版 的版本号是多少",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['10.9.12865'] in '未能找到剪映专业版的版本号，当前屏幕上没有显示。'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 5,
+   "seconds": 21.8,
+   "decider_calls": 23,
+   "cost_usd": 0.010113,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu 剪映专业版 ▸ 关于",
+    "press cmd+, (suggested by the planner)",
+    "menu Apple ▸ Recent Items ▸ 剪映专业版",
+    "menu Apple ▸ About This Mac",
+    "press close button 「close button」"
+   ],
+   "answer": "未能找到剪映专业版的版本号，当前屏幕上没有显示。",
+   "tidy": {
+    "closed": [
+     "RayLink: About RayLink"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 21.8,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 2.5,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "version-in-about--de.RayLink",
+   "run": 3,
+   "category": "appkit",
+   "app": "de.RayLink",
+   "goal": "看看 RayLink 的版本号是多少",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['8.1.3.8'] in '屏幕上没有显示 RayLink 的版本号，无法找到。'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 7,
+   "seconds": 33.4,
+   "decider_calls": 31,
+   "cost_usd": 0.012568,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "switch to the window 「About RayLink」",
+    "read all the text in this window, including what is scrolled out of sight",
+    "switch to the window 「RayLink」",
+    "menu RayLink ▸ 关于RayLink",
+    "click the text 「RayLink」 at top",
+    "raise dialog 「About RayLink」",
+    "click the text 「V VIP」 at top-left"
+   ],
+   "answer": "屏幕上没有显示 RayLink 的版本号，无法找到。",
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 33.4,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  }
+ ]
+}

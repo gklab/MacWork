@@ -21,7 +21,7 @@ SUITES = sorted(pathlib.Path("evals").glob("*.yaml"))
 # what check() and cleanup() in evals.py actually read
 CHECKS = {"screen_contains", "window_contains", "frontmost", "screen_excludes", "trace_excludes",
           "output_contains", "answer_contains", "file_exists", "file_missing", "file_contains", "expect_status",
-          "app_windows_grew"}
+          "app_windows_grew", "app_changed"}
 TASK_KEYS = {"id", "app", "check_app", "goal", "inputs", "setup", "cleanup", "check", "fixtures",
              "accept_blocked", "repeat", "skip", "why",
              "category"}      # documentary: the harness ignores it, the suites group by it
@@ -340,5 +340,15 @@ def test_the_draw_leaves_out_what_no_person_launches(tmp_path):
     inner = tmp_path / "System" / "Library" / "CoreServices"
     inner.mkdir(parents=True)
     installed.append(_bundle(inner, "Piece", "x.piece"))
-    suite = {"sample": {"apps": 6, "seed": 1}, "templates": [{"id": "settings-window", "goal": "{app}", "check": {"app_windows_grew": True}}]}
+    suite = {"sample": {"apps": 6, "seed": 1}, "templates": [{"id": "settings-window", "goal": "{app}", "check": {"app_changed": True}}]}
     assert {t["app"] for t in evals.sampled_tasks(None, suite, installed=installed, named="")} == {"x.real"}
+
+
+def test_settings_that_open_in_the_same_window_count(tmp_path):
+    from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+    from macwork.engine import Engine
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = {"app": "com.apple.TextEdit", "check": {"app_changed": True}}
+    assert evals.check(eng, task, {"status": "done", "_app_changed": True})[0]
+    ok, why = evals.check(eng, task, {"status": "done", "_app_changed": False})
+    assert not ok and "nothing it did not before" in why

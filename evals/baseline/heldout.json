@@ -1,0 +1,1090 @@
+{
+ "summary": {
+  "suite": "evals/heldout.yaml",
+  "suite_sha256": "36c57c5379494076",
+  "repeat": 3,
+  "tasks": 8,
+  "tasks_listed": 8,
+  "runs": 24,
+  "valid": 24,
+  "invalid": 0,
+  "errors": 0,
+  "passed": 9,
+  "rate": 0.375,
+  "passed_tasks": 3,
+  "ci95": [
+   0.137,
+   0.694
+  ],
+  "ci95_over": "tasks",
+  "pass_all": 2,
+  "success_rate": 0.375,
+  "median_seconds": 15.0,
+  "p90_seconds": 26.9,
+  "total_cost_usd": 0.17365,
+  "decider_calls": 416,
+  "categories": {
+   "-": {
+    "passed": 9,
+    "runs": 24,
+    "rate": 0.375,
+    "ci95": [
+     0.212,
+     0.573
+    ]
+   }
+  },
+  "tasks_leaving_things_behind": 3,
+  "passed_by_answering_anyway": 0,
+  "at": "2026-09-22 12:37"
+ },
+ "rows": [
+  {
+   "id": "clock-stopwatch",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.clock",
+   "goal": "在时钟里打开秒表",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 5,
+   "seconds": 28.9,
+   "decider_calls": 30,
+   "cost_usd": 0.01362,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "open app Clock",
+    "press status menu 「Clock」",
+    "press the escape key",
+    "radio button 「Stopwatch」",
+    "button 「Start」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "app": "Clock",
+      "why": "still needed for the goal"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 1.0,
+    "setup": 0.7,
+    "pre_check": 0.2,
+    "task": 28.9,
+    "check": 1.0,
+    "cleanup": 0.0,
+    "tidy": 0.4,
+    "sweep": 0.1
+   },
+   "left_by_engine": [
+    {
+     "app": "Clock",
+     "new_app": true,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": [
+    {
+     "app": "Clock",
+     "new_app": true,
+     "windows": 1
+    }
+   ]
+  },
+  {
+   "id": "midi-studio",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.audio.AudioMIDISetup",
+   "goal": "在音频 MIDI 设置里打开 MIDI 工作室",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['MIDI工作室', 'MIDI 工作室', 'MIDI Studio'] in ''",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 15.9,
+   "decider_calls": 18,
+   "cost_usd": 0.007656,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "press cmd+2 (suggested by the planner) (menu Window ▸ Show MIDI Studio (⌘2))",
+    "bring back the main window of Audio MIDI Setup",
+    "press cmd+2 (suggested by the planner)",
+    "press the escape key"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.2,
+    "pre_check": 0.2,
+    "task": 15.9,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.2
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "disk-all-devices",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.DiskUtility",
+   "goal": "在磁盘工具里显示所有设备，而不只是宗卷",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 5,
+   "seconds": 15.5,
+   "decider_calls": 19,
+   "cost_usd": 0.008757,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu View ▸ Show Only Volumes ✓ (⌘1)",
+    "press cmd+2 (suggested by the planner) (menu View ▸ Show All Devices (⌘2))",
+    "menu View ▸ Show Only Volumes ✓ (⌘1)",
+    "menu button 「View」",
+    "menu View ▸ Show All Devices (⌘2)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.6,
+    "pre_check": 0.3,
+    "task": 15.5,
+    "check": 1.0,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.2
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "sysinfo-memory",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.SystemProfiler",
+   "goal": "在系统信息里查看内存的信息",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 8.7,
+   "decider_calls": 9,
+   "cost_usd": 0.003054,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "open app System Information",
+    "select outline row 「Memory」"
+   ],
+   "answer": "内存信息显示：Memory: 36 GB，Type: LPDDR5，Manufacturer: Micron。",
+   "tidy": {
+    "closed": [
+     "System Information"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 1.3,
+    "setup": 0.5,
+    "pre_check": 0.0,
+    "task": 8.7,
+    "check": 1.2,
+    "cleanup": 0.0,
+    "tidy": 0.5,
+    "sweep": 0.0
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "script-editor-dictionary",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.ScriptEditor2",
+   "goal": "在脚本编辑器里查看 Safari 的脚本字典",
+   "status": "need_confirm",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['Safari'] in ''",
+   "reason": "this action is irreversible or outward-facing",
+   "cause": null,
+   "steps": 3,
+   "seconds": 19.1,
+   "decider_calls": 20,
+   "cost_usd": 0.007388,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "press cmd+shift+o (suggested by the planner) (menu File ▸ Open Dictionary… (⇧⌘O))",
+    "bring back the main window of Script Editor",
+    "type 「Safari」 at the cursor (suggested by the planner)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.9,
+    "pre_check": 0.2,
+    "task": 19.1,
+    "check": 0.9,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 3.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "safari-open-url",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.Safari",
+   "goal": "在 Safari 里打开 example.org",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 11.1,
+   "decider_calls": 12,
+   "cost_usd": 0.005175,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of Safari",
+    "type into text field 「smart search field」 and press Return"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "Script Editor: Open Dictionary",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.4,
+    "task": 11.1,
+    "check": 1.0,
+    "cleanup": 0.4,
+    "tidy": 3.0,
+    "sweep": 0.0
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "maps-search",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.Maps",
+   "goal": "在地图里搜索天安门",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "screen_contains: none of ['天安门广场', 'Tiananmen Square'] in \"天安门\\n3 found\\nTian'anmen, Red Tourism Site · Beijing, Open till 20:15\\nTian'anmen Square, Red Tourism Site · Beijing, Open till 22:00\\nTian'anmen Rostrum (South Gat\"",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 7.3,
+   "decider_calls": 10,
+   "cost_usd": 0.004292,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "type into search text field 「Search for a place or address」",
+    "press the return key"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.4,
+    "task": 7.3,
+    "check": 1.0,
+    "cleanup": 0.0,
+    "tidy": 0.0,
+    "sweep": 0.8
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "colorsync-calculator",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.ColorSyncUtility",
+   "goal": "在色彩同步实用工具里打开颜色计算器",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "screen_contains: none of ['RGB', 'CMYK'] in '\\npress status menu 「Battery」\\npress status menu 「Clock」\\npress status menu 「Wi‑Fi, connected, 3 bars」\\npress status menu 「Control Center」\\npress status menu 「搜狗拼音」\\n'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 5,
+   "seconds": 15.2,
+   "decider_calls": 20,
+   "cost_usd": 0.008374,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of ColorSync Utility",
+    "menu Apple ▸ Recent Items ▸ ColorSync Utility",
+    "bring back the main window of ColorSync Utility",
+    "menu ColorSync Utility ▸ About ColorSync Utility",
+    "close button 「close button」"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.6,
+    "pre_check": 0.1,
+    "task": 15.2,
+    "check": 0.9,
+    "cleanup": 0.0,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "clock-stopwatch",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.clock",
+   "goal": "在时钟里打开秒表",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 7,
+   "seconds": 26.9,
+   "decider_calls": 30,
+   "cost_usd": 0.011549,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "open app Clock",
+    "press status menu 「Clock」",
+    "press the escape key",
+    "press cmd+2 (suggested by the planner)",
+    "press status menu 「Clock」",
+    "raise standard window 「Clock」",
+    "radio button 「Stopwatch」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "app": "Clock",
+      "why": "still needed for the goal"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.5,
+    "pre_check": 0.0,
+    "task": 26.9,
+    "check": 1.1,
+    "cleanup": 0.0,
+    "tidy": 0.5,
+    "sweep": 0.1
+   },
+   "left_by_engine": [
+    {
+     "app": "Clock",
+     "new_app": true,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": [
+    {
+     "app": "Clock",
+     "new_app": true,
+     "windows": 1
+    }
+   ]
+  },
+  {
+   "id": "midi-studio",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.audio.AudioMIDISetup",
+   "goal": "在音频 MIDI 设置里打开 MIDI 工作室",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['MIDI工作室', 'MIDI 工作室', 'MIDI Studio'] in ''",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 15.4,
+   "decider_calls": 17,
+   "cost_usd": 0.007309,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Window ▸ Show MIDI Studio (⌘2)",
+    "bring back the main window of Audio MIDI Setup",
+    "press cmd+2 (suggested by the planner)",
+    "press the escape key"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.1,
+    "pre_check": 0.2,
+    "task": 15.4,
+    "check": 1.0,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "disk-all-devices",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.DiskUtility",
+   "goal": "在磁盘工具里显示所有设备，而不只是宗卷",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'failed', expected ['done'] (result on screen)",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 12.5,
+   "decider_calls": 16,
+   "cost_usd": 0.00798,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu button 「View」",
+    "menu button 「View」",
+    "menu button 「View」",
+    "menu View ▸ Show All Devices (⌘2)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.5,
+    "pre_check": 0.3,
+    "task": 12.5,
+    "check": 1.1,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.2
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "sysinfo-memory",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.SystemProfiler",
+   "goal": "在系统信息里查看内存的信息",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 9.4,
+   "decider_calls": 10,
+   "cost_usd": 0.004003,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "open app System Information",
+    "select outline row 「Memory」"
+   ],
+   "answer": "内存信息已显示：容量 36 GB，类型 LPDDR5，制造商 Micron。",
+   "tidy": {
+    "closed": [
+     "System Information"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 1.0,
+    "setup": 0.5,
+    "pre_check": 0.0,
+    "task": 9.4,
+    "check": 1.3,
+    "cleanup": 0.0,
+    "tidy": 0.7,
+    "sweep": 0.0
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "script-editor-dictionary",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.ScriptEditor2",
+   "goal": "在脚本编辑器里查看 Safari 的脚本字典",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['Safari'] in 'Open Dictionary'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 7,
+   "seconds": 36.0,
+   "decider_calls": 38,
+   "cost_usd": 0.015696,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu Window ▸ Library (⇧⌘L)",
+    "select table row 「Safari」",
+    "menu File ▸ Open Dictionary… (⇧⌘O)",
+    "select table row 「Safari · Application · 26.3.1」",
+    "raise dialog 「Open Dictionary」",
+    "select table row 「Safari · Application · 26.3.1」 (selected)",
+    "type 「Safari」 at the cursor (suggested by the planner)"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "Script Editor: Library",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 2.8,
+    "pre_check": 0.2,
+    "task": 36.0,
+    "check": 1.2,
+    "cleanup": 0.4,
+    "tidy": 3.4,
+    "sweep": 0.6
+   },
+   "left_by_engine": [
+    {
+     "app": "Script Editor",
+     "new_app": false,
+     "windows": 1
+    }
+   ],
+   "left_after_sweep": []
+  },
+  {
+   "id": "safari-open-url",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.Safari",
+   "goal": "在 Safari 里打开 example.org",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 8.6,
+   "decider_calls": 10,
+   "cost_usd": 0.003905,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of Safari",
+    "type into text field 「smart search field」 and press Return"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.4,
+    "task": 8.6,
+    "check": 1.1,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "maps-search",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.Maps",
+   "goal": "在地图里搜索天安门",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "screen_contains: none of ['天安门广场', 'Tiananmen Square'] in \"天安门\\n3 found\\nTian'anmen, Red Tourism Site · Beijing, Open till 20:15\\nTian'anmen Square, Red Tourism Site · Beijing, Open till 22:00\\nTian'anmen Rostrum (South Gat\"",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 1,
+   "seconds": 6.4,
+   "decider_calls": 9,
+   "cost_usd": 0.004278,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "type into search text field 「Search for a place or address」 and press Return"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.3,
+    "task": 6.4,
+    "check": 1.2,
+    "cleanup": 0.0,
+    "tidy": 0.0,
+    "sweep": 0.8
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "colorsync-calculator",
+   "run": 2,
+   "category": "",
+   "app": "com.apple.ColorSyncUtility",
+   "goal": "在色彩同步实用工具里打开颜色计算器",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "screen_contains: none of ['RGB', 'CMYK'] in '\\npress status menu 「Battery」\\npress status menu 「Clock」\\npress status menu 「Wi‑Fi, connected, 3 bars」\\npress status menu 「Control Center」\\npress status menu 「搜狗拼音」\\n'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 16.7,
+   "decider_calls": 27,
+   "cost_usd": 0.011485,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of ColorSync Utility",
+    "menu Apple ▸ Recent Items ▸ ColorSync Utility",
+    "menu Apple ▸ Recent Items ▸ Show “ColorSync Utility” in Finder",
+    "press status menu 「Spotlight」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "Finder: Utilities",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.9,
+    "setup": 0.5,
+    "pre_check": 0.1,
+    "task": 16.7,
+    "check": 0.9,
+    "cleanup": 0.0,
+    "tidy": 3.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "clock-stopwatch",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.clock",
+   "goal": "在时钟里打开秒表",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 4,
+   "seconds": 26.4,
+   "decider_calls": 27,
+   "cost_usd": 0.011605,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "open app Clock",
+    "press status menu 「Clock」",
+    "press the escape key",
+    "menu View ▸ Stopwatch ✓ (⌘3)"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "Clock"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.4,
+    "pre_check": 0.0,
+    "task": 26.4,
+    "check": 1.1,
+    "cleanup": 0.0,
+    "tidy": 0.6,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "midi-studio",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.audio.AudioMIDISetup",
+   "goal": "在音频 MIDI 设置里打开 MIDI 工作室",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['MIDI工作室', 'MIDI 工作室', 'MIDI Studio'] in ''",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 4,
+   "seconds": 16.6,
+   "decider_calls": 18,
+   "cost_usd": 0.00727,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "press cmd+2 (suggested by the planner) (menu Window ▸ Show MIDI Studio (⌘2))",
+    "bring back the main window of Audio MIDI Setup",
+    "press cmd+2 (suggested by the planner)",
+    "press the escape key"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.1,
+    "pre_check": 0.2,
+    "task": 16.6,
+    "check": 0.9,
+    "cleanup": 0.5,
+    "tidy": 0.0,
+    "sweep": 0.2
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "disk-all-devices",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.DiskUtility",
+   "goal": "在磁盘工具里显示所有设备，而不只是宗卷",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 3,
+   "seconds": 12.8,
+   "decider_calls": 13,
+   "cost_usd": 0.005804,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu View ▸ Show Only Volumes ✓ (⌘1)",
+    "press cmd+2 (suggested by the planner) (menu View ▸ Show All Devices (⌘2))",
+    "menu View ▸ Show All Devices ✓ (⌘2)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.5,
+    "pre_check": 0.2,
+    "task": 12.8,
+    "check": 1.0,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.2
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "sysinfo-memory",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.SystemProfiler",
+   "goal": "在系统信息里查看内存的信息",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 8.3,
+   "decider_calls": 8,
+   "cost_usd": 0.002989,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "open app System Information",
+    "select outline row 「Memory」"
+   ],
+   "answer": "内存信息显示：容量 36 GB，类型 LPDDR5，制造商 Micron。",
+   "tidy": {
+    "closed": [
+     "System Information"
+    ],
+    "left_open": []
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 1.0,
+    "setup": 0.5,
+    "pre_check": 0.0,
+    "task": 8.3,
+    "check": 1.2,
+    "cleanup": 0.0,
+    "tidy": 0.6,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "script-editor-dictionary",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.ScriptEditor2",
+   "goal": "在脚本编辑器里查看 Safari 的脚本字典",
+   "status": "need_confirm",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['Safari'] in 'Open Dictionary'",
+   "reason": "this action is irreversible or outward-facing",
+   "cause": null,
+   "steps": 3,
+   "seconds": 9.7,
+   "decider_calls": 13,
+   "cost_usd": 0.004709,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu File ▸ Open Dictionary… (⇧⌘O)",
+    "scroll down in this window with the wheel",
+    "scroll up in this window with the wheel"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 2.7,
+    "pre_check": 0.1,
+    "task": 9.7,
+    "check": 1.2,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "safari-open-url",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.Safari",
+   "goal": "在 Safari 里打开 example.org",
+   "status": "need_input",
+   "passed": false,
+   "valid": true,
+   "why": "window_contains: none of ['Example Domain'] in 'Untitled'",
+   "reason": "this step needs text only the caller can provide",
+   "cause": null,
+   "steps": 3,
+   "seconds": 14.3,
+   "decider_calls": 14,
+   "cost_usd": 0.005662,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu File ▸ Open Location… (⌘L)",
+    "type into text field 「smart search field」 and press Return",
+    "select row 「example.org」"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [],
+    "left_open": [
+     {
+      "window": "Script Editor: Open Dictionary",
+      "why": "it asked something before closing; left as it was"
+     }
+    ]
+   },
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.1,
+    "task": 14.3,
+    "check": 1.2,
+    "cleanup": 0.4,
+    "tidy": 2.7,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "maps-search",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.Maps",
+   "goal": "在地图里搜索天安门",
+   "status": "done",
+   "passed": false,
+   "valid": true,
+   "why": "screen_contains: none of ['天安门广场', 'Tiananmen Square'] in \"天安门\\n3 found\\nTian'anmen, Red Tourism Site · Beijing, Open till 20:15\\nTian'anmen Square, Red Tourism Site · Beijing, Open till 22:00\\nTian'anmen Rostrum (South Gat\"",
+   "reason": "goal judged accomplished",
+   "cause": null,
+   "steps": 2,
+   "seconds": 8.1,
+   "decider_calls": 10,
+   "cost_usd": 0.004345,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "type into search text field 「Search for a place or address」",
+    "press the return key"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.0,
+    "pre_check": 0.3,
+    "task": 8.1,
+    "check": 1.3,
+    "cleanup": 0.0,
+    "tidy": 0.0,
+    "sweep": 0.8
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "colorsync-calculator",
+   "run": 3,
+   "category": "",
+   "app": "com.apple.ColorSyncUtility",
+   "goal": "在色彩同步实用工具里打开颜色计算器",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "screen_contains: none of ['RGB', 'CMYK'] in '\\npress status menu 「Battery」\\npress status menu 「Clock」\\npress status menu 「Wi‑Fi, connected, 3 bars」\\npress status menu 「Control Center」\\npress status menu 「搜狗拼音」\\n'",
+   "reason": "no route to the goal was found",
+   "cause": null,
+   "steps": 5,
+   "seconds": 15.0,
+   "decider_calls": 18,
+   "cost_usd": 0.006749,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "bring back the main window of ColorSync Utility",
+    "menu Apple ▸ Recent Items ▸ ColorSync Utility",
+    "bring back the main window of ColorSync Utility",
+    "menu ColorSync Utility ▸ About ColorSync Utility",
+    "close button 「close button」"
+   ],
+   "answer": null,
+   "tidy": {},
+   "answered_anyway": false,
+   "harness_s": {
+    "launch": 0.8,
+    "setup": 0.5,
+    "pre_check": 0.1,
+    "task": 15.0,
+    "check": 1.0,
+    "cleanup": 0.0,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  }
+ ]
+}

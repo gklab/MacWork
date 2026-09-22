@@ -24,7 +24,7 @@ from .privacy import RedactionError
 from .act import Outcome
 from . import sight
 from .model import Affordance, Observation, Step, Task
-from .observe import Ctx, arrange, group_of, observe
+from .observe import Ctx, arrange, get_provider, group_of, observe
 from .skills import Skills
 
 log = logging.getLogger(__name__)
@@ -316,6 +316,20 @@ class LoopMixin:
         sig = self._signature(ctx.app, obs)
         dead_before = set(task.memory.no_effect)
         self._learn_from_prev(task, ctx.app, sig, obs)
+        last = task.steps[-1] if task.steps else None
+        if last is not None and last.outcome.endswith("no text on screen did") and ctx.app and obs.window is not None \
+                and str(self.cfg.get("observe.vision.mode", "auto")) != "never":
+            # The last action changed the picture and not a word of the tree: an About panel drawn by the
+            # app itself, a popover the toolkit does not describe. A real task opened one (a Qt app's
+            # 关于), was told "the picture changed (3% of it, at the bottom left); no text on screen did",
+            # and had nothing to read it with. What the tree cannot say, the screen can: read it now.
+            key = f"{ctx.app['pid']}|{obs.window}"
+            wanted = ctx.cache.setdefault("vision.wanted", {}).setdefault(ctx.task, set())
+            if key not in wanted:
+                wanted.add(key)
+                sight_provider = get_provider("vision")
+                if sight_provider is not None:
+                    sight_provider(ctx, obs)
         here = exact_state(sig, obs.screen_text)
         self._note_return(task, here, obs.notes.get("glance"))
         if obs.notes.get("glance"):        # what this state looked like the first time it was seen
