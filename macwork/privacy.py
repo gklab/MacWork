@@ -136,14 +136,17 @@ class Redactor:
             self.table[value] = f"⟦{kind}_{self._counts[kind]}⟧"
         return self.table[value]
 
-    def _load_protected(self) -> None:
-        if self._protected is not None:
+    def _load_protected(self, again: bool = False) -> None:
+        if self._protected is not None and not again:
             return
         try:
-            names = sorted({str(n) for n in (self.protect() if self.protect else []) if n and len(str(n)) >= 2}, key=len, reverse=True)
+            raw = list(self.protect() if self.protect else [])
+            names = sorted({str(n) for n in raw if n and len(str(n)) >= 2}, key=len, reverse=True)
         except Exception:  # noqa: BLE001
-            names = []
+            raw, names = [], []
+        self._protected_from = len(raw)
         self._protected = [n.casefold() for n in names]
+        self._protected_words = [tuple(w for w in re.split(r"[^\w]+", n) if w) for n in self._protected]
         self._protected_rx = re.compile("|".join(map(re.escape, names)), re.I) if names else None
 
     def _is_protected(self, t: str) -> bool:
@@ -155,17 +158,31 @@ class Redactor:
         the substring rule was silently strongest where the redaction was weakest.
 
         A whole app name, or a whole word of a multi-word one ("Activity Monitor" also protects
-        "Monitor"). Nothing shorter: a fragment is not a name.
+        "Monitor"), or a run of whole words of one: the tagger took "Look Up" of the Service 「Look Up in
+        Dictionary」 for a person, and the floor, shown 「⟦PERSON_1⟧ in Dictionary」, could not say what the
+        action did and stopped a real task to ask. Nothing shorter than a word: a fragment is not a name.
         """
         if t in self.keep:
             return True
         self._load_protected()
+        try:
+            # The Mac's vocabulary grows once the Services have been read behind the first look, which is
+            # after this task's first request: asked about a name, look again if there is more of it now.
+            if self.protect is not None and len(self.protect()) != self._protected_from:
+                self._load_protected(again=True)
+        except Exception:  # noqa: BLE001  (the list stays as it was)
+            pass
         low = t.casefold().strip()
         if not low:
             return False
         for name in self._protected or []:
             if low == name or (len(low) >= 3 and low in re.split(r"[^\w]+", name)):
                 return True
+        run = tuple(w for w in re.split(r"[^\w]+", low) if w)
+        if len(run) >= 2:
+            for words in self._protected_words:
+                if any(words[i:i + len(run)] == run for i in range(len(words) - len(run) + 1)):
+                    return True
         return False
 
     def _worth_tagging(self, clause: str) -> bool:

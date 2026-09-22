@@ -156,13 +156,17 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 cache.pop(k, None)
 
     def _mac_vocabulary(self) -> list[str]:
-        """App names on this Mac: the tagger likes to call them people or companies; they are not personal data."""
+        """Names from this Mac itself — its apps, and the Services those apps declare: the tagger likes to call
+        them people or companies; they are not personal data. The Services come from the scan the services
+        provider runs behind the look, once it has run."""
         if "privacy.vocab" not in self.cache:
             names: list[str] = []
             for a in installed_apps(self.cfg, self.helper) + self.helper.call("apps.running"):
                 names += [a.get("name", ""), a.get("file", ""), str(a.get("bundle_id", ""))]
             self.cache["privacy.vocab"] = [n for n in names if n]
-        return self.cache["privacy.vocab"]
+        scanned = self.cache.get("services.all")
+        services = [str(s.get("name")) for s in (scanned[1] or [] if scanned else []) if s.get("name")]
+        return self.cache["privacy.vocab"] + services
 
     def system(self) -> dict[str, Any]:
         """What this Mac is set to — asked once, and of the Mac. Everything that used to be a fixed locale or

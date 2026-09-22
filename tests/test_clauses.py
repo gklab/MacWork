@@ -178,3 +178,33 @@ def test_remembering_that_does_not_stop_a_new_clause_being_looked_at(tmp_path):
     r.value({"a": "menu item one"})
     out = r.value({"a": "menu item one", "b": "call Emily Johnson"})
     assert "Emily Johnson" not in str(out)
+
+
+@pytest.mark.parametrize("name,kept", [("Look Up", True), ("look up", True), ("Up in", True), ("Dictionary", True),
+                                       ("Look Down", False), ("Up", False), ("Look Up Dictionary", False)])
+def test_a_run_of_whole_words_of_a_longer_name_is_protected(name, kept):
+    """The tagger took "Look Up" of the Service 「Look Up in Dictionary」 for a person, and the floor, shown
+    「⟦PERSON_1⟧ in Dictionary」, could not tell what the action did and stopped a real task to ask."""
+    assert protector(APPS + ["Look Up in Dictionary"])._is_protected(name) is kept
+
+
+def test_the_vocabulary_read_behind_the_first_look_still_counts():
+    """Services are read in the background, after a task's first request: a redactor that fixed its list then
+    would never have known them."""
+    from macwork.config import Config
+    from macwork.privacy import Redactor
+    vocab = ["Mail"]
+    r = Redactor(Config.load(), entities=lambda cs: [[{"type": "PERSON", "text": "Look Up"}] if "Look Up" in c else [] for c in cs],
+                 protect=lambda: vocab)
+    r.value({"app": "Mail"})                                  # the list is read here, before the Services are
+    vocab.append("Look Up in Dictionary")
+    assert r.value("「Look Up in Dictionary」 — a Service of Dictionary on this Mac").startswith("「Look Up in Dictionary」")
+
+
+def test_the_macs_vocabulary_includes_the_services_its_apps_declare(tmp_path):
+    from macwork.engine import Engine
+    from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    assert "Look Up in Dictionary" not in eng._mac_vocabulary()
+    eng.cache["services.all"] = (0.0, [{"name": "Look Up in Dictionary", "app": "Dictionary", "sends": ["NSStringPboardType"]}])
+    assert "Look Up in Dictionary" in eng._mac_vocabulary() and "Calculator" in eng._mac_vocabulary()
