@@ -357,6 +357,8 @@ engine:
     serves_goal: 0.35            # leaving the app worked in (another app, a Shortcut, the web) must serve the stated goal
     goal_calls_for: 0.3          # a floor-gated action the goal does not call for is dropped instead of asking the user
     keep_window: 0.5             # tidy: a window the task opened in an app already running stays when still needed
+    alternative: 0.1             # an option the decider gave less than this is not a way the goal could be read:
+                                 # "ask the user" with one option above it means the goal is unclear, not ambiguous
     keep_open: 0.5               # tidy: an app the task opened stays open when the decider judges it still needed…
     stays_running: 0.5           # …or the kind of app that keeps running in the background
   verify:

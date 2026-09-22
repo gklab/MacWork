@@ -145,8 +145,6 @@ class LoopMixin:
         e = self.cfg.section("engine")
         deadline = task.run_started + float(e.get("budget_s", 90))   # this run's share, for the yield wait
         last_look: Look | None = None             # the last screen, for the final diagnosis
-        if task.plan is None and self.cfg.get("planner.when", "auto") == "always":
-            self._consult(task, None, None, "")
         while True:
             if task.id in self._cancelled:
                 return self._finish(task, "cancelled", "cancelled by the caller")
@@ -173,6 +171,13 @@ class LoopMixin:
                 if isinstance(look, dict):
                     return look
                 last_look = look
+                if task.plan is None and not task.steps and self.cfg.get("planner.when", "auto") == "always":
+                    # The plan that sets the whole trajectory was written before the first look — with no
+                    # app, no screen and no running apps in the brief, while every later plan saw all three.
+                    # It is written after the first look now, and the look is taken again with the plan in
+                    # the state (one observation, once per task).
+                    if self._consult(task, look.ctx, look.obs, "", look.affs):
+                        continue
                 if look.aside is not None:        # something in the way that can simply be dismissed: do that first.
                     # No decision is asked for it — the floor already judged that it only backs out, which is
                     # the one judgement this needs — and the goal is asked about nothing until the way is clear.
@@ -337,7 +342,13 @@ class LoopMixin:
         dead_here = {a.label for a in affs if f"{sig}|{a.label}" in task.memory.no_effect}
         dead_here |= {a.label for a in affs if a.label in self._withdrawn_here(task, here)}
         dead_here |= {a.label for a in affs if task.memory.failed.get(f"{sig}|{a.label}") == here}   # failed, and nothing has changed since
-        affs = [a for a in affs if a.label not in dead_here and a.label not in task.memory.declined]   # facts: did nothing / not asked for
+        # Not offered because the goal never asked for it, or it only led in circles. Keyed the way approvals
+        # are — identity and where it sits — for a floor action: keyed on the label alone, one 「OK」 the goal
+        # never asked for took every 「OK」 in every app out of the task. Circles and leaving for another app
+        # are about the action wherever it is taken from, and stay keyed on the label.
+        withheld = [a for a in affs if a.label not in dead_here
+                    and (a.label in task.memory.declined or self.approval_key(a) in task.memory.declined)]
+        affs = [a for a in affs if a.label not in dead_here and a not in withheld]   # facts: did nothing / not asked for
         # An action that is complete is not an option. A real run read a file, was handed all of it, and was
         # offered "read the text of" the same file on each of the next nine steps — and took it three times.
         # The identity is the source's (path, size, modified), so a file that has changed can be read again.
@@ -364,6 +375,8 @@ class LoopMixin:
             options["none"] = "none: nothing available here helps"
 
         state = self._state(task, ctx, obs, sig, flat, dead_here, suggested, locked)
+        if withheld:   # an option that vanishes without a word reads as never having been there
+            state["not_offered_because_the_goal_never_asked"] = sorted({a.label for a in withheld})[:8]
         if took_back:
             state["chosen_from_this_exact_screen_before_then_came_back"] = sorted(took_back)[:8]
         if left_out > 0:
@@ -596,6 +609,17 @@ class LoopMixin:
             if len(alts) >= 2:
                 task.options = {x["id"]: look.by_id[x["id"]] for x in alts}
                 return self._finish(task, "ambiguous", "several different outcomes fit the goal", {"choose_one_of": alts})
+            # The decider says the user must choose, and there is no second option to choose between: the
+            # goal itself is unclear here. This fell through and acted, so "ask the user" with one candidate
+            # meant "do it anyway". The planner gets its say first (it may know a route, or that only the
+            # user can continue); failing that, the caller is asked to say more, and the answer comes back
+            # as an input — the one channel besides the goal that comes from the user.
+            r = self._on_rethink(task, look)
+            if r is not None:
+                return r
+            return self._finish(task, "need_input", "the goal can be read more than one way on this screen: say more precisely what is wanted",
+                                {"inputs": {"clarification": "what the goal means here, in a sentence"},
+                                 "screen": (look.obs.window, look.obs.screen_text[:300])})
         if move == "rethink":
             r = self._on_rethink(task, look)
             if r is not None:
@@ -727,7 +751,7 @@ class LoopMixin:
         # backs out of where it is stands even when the goal never mentioned it — it still has to pass the
         # confirmation gate below, which is where the user hears about anything that is not merely backing out.
         if floor and not self._goal_calls_for(task, look.ctx, redactor, look.state, chosen) and not harmless(chosen):
-            task.memory.declined.add(chosen.label)       # quit, delete, send… the goal never asked for: not worth the user's attention
+            task.memory.declined.add(self.approval_key(chosen))   # quit, delete, send… the goal never asked for: not worth the user's attention
             progress(f"not asked for, skipped: {chosen.label}")
             return AGAIN
         if self._needs_confirm(chosen, risky_screen, task.approved, harmless, floor=floor):
@@ -786,7 +810,7 @@ class LoopMixin:
             # label every time, so one confirmation used to release everything typed after it
             if floor and self.approval_key(typed) not in task.approved:
                 if not self._goal_calls_for(task, ctx, self.redactor(task.id), {}, typed):
-                    task.memory.declined.add(chosen.label)
+                    task.memory.declined.add(self.approval_key(chosen))
                     progress(f"not asked for, skipped: {typed.label[:80]}")
                     return None
                 granted, offer = self.standing(task.id, ctx, typed, floor)    # …and so is a standing grant

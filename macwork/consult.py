@@ -80,7 +80,11 @@ class ConsultMixin:
         # measured on this Mac, one replan is 1.5-2.7s of local model, and one task spent 12 of its 21
         # seconds being told the same thing three times. What it was asked about is the screen and how far
         # the plan has got; when neither has moved, the engine acts on what it already has.
-        here = (self._signature(ctx.app, obs) if ctx is not None and obs is not None else "", task.plan_i, len(task.steps) > 0)
+        # …and "what I just did went wrong" is a different question from "I am not sure about this screen",
+        # even on the same screen at the same point of the plan: keyed without it, a task stuck on one
+        # screen had already used the key on the first kind, and the correction — the one the allowance
+        # above exists for — was refused as already asked.
+        here = (self._signature(ctx.app, obs) if ctx is not None and obs is not None else "", task.plan_i, len(task.steps) > 0, went_wrong)
         if here in task.memory.consulted:
             log.info("planner: already asked about this screen")
             return False

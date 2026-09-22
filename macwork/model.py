@@ -244,6 +244,12 @@ class Task:
 
     def begin_run(self, calls: int, cost: float) -> None:
         self.run_started, self.run_step0, self.run_calls0, self.run_cost0 = time.monotonic(), len(self.steps), calls, cost
+        # The counts in `pace` bound loops inside a run — how many times to look into a group, wait, ask
+        # the planner again — and were never reset, while steps and seconds were. A task handed back with
+        # `need_continue` three times came back with fresh steps and no replan left. The flags stay: they
+        # record things that happened to the task, not how much of a run's allowance is spent.
+        self.pace = Pace(launched=self.pace.launched, tidied=self.pace.tidied,
+                         settled_leave=self.pace.settled_leave, settled_done=self.pace.settled_done)
 
     def end_run(self) -> None:
         self.spent_s += time.monotonic() - self.run_started

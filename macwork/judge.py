@@ -58,6 +58,10 @@ class JudgeMixin:
         return self._finish(task, "failed", reason, {"tried": tried, "screen": screen})
 
     def _alternatives(self, probs: dict[str, float], by_id: dict[str, Affordance]) -> list[dict[str, Any]]:
+        """The ways the goal could be read here, for the caller to choose between. The top k by rank — which
+        put options the decider gave no weight at all beside the one it meant, so "ask the user" always had
+        something to be ambiguous between, and a goal that was simply unclear was never reported as such."""
         k = int(self.cfg.get("engine.top_k", 3))
-        top = [x for x in sorted(probs.items(), key=lambda kv: -kv[1]) if x[0] in by_id][:k]
+        floor = float(self.cfg.get("engine.thresholds.alternative", 0.1))
+        top = [x for x in sorted(probs.items(), key=lambda kv: -kv[1]) if x[0] in by_id and x[1] >= floor][:k]
         return [{**by_id[i].public(), "p": round(p, 3)} for i, p in top]
