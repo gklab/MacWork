@@ -679,7 +679,9 @@ class LoopMixin:
             log.info("step %d: settling before judging done", len(task.steps))
             return AGAIN
         verified = self._verified_done(task, look.decision)
-        doubt = self._second_opinion_on_done(task, look) if verified and task.steps else ""
+        # a goal that asks for information is judged by its answer instead (written, then checked twice)
+        wants = (task.wants_answer or 0.0) >= float(self.cfg.get("engine.thresholds.wants_answer", 0.5))
+        doubt = self._second_opinion_on_done(task, look) if verified and task.steps and not wants else ""
         if verified and not doubt:
             if (task.wants_answer or 0.0) >= float(self.cfg.get("engine.thresholds.wants_answer", 0.5)):
                 self._write_answer(task, look.ctx, look.obs)
