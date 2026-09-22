@@ -74,3 +74,21 @@ def test_the_first_plan_is_written_looking_at_the_screen(tmp_path):
     res = eng.do("make a new document")
     assert res["status"] == "done" and res["plan"]["steps"] == ["press New"]
     assert "TextEdit" in back.prompts[0] and "Untitled" in back.prompts[0], "the app and its window were in the brief"
+
+
+def test_three_actions_from_one_unchanged_screen_is_said_and_asked_about(tmp_path):
+    """30% of real steps followed one on an unchanged screen, most in stretches of three or more: each
+    action "did" something and none moved the task, which neither the no-effect memory nor the circle
+    check can see."""
+    from tests.test_flex import FakeBackend
+    eng = Engine(cfg(tmp_path), helper=EnglishMac(), decider=ScriptedDecider([]))
+    back = FakeBackend([{"steps": ["use the menu instead"], "inputs": {}, "try": [{"keys": "cmd+n"}]}])
+    eng._planner = back
+    task = eng._new_task("make it", {}, None)
+    first = eng._look(task, eng._step_context(task))
+    for n in range(3):
+        task.steps.append(Step(n=n, action="button 「Refresh」", ok=True, events=["x"], before=f"{first.sig}:0"))
+    look = eng._look(task, eng._step_context(task))
+    assert "stuck_on_this_screen" in look.state and "3 actions" in look.state["stuck_on_this_screen"]
+    assert back.prompts, "the planner was asked for a route from here"
+    assert any("cmd+n" in v for v in look.options.values()), "and what it suggested is among the options"

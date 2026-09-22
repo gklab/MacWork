@@ -112,3 +112,44 @@ def test_a_click_that_would_land_on_the_prompt_is_not_offered(tmp_path):
     assert _under(beneath, PROMPT_FRAME), "a click under the prompt would land on the prompt, not on the app"
     assert not _under(beside, PROMPT_FRAME)
     assert not _under(press, PROMPT_FRAME), "an Accessibility press reaches the app whatever floats above it"
+
+
+class OwnDialog(FakeHelper):
+    """The app being worked in has put up a dialog of its own: a recovery notice, in front of its document."""
+
+    def __init__(self, says: str, buttons: list[str]) -> None:
+        super().__init__()
+        self.says, self.buttons, self.dismissed = says, buttons, False
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "ax.snapshot" and p.get("scope") == "focused_window" and not self.dismissed:
+            nodes = [{"ref": "d.0", "role": "AXWindow", "subrole": "AXDialog", "title": "Recovered", "frame": [300, 300, 400, 200]},
+                     {"ref": "d.1", "role": "AXStaticText", "value": self.says, "parent": "d.0"}]
+            nodes += [{**button(f"d.{i + 2}", b), "parent": "d.0"} for i, b in enumerate(self.buttons)]
+            return {"nodes": nodes, "ms": 3}
+        if method == "ax.perform" and str(p.get("ref", "")).startswith("d."):
+            self.calls.append((method, p))
+            self.dismissed = True
+            return {"ok": True}
+        return super().call(method, timeout, **p)
+
+
+def test_the_apps_own_dialog_is_set_aside_like_any_other_interruption(tmp_path):
+    """A real task met an app's recovery notice — "the document was restored from the last session" — and
+    the planner called it a thing only the user could dismiss. It is a dialog with a Close button."""
+    helper = OwnDialog("The document was not closed properly last time and has been restored.", ["Close"])
+    d = Floor([{"pick": "New Document"}, {"pick": "done", "done": 0.95}])
+    d.about = 0.1
+    res = engine(tmp_path, helper, d).do("make a new document")
+
+    assert helper.dismissed and "Close" in res["steps"][0], f"the dialog was not set aside first: {res['steps']}"
+    assert res["status"] == "done"
+    assert "left_for_you" not in res["outputs"]
+
+
+def test_a_dialog_the_goal_is_about_keeps_its_controls(tmp_path):
+    helper = OwnDialog("Choose a file to open", ["Open"])
+    d = Floor([{"pick": "Open"}])
+    d.about = 1.0
+    engine(tmp_path, helper, d).do("open a file in TextEdit")
+    assert any("Open" in v for v in offered(d)), "the goal was about the dialog and its controls were withheld"

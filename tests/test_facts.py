@@ -54,7 +54,8 @@ def test_what_the_task_found_out_is_reported_even_when_it_did_not_finish(tmp_pat
     eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 4},
                                        "observe": {"providers": ["readall", "keys"], "readall": {"offer_over": 0}}}),
                  helper=Listing(), decider=d)
-    eng._planner = FakeBackend([{"answer": "显示器"}])
+    # wandering on one unchanged screen asks the planner for a route first (it has none), then the answer
+    eng._planner = FakeBackend([{"steps": [], "inputs": {}}, {"answer": "显示器"}])
 
     res = eng.do("这些里面金额最高的是哪一项？")
     assert res["outputs"].get("answer") == "显示器", f"it knew, and said nothing: {res['outputs']}"

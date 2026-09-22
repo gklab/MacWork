@@ -115,21 +115,6 @@ class ConsultMixin:
         self.audit.record("plan", task=task.id, steps=plan["steps"], problem=problem)
         return True
 
-    def _answer_stands(self, task: Task, ctx: Ctx | None, answer: str) -> bool:
-        """The word-for-word check refuses any answer written as a sentence: "there are three files" is prose
-        around a count, and prose is not on screen. So an answer the check cannot trace is not dropped — it is
-        judged against what the task saw, which still catches a value that was never on any screen."""
-        gate = getattr(ctx, "gate", None) if ctx is not None else None
-        gate = gate or self.gate     # an ending has no ctx, and a guard must not be off because of that
-        state = {"goal": task.goal, "answer": answer, "seen_in_each_app": task.memory.facts.brief()}
-        try:
-            ans = gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("answer_stands"))}, task=task.id)
-        except DeciderError:
-            return False
-        stands = float(ans.get("stands", {}).get("noul", 0.0))
-        log.info("answer not traceable word for word; judged %.2f", stands)
-        return stands >= float(self.cfg.get("engine.thresholds.answer_stands", 0.6))
-
     def _write_answer(self, task: Task, ctx: Ctx | None, obs: Observation | None) -> None:
         """The goal asked for information: the planner states it from what the screen (and the web) showed.
         Without a planner, the final screen text stays in outputs.result_screen for the caller to read."""
@@ -148,27 +133,42 @@ class ConsultMixin:
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
-        if answer and task.memory.facts and task.memory.facts.source_of(answer) is None \
-                and not self._answer_stands(task, ctx, answer):
+        if not answer:
+            return
+        # Two questions about it, one request: does it stand (nothing in it invented — asked only when no
+        # screen holds it word for word) and does it answer (rather than explain why there is no answer).
+        # They were two round trips in a row, ~700 ms each, on the way out of every task that answers.
+        stands, answers = self._judge_answer(task, ctx, answer,
+                                             ask_stands=task.memory.facts is not None and task.memory.facts.source_of(answer) is None)
+        if not stands:
             log.info("refused answer not seen anywhere: %r", answer[:60])
             task.outputs["answer_refused"] = answer[:200]
             return
-        if answer:
-            task.outputs["answer"] = answer
-            # A real run ended "屏幕上没有显示今天的日期，无法得知今天是几号", which stood (nothing in it was
-            # invented) and turned the task into `done`. It is reported — the caller should hear what was
-            # found — and it is not an answer to the question, so it must not end the task as one.
-            if not self._answers(task, ctx, answer):
-                task.outputs["answer_is_no_answer"] = True
+        task.outputs["answer"] = answer
+        # A real run ended "屏幕上没有显示今天的日期，无法得知今天是几号", which stood (nothing in it was
+        # invented) and turned the task into `done`. It is reported — the caller should hear what was
+        # found — and it is not an answer to the question, so it must not end the task as one.
+        if not answers:
+            task.outputs["answer_is_no_answer"] = True
 
-    def _answers(self, task: Task, ctx: Ctx | None, answer: str) -> bool:
+    def _judge_answer(self, task: Task, ctx: Ctx | None, answer: str, ask_stands: bool) -> tuple[bool, bool]:
         gate = (getattr(ctx, "gate", None) if ctx is not None else None) or self.gate
+        state = {"goal": task.goal, "answer": answer, "seen_in_each_app": task.memory.facts.brief() if task.memory.facts else ""}
+        questions = {"answers": noul(self.cfg.question("answer_answers"))}
+        if ask_stands:
+            questions["stands"] = noul(self.cfg.question("answer_stands"))
         try:
-            ans = gate.decide(self.redactor(task.id), {"goal": task.goal, "answer": answer},
-                              {"answers": noul(self.cfg.question("answer_answers"))}, task=task.id)
+            ans = gate.decide(self.redactor(task.id), state, questions, task=task.id)
         except DeciderError:
-            return True          # unjudged is not "no": the answer stands as written, and the caller reads it
-        return float(ans.get("answers", {}).get("noul", 1.0)) >= float(self.cfg.get("engine.thresholds.answer_answers", 0.5))
+            return (not ask_stands), True   # unjudged: an untraceable answer is refused as before; an answer stands as written
+        th = self.cfg.section("engine.thresholds")
+        stands = True
+        if ask_stands:
+            got = float(ans.get("stands", {}).get("noul", 0.0))
+            log.info("answer not traceable word for word; judged %.2f", got)
+            stands = got >= float(th.get("answer_stands", 0.6))
+        answers = float(ans.get("answers", {}).get("noul", 1.0)) >= float(th.get("answer_answers", 0.5))
+        return stands, answers
 
     def _plan_inputs(self, task: Task, ctx: Ctx | None, inputs: dict[str, Any]) -> None:
         """Text a plan wants put into `task.inputs`.

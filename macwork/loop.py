@@ -326,6 +326,20 @@ class LoopMixin:
         fp_seen = self._fingerprint(ctx) if (task.steps and task.pace.redo < int(self.cfg.get("engine.verify.max_redo", 1))
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
 
+        # The same screen, several actions later: each of them "did" something — a scroll, a Clear, an
+        # All Clear — and none of them moved the task, which the no-effect memory cannot see (each had an
+        # effect) and the circle check cannot either (nothing led *back* anywhere: nothing led anywhere).
+        # Measured over 149 real steps: 30% followed one on an unchanged screen, most in stretches of three
+        # or more. At three, the planner is asked for a route from here, and the decider is told.
+        same = 0
+        for st in reversed(task.steps):
+            if st.before and st.before.split(":")[0] == sig:
+                same += 1
+            else:
+                break
+        stuck = same >= int(self.cfg.get("engine.max_same_screen", 3))
+        if stuck:
+            self._consult(task, ctx, obs, f"{same} actions in a row were taken from this screen and it has not changed", obs.affordances)
         affs = [a for a in obs.affordances + self._suggested(task, obs) if not self._denied(a, ctx.app)]
         for label, times in self._taken_here(task, sig).items():           # done from this very screen already
             if times >= int(self.cfg.get("engine.max_repeats", 4)):         # enough of that one: it has had its turns
@@ -375,6 +389,9 @@ class LoopMixin:
             options["none"] = "none: nothing available here helps"
 
         state = self._state(task, ctx, obs, sig, flat, dead_here, suggested, locked)
+        if stuck:
+            state["stuck_on_this_screen"] = f"the last {same} actions were taken from this screen and it has not changed: " \
+                                            "what was tried here is not the way"
         if withheld:   # an option that vanishes without a word reads as never having been there
             state["not_offered_because_the_goal_never_asked"] = sorted({a.label for a in withheld})[:8]
         if took_back:

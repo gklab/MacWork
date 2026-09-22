@@ -291,6 +291,9 @@ engine:
   max_retractions: 2        # a choice the task took back this many times from one exact screen is no longer
                             # offered from that screen. Once is told to the decider and still offered; twice is
                             # enough, because a System-1 model answers an unchanged state the same way again
+  max_same_screen: 3        # this many actions in a row from one unchanged screen: the planner is asked for a
+                            # route from here, and the decider is told. Measured: 30% of real steps followed
+                            # one on an unchanged screen, most in stretches of three or more
   max_pictures: 200         # how many distinct screens a task remembers the look of (about 1.4 KB each). A budget
   queue_wait_s: 900         # how long `do` waits its turn before giving up and saying so, rather than hanging
   revert:                   # putting back what a task changed (`macwork revert <task>`), newest first

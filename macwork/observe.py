@@ -435,6 +435,52 @@ def _note_ax_trust(ctx: Ctx, obs: Observation) -> None:
         obs.notes["ax_trusted"] = False
 
 
+def _own_prompts(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]], n0: int) -> None:
+    """A sheet or dialog the app itself put up — a recovery notice, "keep this window?", an alert — handed
+    to the loop as an interruption, exactly like a prompt from another process.
+
+    Only windows of *other* processes were. An app's own dialog was poured in with the app's controls, and
+    a real task met a recovery prompt that way: the planner called it a thing only the user could dismiss,
+    and the task ended `blocked` with the question already answered. What the dialog is — the task itself,
+    something to set aside, or the user's — is the same three-way judgement, made the same way, from the
+    goal and from what the floor says each button does; nothing here knows what any dialog says.
+    """
+    if not nodes or not ctx.app:
+        return
+    by_ref = {n["ref"]: n for n in nodes if n.get("ref")}
+    roots = [n for n in nodes if n.get("role") == "AXSheet"
+             or (n.get("role") == "AXWindow" and n.get("subrole") in ("AXDialog", "AXSystemDialog"))]
+    if not roots:
+        return
+
+    def within(ref: Any, root: str) -> bool:
+        hops = 0
+        while ref and hops < 64:
+            if ref == root:
+                return True
+            ref = (by_ref.get(ref) or {}).get("parent")
+            hops += 1
+        return False
+
+    for root in roots:
+        inside = [n for n in nodes if within(n.get("ref"), root["ref"])]
+        words = [str(n.get(k)) for n in inside if n.get("role") in ("AXStaticText", "AXHeading", "AXSheet", "AXWindow")
+                 for k in ("title", "value", "desc") if n.get(k)]
+        text = " / ".join(dict.fromkeys(words))[:400]
+        if not text:
+            continue
+        name = str(ctx.app.get("name") or "")
+        key = f"{name}|{hashlib.sha1(text.encode()).hexdigest()[:10]}"
+        where = "a sheet of the app itself" if root.get("role") == "AXSheet" else "a dialog of the app itself"
+        obs.notes.setdefault("interruptions", []).append({"key": key, "from": name, "text": text, "where": where,
+                                                          "frame": root.get("frame"), "over": True})
+        obs.notes.setdefault("covered_by", []).append({"from": name, "text": text, "where": where})
+        for a in obs.affordances[n0:]:
+            if within(a.target.get("ref"), root["ref"]):
+                a.target["interruption"] = key
+                a.target["watch"] = ctx.app["pid"]
+
+
 @provider("window")
 def window(ctx: Ctx, obs: Observation) -> None:
     if not ctx.app:
@@ -461,7 +507,9 @@ def window(ctx: Ctx, obs: Observation) -> None:
         obs.notes["window_frame"] = nodes[0].get("frame")
         if nodes[0].get("document"):      # the file this window is showing, as the app itself reports it
             obs.notes["window_document"] = nodes[0]["document"]
+    n0 = len(obs.affordances)
     element_affordances(ctx, obs, nodes, "w")
+    _own_prompts(ctx, obs, nodes, n0)
     obs.notes["window_actionable"] = count(nodes)
     if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
         obs.notes["window_not_answering"] = True
