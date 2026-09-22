@@ -367,10 +367,14 @@ def cmd_eval(cfg: Config, args: argparse.Namespace) -> int:
     _print(report["summary"])
     if args.compare:
         # a total on its own reads like progress whether or not anything moved; this says which tasks did
-        from .evals import compare, format_compare
+        from .evals import baseline_for, compare, format_compare
 
-        base = json.loads(Path(args.compare).read_text(encoding="utf-8"))
-        print("\nagainst " + args.compare, file=sys.stderr)
+        against = baseline_for(suite) if args.compare == "baseline" else Path(args.compare)
+        if not against.exists():
+            print(f"\nno baseline to compare with: {against} (see evals/baseline/README.md)", file=sys.stderr)
+            return 0
+        base = json.loads(against.read_text(encoding="utf-8"))
+        print("\nagainst " + str(against), file=sys.stderr)
         print(format_compare(compare(base, report)), file=sys.stderr)
     return 0
 
@@ -389,10 +393,20 @@ def cmd_profile(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_compare(cfg: Config, args: argparse.Namespace) -> int:
-    """Did anything actually change between two eval runs? Reads two reports; runs nothing."""
-    from .evals import compare_files, format_compare
+    """Did anything actually change between two eval runs? Reads two reports; runs nothing. Given one
+    report, the other is the committed baseline for its suite."""
+    from .evals import baseline_for, compare_files, format_compare
 
-    c = compare_files(Path(args.before), Path(args.after))
+    before, after = Path(args.before), Path(args.after) if args.after else None
+    if after is None:
+        after = before
+        suite = (json.loads(after.read_text(encoding="utf-8")).get("summary") or {}).get("suite") or ""
+        before = baseline_for(suite)
+        if not before.exists():
+            print(f"no baseline for {suite or 'this suite'}: {before} (see evals/baseline/README.md)", file=sys.stderr)
+            return 1
+        print(f"against the baseline {before}", file=sys.stderr)
+    c = compare_files(before, after)
     if args.json:
         _print(c)
     else:
@@ -585,13 +599,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--only", help="comma-separated task ids")
     p.add_argument("--repeat", type=int, help="runs per task (default: the suite's repeat, else 1)")
     p.add_argument("--out")
-    p.add_argument("--compare", help="an earlier report.json: say which tasks moved, and whether that is more than chance")
+    p.add_argument("--compare", nargs="?", const="baseline",
+                   help="say which tasks moved against an earlier report.json, and whether that is more than chance; "
+                        "with no path, against the committed baseline for the suite (evals/baseline/)")
     p = sub.add_parser("profile", help="where a step's time goes and how many steps were wasted (reads the task store)")
     p.add_argument("-n", type=int, default=50, help="how many recent tasks to read")
     p.add_argument("--json", action="store_true")
-    p = sub.add_parser("compare", help="compare two eval reports (runs nothing)")
+    p = sub.add_parser("compare", help="compare two eval reports (runs nothing); one report is compared with the committed baseline")
     p.add_argument("before")
-    p.add_argument("after")
+    p.add_argument("after", nargs="?")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("helper")
     p.add_argument("action", choices=["build", "install", "path"])

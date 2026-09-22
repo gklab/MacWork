@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from macwork.loop import Spent
 from macwork.model import Affordance, Step, Task
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg
 
@@ -35,7 +36,7 @@ def test_a_step_that_read_something_counts_as_having_got_somewhere(tmp_path):
     task = Task(goal="read the long one", id="t1")
     task.steps.append(Step(0, "read all the text in this window", ok=True, events=[], produced=True))
     e = eng.cfg.section("engine")
-    assert eng._can_continue(task, e, "this turn's 12 steps"), \
+    assert eng._can_continue(task, e, Spent("this turn's 12 steps")), \
         "a task that just read a whole document was told it had got nowhere"
 
 
@@ -43,28 +44,28 @@ def test_a_step_that_did_nothing_at_all_still_stops_it(tmp_path):
     eng = engine(tmp_path)
     task = Task(goal="x", id="t2")
     task.steps.append(Step(0, "press something", ok=True, events=[], produced=False))
-    assert not eng._can_continue(task, eng.cfg.section("engine"), "this turn's 12 steps")
+    assert not eng._can_continue(task, eng.cfg.section("engine"), Spent("this turn's 12 steps"))
 
 
 def test_a_failed_step_stops_it(tmp_path):
     eng = engine(tmp_path)
     task = Task(goal="x", id="t3")
     task.steps.append(Step(0, "press something", ok=False, events=["AXValueChanged"], produced=True))
-    assert not eng._can_continue(task, eng.cfg.section("engine"), "this turn's 12 steps")
+    assert not eng._can_continue(task, eng.cfg.section("engine"), Spent("this turn's 12 steps"))
 
 
 def test_a_ui_event_still_counts_as_it_always_did(tmp_path):
     eng = engine(tmp_path)
     task = Task(goal="x", id="t4")
     task.steps.append(Step(0, "press something", ok=True, events=["AXValueChanged"], produced=False))
-    assert eng._can_continue(task, eng.cfg.section("engine"), "this turn's 12 steps")
+    assert eng._can_continue(task, eng.cfg.section("engine"), Spent("this turn's 12 steps"))
 
 
 def test_the_whole_task_ceiling_is_still_the_end_of_it(tmp_path):
     eng = engine(tmp_path)
     task = Task(goal="x", id="t5")
     task.steps.append(Step(0, "read", ok=True, events=[], produced=True))
-    assert not eng._can_continue(task, eng.cfg.section("engine"), "48 steps over all its turns")
+    assert not eng._can_continue(task, eng.cfg.section("engine"), Spent("48 steps over all its turns", whole_task=True))
 
 
 def test_a_step_records_whether_it_produced_anything():

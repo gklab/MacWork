@@ -432,8 +432,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         wait = min(float(self.cfg.get("engine.yield_max_s", 60)), max(0.0, deadline - time.monotonic()))
         self.take_hands(wait_s=wait, cancelled=lambda: task.id in self._cancelled)
 
-    def _finish(self, task: Task, status: str, reason: str = "", pending: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _finish(self, task: Task, status: str, reason: str = "", pending: dict[str, Any] | None = None,
+                cause: str = "") -> dict[str, Any]:
         answered_anyway = False
+        if cause:
+            task.cause = cause
         if status in ("done", "failed", "cancelled", "blocked", "need_continue"):
             self._answer_before_ending(task, None)   # a question asked is owed whatever the task found out
             # A goal that asks a question is done when the question is answered. One asked which item cost
@@ -569,7 +572,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 self._loop(task, progress or (lambda _m: None))
             except RedactionError as exc:
                 # deciding on "[withheld]" everywhere is deciding blind: stop rather than degrade quietly
-                self._finish(task, "failed", f"nothing could be sent to the decider: {exc}")
+                self._finish(task, "failed", f"nothing could be sent to the decider: {exc}", cause="redaction_failed")
             finally:  # everything this run asked the decider, web research included
                 task.end_run()
                 if self._decider is not None:

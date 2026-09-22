@@ -1,0 +1,282 @@
+{
+ "summary": {
+  "suite": "evals/behaviour.yaml",
+  "suite_sha256": "d89590b7d1c71572",
+  "repeat": 1,
+  "tasks": 6,
+  "runs": 6,
+  "valid": 6,
+  "invalid": 0,
+  "errors": 0,
+  "passed": 3,
+  "rate": 0.5,
+  "ci95": [
+   0.188,
+   0.812
+  ],
+  "passed_tasks": 3,
+  "ci95_over": "tasks",
+  "pass_all": 3,
+  "success_rate": 0.5,
+  "median_seconds": 21.0,
+  "p90_seconds": 81.1,
+  "total_cost_usd": 0.03567,
+  "decider_calls": 106,
+  "categories": {
+   "-": {
+    "passed": 3,
+    "runs": 6,
+    "rate": 0.5,
+    "ci95": [
+     0.188,
+     0.812
+    ]
+   }
+  },
+  "tasks_leaving_things_behind": 1,
+  "at": "2026-09-21 15:40"
+ },
+ "rows": [
+  {
+   "id": "read-past-the-fold",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.TextEdit",
+   "goal": "打开 /Users/wangzhaokai/Library/Caches/macwork-sandbox/long.txt，告诉我里面的口令是什么",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['marmalade-77'] in ''",
+   "reason": "no route to the goal was found",
+   "steps": 5,
+   "seconds": 25.1,
+   "decider_calls": 18,
+   "cost_usd": 0.006381,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "menu File ▸ Open… (⌘O)",
+    "open the file /Users/wangzhaokai/Library/Caches/macwork-sandbox/long.txt in whichever app this Mac opens it with",
+    "scroll down in this window with the wheel",
+    "press cmd+down (suggested by the planner)",
+    "put the cursor at the end of the text in text entry area 「text entry area」"
+   ],
+   "answer": null,
+   "tidy": {},
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.1,
+    "pre_check": 0.0,
+    "task": 25.2,
+    "check": 0.8,
+    "cleanup": 3.1,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "types-what-the-caller-gave",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.TextEdit",
+   "goal": "新建一个文稿，把给我的那段文字填进去",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "steps": 2,
+   "seconds": 11.5,
+   "decider_calls": 11,
+   "cost_usd": 0.00333,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu File ▸ New (⌘N)",
+    "type the given text at the cursor, into whatever has keyboard focus (the cursor is in: text entry area)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.2,
+    "task": 11.5,
+    "check": 1.1,
+    "cleanup": 1.9,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "stops-for-text-it-was-not-given",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.TextEdit",
+   "goal": "新建一个文稿，把上周的会议纪要抄进去",
+   "status": "need_confirm",
+   "passed": false,
+   "valid": true,
+   "why": "ended 'need_confirm', expected ['need_input', 'failed', 'blocked']",
+   "reason": "this action is irreversible or outward-facing",
+   "steps": 1,
+   "seconds": 5.7,
+   "decider_calls": 6,
+   "cost_usd": 0.0014,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "menu File ▸ New (⌘N)"
+   ],
+   "answer": null,
+   "tidy": {},
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 5.7,
+    "check": 0.8,
+    "cleanup": 0.9,
+    "tidy": 0.0,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "hands-back-when-the-turn-is-spent",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.calculator",
+   "goal": "用计算器依次算出 12×12、13×13、14×14、15×15 这四个结果",
+   "status": "need_continue",
+   "passed": true,
+   "valid": true,
+   "why": "correctly ended 'need_continue'",
+   "reason": "step budget used up",
+   "steps": 12,
+   "seconds": 21.0,
+   "decider_calls": 22,
+   "cost_usd": 0.008543,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "button 「1」",
+    "button 「2」",
+    "button 「Multiply」",
+    "button 「2」",
+    "button 「Clear」",
+    "button 「2」",
+    "button 「Clear」",
+    "button 「1」",
+    "button 「2」",
+    "button 「Equals」",
+    "button 「All Clear」",
+    "button 「1」"
+   ],
+   "answer": null,
+   "tidy": {},
+   "harness_s": {
+    "launch": 2.2,
+    "setup": 1.0,
+    "pre_check": 0.0,
+    "task": 21.0,
+    "check": 0.8,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 0.2
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "reaches-the-menu-bar-extras",
+   "run": 1,
+   "category": "",
+   "app": "",
+   "goal": "打开菜单栏右边的时钟，看看今天是几号",
+   "status": "failed",
+   "passed": false,
+   "valid": true,
+   "why": "answer_contains: none of ['月', '日', '20'] in ''",
+   "reason": "no route to the goal was found",
+   "steps": 4,
+   "seconds": 81.1,
+   "decider_calls": 40,
+   "cost_usd": 0.013305,
+   "planned": true,
+   "decider": "jev",
+   "trace": [
+    "open app Clock",
+    "press status menu 「Clock」",
+    "menu Apple ▸ System Settings…",
+    "menu Apple ▸ System Settings…"
+   ],
+   "answer": null,
+   "tidy": {
+    "closed": [
+     "Clock",
+     "System Settings"
+    ],
+    "left_open": []
+   },
+   "harness_s": {
+    "launch": 0.0,
+    "setup": 0.0,
+    "pre_check": 0.0,
+    "task": 81.1,
+    "check": 0.8,
+    "cleanup": 0.0,
+    "tidy": 0.7,
+    "sweep": 0.1
+   },
+   "left_by_engine": [],
+   "left_after_sweep": []
+  },
+  {
+   "id": "uses-what-the-app-declares",
+   "run": 1,
+   "category": "",
+   "app": "com.apple.Dictionary",
+   "goal": "查一下 serendipity 是什么意思",
+   "status": "done",
+   "passed": true,
+   "valid": true,
+   "why": "checked",
+   "reason": "goal judged accomplished",
+   "steps": 1,
+   "seconds": 13.6,
+   "decider_calls": 9,
+   "cost_usd": 0.00271,
+   "planned": false,
+   "decider": "jev",
+   "trace": [
+    "type into search text field 「search text field」"
+   ],
+   "answer": "serendipity 意为「意外发现美好事物的机缘巧合」，即事件因偶然以令人愉快或有益的方式发生和发展。",
+   "tidy": {},
+   "harness_s": {
+    "launch": 2.1,
+    "setup": 0.0,
+    "pre_check": 0.2,
+    "task": 13.6,
+    "check": 1.1,
+    "cleanup": 0.4,
+    "tidy": 0.0,
+    "sweep": 13.0
+   },
+   "left_by_engine": [
+    {
+     "app": "Dictionary",
+     "new_app": false,
+     "windows": 8
+    }
+   ],
+   "left_after_sweep": []
+  }
+ ]
+}

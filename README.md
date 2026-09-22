@@ -222,14 +222,17 @@ that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic
 
 ```sh
 macwork eval --suite evals/v2.yaml                   # → evals/reports/{stamp}.{json,md}
+macwork eval --suite evals/behaviour.yaml --compare  # …and pair it with the committed baseline (evals/baseline/)
 macwork compare <before>.json <after>.json           # paired, exact McNemar; drives nothing
 macwork profile                                      # where each step's time goes, and how many steps were wasted
 ```
 
 `evals/v2.yaml` holds 29 tasks over navigation, multi-step, cross-app, question answering, must-not and
 prompt injection, using only apps that ship with macOS. The current result is **14/29 on a single run** —
-which is not a success rate: the move from 12/29 was 2 fixed and 0 broken, p = 0.50. `compare` refuses to
-pair reports from a different suite or decider. History and method: [docs/benchmarks.md](docs/benchmarks.md).
+which is not a success rate: the move from 12/29 was 2 fixed and 0 broken, p = 0.50, and no report of that
+run was kept. `compare` refuses to pair reports from a different suite or decider. The baseline a new run is
+held against is committed in `evals/baseline/` (one suite so far, from a single run). History and method:
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ## Configuration
 
@@ -280,7 +283,7 @@ Any that speak MCP over stdio or streamable HTTP — Claude Code, Claude Desktop
 
 **Early.** Accuracy on your own tasks is something to measure, not assume.
 
-Open: repeats on the eval suite and a committed baseline · the must-not category at 2/4 · drag-and-drop
+Open: repeats on the eval suite (the committed baseline is a single run) · the must-not category at 2/4 · drag-and-drop
 beyond named endpoints, and precise gestures · held input ([docs/controls.md](docs/controls.md)) is built and tested against a fake
 world but not yet exercised on a real game · name tagging for
 five languages the on-device tagger does not support · App Intents, for which macOS offers no public API to

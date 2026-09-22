@@ -26,6 +26,13 @@ The comprehensive suite: navigation, multi-step, cross-app, answers, must-not, p
 2 tasks fixed and 0 broken, which an exact McNemar test puts at p = 0.50 — what chance alone does half the
 time. `macwork compare <before.json> <after.json>` is what says so. Repeats are still owed.
 
+**Neither report was kept.** The two runs above exist as numbers in a commit message and nothing else, so
+nothing can be paired with them now. From 2026-09-22 a report is committed per suite in `evals/baseline/`
+and `macwork compare <report>.json` pairs a new run with it; the first baseline is the behaviour suite's
+single run of 2026-09-21 (3/6), and a ×3 run should replace it as soon as the machine is free
+(`evals/baseline/README.md`). A pass that came from answering the question without finishing the task is
+now counted apart in every report (`passed_by_answering_anyway`).
+
 The first time the suite ran, it crashed. Nine things surfaced that no amount of reading the code had
 found, among them: the harness called a function it never imported (436 unit tests were green over a
 harness that could not start); the local planner named the first model the server *listed* rather than the

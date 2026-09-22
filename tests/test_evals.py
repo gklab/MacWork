@@ -170,3 +170,62 @@ def test_a_run_whose_decider_changed_halfway_is_not_counted(tmp_path, monkeypatc
     assert row["status"] == "error" and "decider changed mid-run" in row["why"]
     summary = report["summary"]
     assert summary["errors"] == 1 and summary["passed"] == 0 and summary["valid"] == 0
+
+
+def test_the_harness_reads_why_a_task_ended_and_not_the_wording(tmp_path, monkeypatch):
+    """"The service was unreachable" and "the screen was locked" say nothing about ability and are not
+    counted. The harness told them apart by phrases in `reason` — prose written for a person, in the loop —
+    so a reworded message would have counted an outage as a failure. `cause` is for the harness."""
+    class Decider:
+        name, calls, cost_usd, last_ms = "jev", 0, 0.0, 1.0
+
+    class Engine:
+        decider = Decider()
+        cfg = None
+        cache: dict = {}
+        models = None
+        helper = None
+
+        def __init__(self, cause):
+            self.cause = cause
+
+        def do(self, *a, **k):
+            return {"status": "failed", "reason": "worded however the loop likes", "cause": self.cause,
+                    "steps": [], "decider": {"calls": 1, "cost_usd": 0.0}}
+
+        def feedback(self, *a, **k): ...
+        def tidy(self, *a, **k): return {}
+
+    suite = tmp_path / "s.yaml"
+    suite.write_text("fresh: false\ntasks:\n  - id: t1\n    goal: do something\n    check:\n      expect_status: [done]\n", encoding="utf-8")
+    from tests.test_engine import cfg as engine_cfg
+    for m in ("_locked", "_desktop", "sweep", "cleanup", "_leftovers"):
+        monkeypatch.setattr(evals, m, lambda *a, **k: [] if m in ("sweep", "_leftovers") else False if m == "_locked" else {})
+
+    def run(cause):
+        e = Engine(cause)
+        e.cfg = engine_cfg(tmp_path)
+        return evals.run_suite(e, suite, out_dir=None)["rows"][0]
+
+    assert run("decider_unreachable")["status"] == "error", "an outage is not a failure"
+    assert run("screen_locked")["status"] == "error"
+    assert run("budget")["status"] == "failed", "running out is the engine's own doing, and counts"
+
+
+def test_a_pass_by_answering_without_finishing_is_counted_apart(tmp_path):
+    """The engine reports `done` when the question is answered though the task itself flailed. That is the
+    right thing to tell a caller and a different thing to add up: a suite where half the passes are this
+    is not the suite the total describes."""
+    rows = [{"id": "a", "category": "-", "status": "done", "passed": True, "valid": True, "seconds": 1.0, "decider_calls": 1,
+             "cost_usd": 0.0, "answered_anyway": True},
+            {"id": "b", "category": "-", "status": "done", "passed": True, "valid": True, "seconds": 1.0, "decider_calls": 1,
+             "cost_usd": 0.0, "answered_anyway": False}]
+    summary = evals._report(tmp_path / "s.yaml", b"", rows, 1, tmp_path)["summary"]
+    assert summary["passed_tasks"] == 2 and summary["passed_by_answering_anyway"] == 1
+    assert "1 passed by answering without finishing" in next(tmp_path.glob("*.md")).read_text(encoding="utf-8")
+
+
+def test_the_baseline_is_where_compare_looks(tmp_path):
+    assert evals.baseline_for("evals/behaviour.yaml").name == "behaviour.json"
+    assert evals.baseline_for("evals/behaviour.yaml").exists(), "the committed baseline for the behaviour suite"
+    assert evals.baseline_for("evals/behaviour.yaml").parent.name == "baseline"

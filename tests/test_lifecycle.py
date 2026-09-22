@@ -26,14 +26,14 @@ def test_a_resumed_task_gets_a_fresh_budget_but_a_total_ceiling(tmp_path):
     task.started = time.monotonic() - 3600                    # and then the caller thought about it for an hour
 
     task.begin_run(0, 0.0)                                    # …and answered: a new run starts here
-    assert engine._overspent(task, budget) == "", "neither the earlier steps nor the waiting are this run's"
+    assert engine._overspent(task, budget) is None, "neither the earlier steps nor the waiting are this run's"
 
     task.steps += [Step(3, "one more"), Step(4, "and another")]
-    assert "over all its turns" in engine._overspent(task, budget), "but five steps is the whole task's ceiling"
+    assert engine._overspent(task, budget).whole_task, "but five steps is the whole task's ceiling"
 
     task.steps = task.steps[:3]
     task.spent_s = 10_000.0                                   # a task that really has been working all day stops
-    assert "over all its turns" in engine._overspent(task, budget)
+    assert engine._overspent(task, budget).whole_task
 
 
 def test_the_run_budget_still_ends_a_run_that_overruns(tmp_path):

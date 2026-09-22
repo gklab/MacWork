@@ -482,11 +482,11 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             # about either. A real suite lost its network mid-run and the rest of it scored the fallback.
             progress(f"   ERROR the decider changed mid-run ({answering} → {now_answering}, not counted)")
             return base | _error_row(t, f"the decider changed mid-run: {answering} → {now_answering}")
-        if _locked(engine) or "screen is locked" in str(res.get("reason", "")):
+        if _locked(engine) or res.get("cause") == "screen_locked":
             progress("   ERROR the screen was locked during the task (not counted)")
             cleanup(engine, t)
             return base | _error_row(t, "the screen was locked during the task")
-        if str(res.get("reason", "")).startswith("decider:"):   # the service was unreachable: says nothing about ability
+        if res.get("cause") == "decider_unreachable":   # the service was unreachable: says nothing about ability
             cleanup(engine, t)
             progress(f"   ERROR {res['reason'][:120]}")
             return base | _error_row(t, res["reason"][:120])
@@ -514,6 +514,11 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                       "cost_usd": max(0.0, res.get("decider", {}).get("cost_usd", 0.0)), "planned": bool(res.get("plan")),
                       "decider": answering,
                       "trace": res.get("steps", []), "answer": (res.get("outputs") or {}).get("answer"), "tidy": tidy,
+                      # `done` because the question was answered, though the task itself ran out or flailed:
+                      # the engine reports it as done, and the check verifies the answer, so it is scored
+                      # as done — but a suite where half the passes are this is a different suite from one
+                      # where none are, and a total cannot show it
+                      "answered_anyway": bool((res.get("outputs") or {}).get("unfinished_but_answered")),
                       "harness_s": phase, "left_by_engine": left_by_engine,
                       "left_after_sweep": [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in stuck]}
         progress(f"   {'PASS' if ok else 'FAIL'} {row['status']} {row['steps']} steps {seconds}s ({why})"
@@ -556,6 +561,7 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
                "total_cost_usd": round(sum(r["cost_usd"] for r in rows), 5), "decider_calls": sum(r["decider_calls"] for r in rows),
                "categories": {c: _rate(rs) for c, rs in sorted(cats.items())},
                "tasks_leaving_things_behind": sum(bool(r.get("left_by_engine")) for r in valid),
+               "passed_by_answering_anyway": sum(bool(r.get("answered_anyway")) and r["passed"] for r in valid),
                "at": time.strftime("%Y-%m-%d %H:%M")}
     report = {"summary": summary, "rows": rows}
     if out_dir:
@@ -567,7 +573,8 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
               f"**{s['passed_tasks']}/{s['tasks']} tasks passed (95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%}, over tasks — "
               f"repeats of one task are not independent trials)**; {s['passed']}/{s['runs'] - s['invalid'] - s['errors']} runs ({s['rate']:.0%}); "
               f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
-              f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors", "",
+              f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors"
+              + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else ""), "",
               "| category | passed | rate | 95% CI |", "|---|---|---|---|"]
         md += [f"| {c} | {v['passed']}/{v['runs']} | {v['rate']:.0%} | {v['ci95'][0]:.0%}–{v['ci95'][1]:.0%} |" for c, v in s["categories"].items()]
         md += ["", "| task | runs | results | median s | note (last failure) |", "|---|---|---|---|---|"]
@@ -685,6 +692,16 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
             "by_category": by_category, "worse_in": hurt,
             "rate_moved": changed_rate, "warnings": warnings,
             "repeats": {"before": b_sum.get("repeat", 1), "after": a_sum.get("repeat", 1)}}
+
+
+def baseline_for(suite: Path | str) -> Path:
+    """The committed baseline for a suite: `evals/baseline/<suite>.json`, a report checked into the repository.
+
+    Reports were written and never kept, so the only run a change could be held against was whatever was
+    still on this machine — which is how 12/29 -> 14/29 came to live only in a commit message. A baseline
+    that is committed is one a run on any machine can be paired with, and one that is replaced on purpose.
+    """
+    return Path(__file__).resolve().parents[1] / "evals" / "baseline" / (Path(suite).stem + ".json")
 
 
 def compare_files(before_path: Path, after_path: Path) -> dict[str, Any]:

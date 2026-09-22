@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from .appmodel import signature
 from .contract import kept
@@ -93,6 +93,16 @@ def exact_state(sig: str, screen_text: str) -> str:
 Progress = Callable[[str], None]
 
 
+class Spent(NamedTuple):
+    """What ran out. `whole_task` is a ceiling over all of a task's runs — steps, working time, calls or
+    money — past which nothing continues; the rest is this run's share, which a resumed run gets afresh.
+
+    It was a sentence, and `_can_continue` read the sentence back for three phrases to tell the two kinds
+    apart — so the wording of a message was the budget's semantics, and changing one changed the other."""
+    text: str
+    whole_task: bool = False
+
+
 class _Again:
     def __repr__(self) -> str:
         return "AGAIN"
@@ -141,18 +151,19 @@ class LoopMixin:
             if task.id in self._cancelled:
                 return self._finish(task, "cancelled", "cancelled by the caller")
             spent = self._overspent(task, e)
-            if spent:
+            if spent is not None:
                 # A run's budget running out is not the task failing. If the task has somewhere left to go —
                 # it is making progress and has not used its whole-task ceiling — it is handed back for the
                 # caller to continue, with everything it has learned kept. Making max_steps bigger instead
                 # would mean a task that goes wrong runs for longer before anyone notices.
                 if self._can_continue(task, e, spent):
-                    return self._finish(task, "need_continue", spent,
+                    return self._finish(task, "need_continue", spent.text,
                                         {"continue_with": "mac_resume", "steps_taken": len(task.steps),
-                                         "of_at_most": int(e.get("total_steps", 48))})
+                                         "of_at_most": int(e.get("total_steps", 48))}, cause="budget")
                 if last_look is not None:         # out of budget for good: still say *why*
-                    return self._diagnose(task, last_look.ctx, last_look.obs, last_look.state, reason=spent)
-                return self._finish(task, "failed", spent)
+                    task.cause = "budget"
+                    return self._diagnose(task, last_look.ctx, last_look.obs, last_look.state, reason=spent.text)
+                return self._finish(task, "failed", spent.text, cause="budget")
             self._yield_to_user(task, deadline)
             ctx = self._step_context(task)
             if task.held is not None:             # confirmed / chosen / given input by the caller: no new decision
@@ -185,7 +196,7 @@ class LoopMixin:
             if done is not None:
                 return done
 
-    def _overspent(self, task: Task, e: dict[str, Any]) -> str:
+    def _overspent(self, task: Task, e: dict[str, Any]) -> Spent | None:
         """What ran out, if anything: the budget for this run, the ceilings for the whole task, or the money.
 
         Steps and seconds are counted per run so that the caller's thinking time between a ``need_confirm`` and
@@ -193,22 +204,22 @@ class LoopMixin:
         task that is resumed again and again from running (and costing) without end.
         """
         if len(task.steps) - task.run_step0 >= int(e.get("max_steps", 12)):
-            return "step budget used up"
+            return Spent("step budget used up")
         if time.monotonic() - task.run_started > float(e.get("budget_s", 90)):
-            return "time budget used up"
+            return Spent("time budget used up")
         if len(task.steps) >= int(e.get("total_steps", 48)):
-            return "this task has taken all the steps it is allowed over all its turns"
+            return Spent("this task has taken all the steps it is allowed over all its turns", whole_task=True)
         if task.working_s > float(e.get("total_budget_s", 600)):
-            return "this task has taken all the time it is allowed over all its turns"
+            return Spent("this task has taken all the time it is allowed over all its turns", whole_task=True)
         decider = self._decider
         if decider is not None:
             if decider.calls - task.run_calls0 >= int(e.get("max_decisions", 120)):
-                return "this run asked the decider as many times as it is allowed"
+                return Spent("this run asked the decider as many times as it is allowed", whole_task=True)
             spent = decider.cost_usd - task.run_cost0
             ceiling = float(e.get("max_cost_usd", 0.5))
             if ceiling > 0 and spent >= ceiling:
-                return f"this run has spent its budget of ${ceiling:.2f}"
-        return ""
+                return Spent(f"this run has spent its budget of ${ceiling:.2f}", whole_task=True)
+        return None
 
     # ------------------------------------------------------------------ choices the task took back
     def _note_return(self, task: Task, here: str, glance: dict[str, Any] | None = None) -> None:
@@ -257,12 +268,12 @@ class LoopMixin:
         got = task.memory.retracted.get(here) or []
         return {a for a in set(got) if got.count(a) >= limit}
 
-    def _can_continue(self, task: Task, e: dict[str, Any], spent: str) -> bool:
+    def _can_continue(self, task: Task, e: dict[str, Any], spent: Spent) -> bool:
         """Is there anything left to continue *with*? Only this run's share is gone, the task has done
         something, and the last thing it did had an effect — a task going nowhere should stop going."""
         if not bool(e.get("checkpoint", True)) or not task.steps:
             return False
-        if "over all its turns" in spent or "budget of $" in spent or "as many times" in spent:
+        if spent.whole_task:
             return False                                   # a whole-task ceiling: that is the end of it
         last = task.steps[-1]
         # An effect is not only a visible one. Reading a file, reading a window in full, running a
@@ -334,7 +345,7 @@ class LoopMixin:
         if locked:                                # nothing on screen can be operated; keep what works without UI
             affs = [a for a in affs if a.channel in (e.get("locked_channels") or [])]
             if not affs:
-                return self._finish(task, "failed", "the screen is locked")
+                return self._finish(task, "failed", "the screen is locked", cause="screen_locked")
 
         suggested = {t.get("action") for t in task.tries if t.get("action")}
         took_back = set(self._retracted_here(task, here))
@@ -510,7 +521,7 @@ class LoopMixin:
         try:
             ans = look.ctx.gate.decide(self.redactor(task.id), look.state, look.questions, task=task.id)
         except DeciderError as exc:
-            return self._finish(task, "failed", f"decider: {exc}")
+            return self._finish(task, "failed", f"decider: {exc}", cause="decider_unreachable")
         finally:
             # The step does not wait this out. Classifying more actions in that one request made it the
             # slower of the two and the step sat on it: +191 ms a step, measured. A verdict that lands late
@@ -577,7 +588,7 @@ class LoopMixin:
             progress(f"sub-goal done: {task.plan[task.plan_i - 1]}")
             return AGAIN
         if look.locked and move in ("blocked", "impossible", "rethink", "ask_user"):
-            return self._finish(task, "blocked", "the screen is locked: unlock the Mac and run the task again")
+            return self._finish(task, "blocked", "the screen is locked: unlock the Mac and run the task again", cause="screen_locked")
         if move in ("blocked", "impossible"):
             return self._on_blocked(task, look, move)
         if move == "ask_user":
@@ -626,7 +637,7 @@ class LoopMixin:
                 ans2 = look.ctx.gate.decide(self.redactor(task.id), {**look.state, "not_done_yet": "the screen does not show the goal accomplished"},
                                             {"action": choice(self.cfg.question("action"), again)}, task=task.id)
             except DeciderError as exc:
-                return self._finish(task, "failed", f"decider: {exc}")
+                return self._finish(task, "failed", f"decider: {exc}", cause="decider_unreachable")
             key = (ans2.get("action") or {}).get("choice", "")
             probs = (ans2.get("action") or {}).get("probabilities") or {}
             look.decision["choice"], look.decision["redecided"] = key, True
@@ -924,7 +935,7 @@ class LoopMixin:
         budget = self.cfg.section("engine")
         for st in skill["steps"]:
             # a routine is not a free pass: its steps count against the same budgets, and it stops when cancelled
-            if task.id in self._cancelled or self._overspent(task, budget):
+            if task.id in self._cancelled or self._overspent(task, budget) is not None:
                 ok = False
                 break
             ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id)
