@@ -144,3 +144,19 @@ def test_a_window_that_just_appeared_is_read_before_the_ones_that_were_always_th
     assert look_with([old1, old2, APP], {11: [node("A")], 12: [node("B")]}) == ["Old One", "Old Two"]
     panel = {**win(13, "Control Center", [1200, 30, 300, 400]), "id": 3}      # dropped down by the last action, listed last
     assert look_with([old1, old2, panel, APP], {11: [node("A")], 12: [node("B")], 13: [node("Today")]})[0] == "Control Center"
+
+
+def test_a_panel_that_says_more_than_fits_says_so_and_can_be_read_whole():
+    """Notification Center, dropped down by the menu bar clock, held the date past a 400-character cut, and
+    the decider was told the panel held only notifications."""
+    long_nodes = [node(f"Item {i} with a longish title") for i in range(40)]
+    panel = {**win(13, "Notification Center", [1200, 30, 300, 400]), "id": 3}
+    cfg = Config.load(overrides={"config": {"observe": {"overlays": {"text_chars": 200}}}})
+    ctx = Ctx(cfg=cfg, helper=Helper([panel, APP], {13: long_nodes}), app={"pid": 1, "name": "Editor"}, goal="", inputs={}, task="t",
+              gate=None, cache={})
+    obs = Observation(app=ctx.app, window="w", affordances=[])
+    get_provider("overlays")(ctx, obs)
+    said = obs.notes["covered_by"][0]["text"]
+    assert "more characters, not shown" in said and len(said) < 300
+    whole = [a for a in obs.affordances if a.verb == "read_all" and a.target["pid"] == 13]
+    assert whole and "Notification Center" in whole[0].label and whole[0].target["interruption"]

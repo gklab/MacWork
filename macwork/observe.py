@@ -596,7 +596,9 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
             nodes = ctx.helper.call("ax.snapshot", pid=w["pid"], scope="windows", max_nodes=300, max_depth=15).get("nodes", [])
         except HelperError:
             nodes = []
-        text = " / ".join(dict.fromkeys(str(n.get(k)) for n in nodes for k in ("title", "value", "desc") if n.get(k)))[:400]
+        whole = " / ".join(dict.fromkeys(str(n.get(k)) for n in nodes for k in ("title", "value", "desc") if n.get(k)))
+        cap = int(oc.get("text_chars", 1200))
+        text = whole[:cap]
         if not text:   # nothing readable (the Dock's transparent layer, effects): nothing to tell the decider
             if not over:
                 elsewhere_left += 1     # it cost a snapshot but it is not one of them: do not spend the slot
@@ -610,6 +612,15 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         sub = Ctx(ctx.cfg, ctx.helper, ctx.goal, ctx.inputs, {"pid": w["pid"], "name": w.get("owner", "")}, ctx.running, ctx.cache)
         n0 = len(obs.affordances)
         element_affordances(sub, obs, nodes, "c", where=f"a prompt from {w.get('owner', '')} {where}")
+        if len(whole) > cap:
+            # A panel can say more than fits here — the menu bar clock drops down Notification Center, and
+            # the date sat past the cut while the decider was told the panel held only notifications. What
+            # was cut is said, and the whole of it can be read at once, like the app's own window.
+            found[-1]["cut"] = len(whole) - cap
+            obs.affordances.append(Affordance(f"c{len(obs.affordances)}", "window", "read_all",
+                                              f"read all the text in the panel from {w.get('owner', '')} — returns everything it says at once "
+                                              f"({len(whole) - cap} more characters than shown)",
+                                              {"pid": w["pid"]}, context=str(w.get("owner", ""))))
         for a in obs.affordances[n0:]:
             a.target["watch"] = ctx.app["pid"]
             a.target["interruption"] = key      # the loop decides what these are *for* before any is offered
@@ -617,7 +628,8 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
             del obs.affordances[n0:]    # read it, but do not offer its controls
     seen.update(_window_id(w) for w in wins)
     if found:
-        obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"], "where": o["where"]} for o in found]
+        obs.notes["covered_by"] = [{"from": o["from"], "text": o["text"] + (f" … ({o['cut']} more characters, not shown)" if o.get("cut") else ""),
+                                    "where": o["where"]} for o in found]
         obs.notes["interruptions"] = [{k: o[k] for k in ("key", "from", "text", "where", "frame", "over")} for o in found]
         lines = [f"[{o['where']}, from {o['from']}: {o['text']}]" for o in found]
         # after the app's own text, not before it. At the top, a prompt that had nothing to do with the goal
