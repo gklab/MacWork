@@ -411,6 +411,9 @@ class LoopMixin:
                      "risky_screen": noul(self.cfg.question("risky_screen"))}
         if task.plan and task.plan_i < len(task.plan):
             questions["step_done"] = noul(self.cfg.question("step_done"))
+            expected = self._expected_evidence(task)
+            if expected:   # the planner said what the screen shows once this step is done: is it there?
+                questions["step_evidence"] = noul(self.cfg.question("step_evidence"), fills={"evidence": expected})
         if task.steps:
             questions["progress"] = noul(self.cfg.question("progress"))
         if self.cfg.get("engine.verify_done", True):
@@ -468,9 +471,17 @@ class LoopMixin:
         if task.plan and task.plan_i < len(task.plan):
             state["plan"] = task.plan
             state["current_step"] = task.plan[task.plan_i]
+            if self._expected_evidence(task):
+                state["current_step_expects"] = self._expected_evidence(task)
         if task.steps:
             state["last_action"] = hist[-1]
         return state
+
+    def _expected_evidence(self, task: Task) -> str:
+        """What the planner said the screen shows once the current sub-goal is done, or "" when it said nothing."""
+        if not task.plan or task.plan_i >= len(task.plan) or task.plan_i >= len(task.plan_evidence or []):
+            return ""
+        return str(task.plan_evidence[task.plan_i] or "")
 
     def _answer_before_ending(self, task: Task, look: "Look | None") -> None:
         """Say what the task found out, even when it did not finish.
@@ -597,7 +608,7 @@ class LoopMixin:
         risky_screen = float(ans.get("risky_screen", {}).get("noul", 0.0))
         d = look.decision = {"choice": key, "confidence": round(float(act.get("confidence", probs.get(key, 0.0))), 3), "move": move,
                              "risky_screen": round(risky_screen, 3), "ms": round(self.decider.last_ms), "timing": look.timing}
-        for k in ("progress", "step_done", "verified"):
+        for k in ("progress", "step_done", "step_evidence", "verified"):
             if k in ans:
                 d[k] = round(float(ans[k].get("noul", 0.0)), 3)
         if "wants_answer" in ans:
@@ -623,7 +634,11 @@ class LoopMixin:
             progress("wait for the app")
             time.sleep(float(self.cfg.get("engine.wait_s", 1.5)))
             return AGAIN
-        if task.steps and task.plan and d.get("step_done", 0.0) >= float(th.get("done", 0.8)):
+        # A sub-goal advanced on one number, and consecutive confident looks walked a whole plan without a
+        # step being taken. Where the planner said what the screen shows once the step is done, the screen
+        # has to be judged to show it too: the expected evidence against the observed screen.
+        evidence_ok = "step_evidence" not in d or d["step_evidence"] >= float(th.get("step_evidence", 0.6))
+        if task.steps and task.plan and d.get("step_done", 0.0) >= float(th.get("done", 0.8)) and evidence_ok:
             task.plan_i += 1                      # a sub-goal is done; only "done" ends the task
             progress(f"sub-goal done: {task.plan[task.plan_i - 1]}")
             return AGAIN

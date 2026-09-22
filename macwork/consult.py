@@ -107,7 +107,9 @@ class ConsultMixin:
             return False
         if task.blocked_reason:
             return True
-        task.plan, task.plan_i = (plan["steps"] or task.plan or []), 0
+        if plan["steps"]:
+            task.plan, task.plan_evidence = plan["steps"], list(plan.get("evidence") or [])
+        task.plan, task.plan_i = (task.plan or []), 0
         self._plan_inputs(task, ctx, plan.get("inputs") or {})
         self.audit.record("plan", task=task.id, steps=plan["steps"], problem=problem)
         return True

@@ -363,6 +363,8 @@ engine:
   # (how long to wait, how much to read, how much to cache) and may be tuned freely.
   thresholds:                    # probability cut-offs only; which move to make is the decider's own choice
     done: 0.8                    # "already done" before acting, and "sub-goal done"
+    step_evidence: 0.6           # …and a sub-goal the planner gave evidence for advances only when the screen
+                                 # is judged to show that evidence too: one number moved the plan on before
     done_veto: 0.35              # after acting, the stricter done check overrules only below this
     progress_bad: 0.2            # the last step is recorded as having had no effect
     risky_screen: 0.6

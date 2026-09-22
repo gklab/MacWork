@@ -118,7 +118,7 @@ def test_planning_redacts_for_cloud_and_restores_pseudonyms(tmp_path):
     back = FakeBackend([{"steps": ["open Messages", "write ⟦PERSON_1⟧ a message"], "inputs": {"text": "hello ⟦PERSON_1⟧"}}])
     plan = Planning(c, back, r, Audit(c)).plan("message Zhang Wei to say hello", {"screen_text": "Contacts Zhang Wei"})
     assert "Zhang Wei" not in back.prompts[0] and "⟦PERSON_1⟧" in back.prompts[0]
-    assert plan == {"steps": ["open Messages", "write Zhang Wei a message"], "inputs": {"text": "hello Zhang Wei"}, "try": [], "blocked": ""}
+    assert plan == {"steps": ["open Messages", "write Zhang Wei a message"], "evidence": ["", ""], "inputs": {"text": "hello Zhang Wei"}, "try": [], "blocked": ""}
 
 
 def test_engine_consults_planner_on_rethink_and_lets_it_write_text(tmp_path):

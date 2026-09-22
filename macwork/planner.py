@@ -33,10 +33,12 @@ TRY_ITEM = {"type": "object", "properties": {"action": {"type": "string"}, "keys
                                              "open_url": {"type": "string"},
                                              "drag": {"type": "array", "items": {"type": "string"}}},
             "additionalProperties": False}
+STEP_ITEM = {"type": "object", "properties": {"goal": {"type": "string"}, "evidence": {"type": "string"}},
+             "required": ["goal", "evidence"], "additionalProperties": False}
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
-        "steps": {"type": "array", "items": {"type": "string"}},
+        "steps": {"type": "array", "items": STEP_ITEM},   # a sub-goal, and what the screen shows once it is done
         "inputs": {"type": "object", "additionalProperties": {"type": "string"}},
         "try": {"type": "array", "items": TRY_ITEM},   # concrete moves to attempt now, in order
         "blocked": {"type": "string"},                  # non-empty: only the user can unblock this (and how)
@@ -44,6 +46,23 @@ PLAN_SCHEMA = {
     "required": ["steps", "inputs", "try", "blocked"],
     "additionalProperties": False,
 }
+
+
+def _steps(raw: Any, limit: int) -> tuple[list[str], list[str]]:
+    """Sub-goals and, for each, the evidence that shows it done — from a list of objects, or of plain
+    strings from a planner (or a stored plan) that gave none. The two lists are always the same length."""
+    goals: list[str] = []
+    evidence: list[str] = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            goal, seen = str(item.get("goal") or item.get("sub_goal") or item.get("step") or "").strip(), \
+                str(item.get("evidence") or item.get("result") or "").strip()
+        else:
+            goal, seen = str(item).strip(), ""
+        if goal:
+            goals.append(goal)
+            evidence.append(seen)
+    return goals[:limit], evidence[:limit]
 
 
 def _tries(raw: Any) -> list[dict[str, Any]]:
@@ -411,14 +430,14 @@ class Planning:
 
     def plan(self, goal: str, context: dict[str, Any]) -> dict[str, Any]:
         out = self._ask("planner_plan", PLAN_SCHEMA, goal=goal, context=context)
-        steps = [str(s).strip() for s in out.get("steps") or [] if str(s).strip()][: self.max_steps]
-        return {"steps": steps, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
+        steps, evidence = _steps(out.get("steps"), self.max_steps)
+        return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}
 
     def replan(self, goal: str, context: dict[str, Any], done: list[str], problem: str) -> dict[str, Any]:
         out = self._ask("planner_replan", PLAN_SCHEMA, goal=goal, context=context, done=done, problem=problem)
-        steps = [str(s).strip() for s in out.get("steps") or [] if str(s).strip()][: self.max_steps]
-        return {"steps": steps, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
+        steps, evidence = _steps(out.get("steps"), self.max_steps)
+        return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}
 
     def answer(self, goal: str, context: dict[str, Any]) -> str:

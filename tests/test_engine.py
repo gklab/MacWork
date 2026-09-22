@@ -207,7 +207,7 @@ class ScriptedDecider:
         out = {"action": {"type": "choice", "choice": key, "confidence": step.get("conf", 0.9),
                           "probabilities": step.get("probs", {key: step.get("conf", 0.9)})},
                "move": {"type": "choice", "choice": step.get("move", "done" if pick == "done" else "act")}}
-        for k in ("risky_screen", "progress", "step_done", "wants_answer"):
+        for k in ("risky_screen", "progress", "step_done", "step_evidence", "wants_answer"):
             if k in questions:
                 out[k] = {"type": "noul", "noul": step.get(k, 1.0 if k == "progress" else 0.0)}
         if "verified" in questions:              # the stricter done check travels in the same request

@@ -310,6 +310,7 @@ class Task:
                                                  # action would leave the caller confirming forever
     options: dict[str, Any] = field(default_factory=dict)    # affordances offered when ambiguous, by id
     plan: list[str] | None = None                            # sub-goals from the planner, if one was consulted
+    plan_evidence: list[str] = field(default_factory=list)   # per sub-goal, what the screen shows once it is done ("" = unsaid)
     plan_i: int = 0
     prev: dict[str, Any] | None = None                       # last step, waiting to learn where it led
     apps: dict[str, Any] = field(default_factory=dict)       # apps touched (bundle -> info), for saving their models

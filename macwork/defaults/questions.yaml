@@ -135,7 +135,9 @@ planner_system: >-
 planner_plan: |-
   Goal: {goal}
   What is known (app, screen, commands it offers, what was learned before): {context}
-  Split the goal into the fewest sub-goals that get it done (one is fine for simple goals). In "inputs" give
+  Split the goal into the fewest sub-goals that get it done (one is fine for simple goals), each as
+  {{"goal": "<what to do>", "evidence": "<what the screen will show once it is done — a window title, a value, a
+  line of text>"}}. In "inputs" give
   any text the steps will need to type, keyed by a short name such as "text", "query" or "file". Leave
   "blocked" empty unless the screen shows the goal cannot be reached until the user signs in, enters a password
   or grants a permission. In "try" list the concrete moves to attempt right now, in order, using what you know about how this kind of
@@ -150,7 +152,8 @@ planner_replan: |-
   Problem: {problem}
   What is known now: {context}
   Give the remaining sub-goals from here — a different route if the last one failed (other windows, other menus,
-  a command palette or search field, a keyboard shortcut, opening the main window first) — and any text needed.
+  a command palette or search field, a keyboard shortcut, opening the main window first) — each as
+  {{"goal": "<what to do>", "evidence": "<what the screen will show once it is done>"}}, and any text needed.
   In "try" list concrete moves to attempt now, in order: {{"action": "<exact label from actions_available>"}},
   {{"keys": "<key combo>"}}, {{"type": "text to type"}}, or {{"drag": ["<label to drag>", "<label to drop onto>"]}}.
   Prefer entry points that actually appear in
@@ -181,6 +184,10 @@ planner_fill: |-
   answer with an empty string so it can be fetched first.
   Reply with the exact text only, in "text".
 step_done: Has the current step in the state been accomplished?
+step_evidence: >-
+  The current step was expected to leave this on screen: "{evidence}". Does the current screen show it — in
+  the window title, the screen text, a field's value — as something that is there now, not something still
+  to come?
 
 # Putting a change back. The app's own undo command is in this list under whatever the app calls it, in
 # whatever language it is running in — nothing in the code knows the word.

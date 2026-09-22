@@ -61,6 +61,15 @@ cells, links, text) keeps its name, because a row's place changes with every sor
 keyed on a *handle* — identity where there is one, the steady name where there is not — for both the
 action offered and the step taken.
 
+### 4. A step carries its evidence (`plan_evidence`, `step_evidence`)
+
+A sub-goal advanced on one probability, and consecutive confident looks walked a whole plan without a
+step being taken. The planner had been writing the expected result of each step all along, as prose the
+engine stringified and ignored. Each step is now `{goal, evidence}`; the decider is asked, in the same
+request as everything else, whether the screen shows that evidence, and the plan moves only when it does.
+The task's live working state (`TaskScope`) went the same way: one object per task instead of per-task
+keys in the engine's cache.
+
 ## Also in v5
 
 * An app's own sheet or dialog is an interruption like a prompt from another process: the task, something
@@ -79,11 +88,9 @@ action offered and the step taken.
 
 * **Verify itself on a Mac.** Everything after the ×3 baselines is unmeasured; the next Mac session runs
   the four suites ×3 with `--compare` and the profiler before anything else is claimed.
-* **A task state model.** The planner writes an expected result per sub-goal; the engine still advances a
-  sub-goal on one probability. Aligning expected evidence with observed `Change` is the next structural
-  step, and the one the B (multi-step) and C (cross-app) categories are waiting on.
-* **A per-task context.** `engine.cache` still holds per-task keys (`pictures`, `vision.wanted`,
-  `windows.seen`) beside global ones, collected by name.
+* **Measure the task state model.** Each sub-goal now carries the evidence the planner expects on screen,
+  and the plan advances only when the decider judges the screen to show it (`step_evidence`); whether that
+  moves the B (multi-step) and C (cross-app) categories is for the next run to say.
 * **Short sequences without a decision.** Every step is one decider round trip; the only structural way
   below ~3 s a step is to carry out a planner's short sequence while each step's precondition holds.
 * **Another interface language.** The floor's two bars still depend on which words the lists know.
