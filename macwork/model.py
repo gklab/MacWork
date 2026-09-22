@@ -196,6 +196,7 @@ class Step:
                                                  # 「12×2」". "ok" only ever meant the action was carried out
     change: dict[str, Any] = field(default_factory=dict)   # the same, as facts (`Change.as_dict()`): what the
                                                  # engine reads; `outcome` is what the decider reads
+    led_back: bool = False                       # it only led back to a screen the task had already seen
     promise: str = ""                            # what the action said it would do (contract.promise)
     kept: bool | None = None                     # and whether it did: True / False / None = could not be judged
     kept_why: str = ""
@@ -251,6 +252,7 @@ class Memory:
     consulted: set[Any] = field(default_factory=set)           # screens the planner has already been asked about
     interruptions: dict[str, dict[str, Any]] = field(default_factory=dict)   # what each thing in the way turned out to be
     no_effect: set[str] = field(default_factory=set)           # "screen|action" that changed nothing: never offered again
+    no_progress: set[str] = field(default_factory=set)         # "screen|action" taken in a stretch that got the task nowhere
     expanded: set[str] = field(default_factory=set)            # option groups the decider chose to look into
     screens_seen: set[str] = field(default_factory=set)
     screen_notes: dict[str, str] = field(default_factory=dict)  # distinct screens seen (signature -> short text)
@@ -282,6 +284,10 @@ class Memory:
         """This action, from this screen, changed nothing: a fact, never offered from here again."""
         self.no_effect.add(self._at(sig, handle))
 
+    def note_no_progress(self, sig: str, handle: str) -> None:
+        """Taken in a stretch of steps that got the task nowhere: not offered again from where it was taken."""
+        self.no_progress.add(self._at(sig, handle))
+
     def note_failed(self, sig: str, handle: str, state: str) -> None:
         """It could not be carried out just then: withheld while the screen is exactly as it was."""
         self.failed[self._at(sig, handle)] = state
@@ -305,6 +311,8 @@ class Memory:
         """Why this action is not offered from this screen, or None: no_effect | failed | withdrawn | declined."""
         if self._at(sig, handle) in self.no_effect:
             return "no_effect"
+        if self._at(sig, handle) in self.no_progress:
+            return "no_progress"
         if self.failed.get(self._at(sig, handle)) == state:
             return "failed"
         if handle in self.withdrawn_from(state, limit):

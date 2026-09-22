@@ -724,22 +724,30 @@ def test_an_answer_holding_a_value_no_screen_showed_is_still_refused(tmp_path):
 def test_the_same_action_over_and_over_is_noticed_and_then_stopped(tmp_path):
     """A real run scrolled one Finder list eleven times and called it progress every time: each scroll showed a
     new screen (so the circle check saw nothing) and the decider kept scoring it well (so the no-effect check
-    saw nothing either). How many times running an action has been taken is a plain fact, so it is stated —
-    and past a ceiling the action stops being offered, whatever it happens to be."""
-    def again(state, questions):   # keep choosing the same thing for as long as it is on offer
-        offered = any("press the pagedown key" in v for v in questions["action"]["criteria"].values())
-        return {"pick": "press the pagedown key" if offered else "done", "conf": 0.6, "move": "act" if offered else "done"}
+    saw nothing either). How many times running an action has been taken is a plain fact, so it is stated.
+    A count is not a ceiling any more: an action repeated with progress each time (a long list, scrolled)
+    stays on offer; one repeated *without* progress is a stretch that got nowhere, and stops."""
+    def again(progress):
+        def pick(state, questions):   # keep choosing the same thing for as long as it is on offer
+            offered = any("press the pagedown key" in v for v in questions["action"]["criteria"].values())
+            return {"pick": "press the pagedown key" if offered else "done", "conf": 0.6, "move": "act" if offered else "done",
+                    "progress": progress}
+        return pick
 
-    picks = [again for _ in range(12)]
     eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 12}}), helper=FakeHelper(),
-                 decider=ScriptedDecider(picks))
+                 decider=ScriptedDecider([again(1.0)] * 12))
     eng.do("send this email")
     states = [st for st, q in eng.decider.seen if "action" in q]
     noticed = next((i for i, st in enumerate(states) if "done_over_and_over" in st), None)
     assert noticed is not None and noticed <= 4, "repeating one action went unmentioned"
-    assert len(states) <= 7, "the ceiling did not arrive: the same screen kept offering the same action"
+    assert len(states) >= 12, "scrolling a long list with progress every time is not being stuck"
+
+    eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 12}}), helper=FakeHelper(),
+                 decider=ScriptedDecider([again(0.05)] * 12))
+    eng.do("send this email")
     offered = [any("press the pagedown key" in v for v in q["action"]["criteria"].values()) for _, q in eng.decider.seen if "action" in q]
-    assert offered[0] and not offered[-1], "the action was still on offer after its ceiling"
+    assert offered[0] and not offered[-1], "the action was still on offer after a stretch that got nowhere"
+    assert sum(offered) <= int(Config.load().get("engine.max_no_progress")) + 1
 
 
 def test_a_goal_that_asks_for_information_does_not_finish_without_any(tmp_path):
@@ -804,7 +812,7 @@ def test_an_action_that_keeps_leading_back_where_it_was_is_dropped(tmp_path):
     eng = Engine(cfg(tmp_path, config={"engine": {"max_steps": 12}}), helper=TwoScreens(), decider=d)
     res = eng.do("open this file")
     opened = [a for a in (res.get("steps") or []) if "Open" in a]
-    assert len(opened) <= int(Config.load().get("engine.max_circles")), \
+    assert len(opened) <= int(Config.load().get("engine.max_no_progress")), \
         f"it went round the same loop {len(opened)} times: {opened}"
 
 

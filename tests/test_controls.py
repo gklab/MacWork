@@ -133,7 +133,7 @@ def test_a_helper_installed_before_this_existed_says_what_to_do(tmp_path):
 # ----------------------------------------------------------------- what may be concluded
 def test_walking_forward_again_and_again_is_not_being_stuck(tmp_path):
     """Six holds from a screen that never changes. `no_effect` would have withdrawn it after the first,
-    `engine.max_repeats` after the fourth, and the retraction memory somewhere in between."""
+    a stretch that got nowhere (`engine.max_no_progress`), and the retraction memory somewhere in between."""
     script = [{"pick": "move forward — hold w for 1.2 s"}] * 6 + [{"pick": "done", "done": 0.95}]
     helper, decider, res = run(tmp_path, script)
     assert len(helper.did("input.hold")) == 6 and res["status"] == "done"

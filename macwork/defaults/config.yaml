@@ -305,9 +305,11 @@ engine:
   max_retractions: 2        # a choice the task took back this many times from one exact screen is no longer
                             # offered from that screen. Once is told to the decider and still offered; twice is
                             # enough, because a System-1 model answers an unchanged state the same way again
-  max_same_screen: 3        # this many actions in a row from one unchanged screen: the planner is asked for a
-                            # route from here, and the decider is told. Measured: 30% of real steps followed
-                            # one on an unchanged screen, most in stretches of three or more
+  max_no_progress: 3        # this many steps in a row that got the task nowhere — could not be done, broke
+                            # their promise, judged no progress, or only led back — and the actions in them are
+                            # not offered again from where they were taken, the planner is asked for a route,
+                            # and the decider is told. One rule where three counts were (the same action four
+                            # times from one screen, leading back three times, three on an unchanged screen)
   max_pictures: 200         # how many distinct screens a task remembers the look of (about 1.4 KB each). A budget
   queue_wait_s: 900         # how long `do` waits its turn before giving up and saying so, rather than hanging
   revert:                   # putting back what a task changed (`macwork revert <task>`), newest first
@@ -346,10 +348,8 @@ engine:
   open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front
   service_front_s: 1.5           # a service that brings its app forward does it quickly, or it does not do it
   repeat_notice: 3               # the same action three times running is put in front of the decider as a fact
-  max_repeats: 4                 # an action taken this many times from the very same screen stops being offered there
   interruptions:
     aside_tries: 2               # a prompt that will not go after this many dismissals is left for the user instead
-  max_circles: 3                 # …and one that keeps leading back to a screen already seen stops being offered at all
   max_waits: 4                   # times per task the decider may choose to wait for a loading/busy app
   wait_s: 1.5
   fold_groups_over: 60           # a group larger than this (every installed app) is always one "look into" away

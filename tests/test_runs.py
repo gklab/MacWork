@@ -87,9 +87,10 @@ def test_three_actions_from_one_unchanged_screen_is_said_and_asked_about(tmp_pat
     task = eng._new_task("make it", {}, None)
     first = eng._look(task, eng._step_context(task))
     for n in range(3):
-        task.steps.append(Step(n=n, action="button 「Refresh」", ok=True, events=["x"], before=f"{first.sig}:0"))
+        task.steps.append(Step(n=n, action="button 「Refresh」", ok=True, events=["x"], before=f"{first.sig}:0",
+                               decision={"progress_after": 0.05}))          # each did something; none moved the task
     look = eng._look(task, eng._step_context(task))
-    assert "stuck_on_this_screen" in look.state and "3 actions" in look.state["stuck_on_this_screen"]
+    assert "no_progress" in look.state and "3 actions" in look.state["no_progress"]
     assert back.prompts, "the planner was asked for a route from here"
     assert any("cmd+n" in v for v in look.options.values()), "and what it suggested is among the options"
 

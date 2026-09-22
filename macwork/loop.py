@@ -330,32 +330,21 @@ class LoopMixin:
         fp_seen = self._fingerprint(ctx) if (task.steps and self.allowance_left(task, "redo")
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
 
-        # The same screen, several actions later: each of them "did" something — a scroll, a Clear, an
-        # All Clear — and none of them moved the task, which the no-effect memory cannot see (each had an
-        # effect) and the circle check cannot either (nothing led *back* anywhere: nothing led anywhere).
-        # Measured over 149 real steps: 30% followed one on an unchanged screen, most in stretches of three
-        # or more. At three, the planner is asked for a route from here, and the decider is told.
-        same = 0
-        for st in reversed(task.steps):
-            if st.before and st.before.split(":")[0] == sig:
-                same += 1
-            else:
-                break
-        stuck = same >= int(self.cfg.get("engine.max_same_screen", 3))
-        if stuck:
-            self._consult(task, ctx, obs, f"{same} actions in a row were taken from this screen and it has not changed", obs.affordances)
+        # One rule for a task going nowhere, in place of three counts (the same action four times from one
+        # screen, an action leading back three times, three actions on one unchanged screen): a step got the
+        # task nowhere when it could not be done, broke its promise, was judged no progress, or only led
+        # back to a screen already seen. A stretch of them (`engine.max_no_progress`) means the actions in it
+        # are not offered again from where they were taken, the planner is asked for a route from here, and
+        # the decider is told. Each of the three counts was a guess at what "stuck" looks like from one
+        # angle; this is what it is.
+        stuck = self._no_progress_run(task)
+        if len(stuck) >= int(self.cfg.get("engine.max_no_progress", 3)):
+            for st in stuck:
+                if st.before:
+                    task.memory.note_no_progress(st.before.split(":")[0], st.handle)
+            self._consult(task, ctx, obs, f"the last {len(stuck)} actions got the task nowhere: "
+                          + "; ".join(st.action[:40] for st in stuck[-3:]), obs.affordances)
         affs = [a for a in obs.affordances + self._suggested(task, obs) if not self._denied(a, ctx.app)]
-        for handle, times in self._taken_here(task, sig).items():          # done from this very screen already
-            if times >= int(self.cfg.get("engine.max_repeats", 4)):         # enough of that one: it has had its turns
-                task.memory.note_no_effect(sig, handle)
-        # …and the shape a stuck task really has is not "again" but "again, and back where I was": a real run
-        # opened the same 「文件 ▸ 打开…」 six times, escaping each time, and every escape left a screen just
-        # different enough that a per-screen count started over. What matters is that the action keeps leading
-        # somewhere this task has already been, so that is what is counted — wherever it is taken from.
-        going_nowhere = int(self.cfg.get("engine.max_circles", 3))
-        for handle in set(task.memory.circles):
-            if task.memory.circles.count(handle) >= going_nowhere:
-                task.memory.decline(handle)
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
         # Keyed on what an action *is* (its identity, else its steady name), not on what it says right now.
         # Facts about this screen — did nothing here, could not be done here, came back from here — take the
@@ -363,7 +352,7 @@ class LoopMixin:
         # vanished does not read as never having been there.
         limit = int(self.cfg.get("engine.max_retractions", 2))
         reasons = {a.id: task.memory.withheld_reason(sig, here, a.handle(), self.approval_key(a), limit) for a in affs}
-        dead_here = {a.label for a in affs if reasons[a.id] in ("no_effect", "failed", "withdrawn")}
+        dead_here = {a.label for a in affs if reasons[a.id] in ("no_effect", "no_progress", "failed", "withdrawn")}
         withheld = [a for a in affs if reasons[a.id] == "declined"]
         affs = [a for a in affs if reasons[a.id] is None]
         # An action that is complete is not an option. A real run read a file, was handed all of it, and was
@@ -392,9 +381,8 @@ class LoopMixin:
             options["none"] = "none: nothing available here helps"
 
         state = self._state(task, ctx, obs, sig, flat, dead_here, suggested, locked)
-        if stuck:
-            state["stuck_on_this_screen"] = f"the last {same} actions were taken from this screen and it has not changed: " \
-                                            "what was tried here is not the way"
+        if len(stuck) >= int(self.cfg.get("engine.max_no_progress", 3)):
+            state["no_progress"] = f"the last {len(stuck)} actions got the task nowhere: what was tried is not the way"
         if withheld:   # an option that vanishes without a word reads as never having been there
             state["not_offered_because_the_goal_never_asked"] = sorted({a.label for a in withheld})[:8]
         if took_back:
@@ -443,6 +431,7 @@ class LoopMixin:
             state["tried_here_without_effect"] = sorted(dead_here)[:20]
         if sig in task.memory.screens_seen and task.steps and task.steps[-1].before and task.steps[-1].before.split(":")[0] != sig:
             task.memory.circles.append(task.steps[-1].handle)   # the last step only led back to a screen already seen
+            task.steps[-1].led_back = True
         task.memory.screens_seen.add(sig)
         if sig not in task.memory.screen_notes:          # every distinct screen, briefly: the evidence for a final diagnosis
             task.memory.screen_notes[sig] = f"{state['app']} — {obs.window or '(no window)'}: {obs.screen_text[:200]}"
@@ -509,6 +498,19 @@ class LoopMixin:
                 break
             run += 1
         return last, run
+
+    def _no_progress_run(self, task: Task) -> list[Step]:
+        """The trailing steps that got the task nowhere: could not be done, broke their promise, were judged
+        no progress by the decider, or only led back to a screen already seen. Oldest first."""
+        bad = float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
+        run: list[Step] = []
+        for st in reversed(task.steps):
+            nowhere = (not st.ok or st.kept is False or st.led_back
+                       or float(st.decision.get("progress_after", 1.0)) < bad)
+            if not nowhere:
+                break
+            run.append(st)
+        return list(reversed(run))
 
     def _taken_here(self, task: Task, sig: str) -> dict[str, int]:
         """How many times each action has already been taken *from this very screen*.

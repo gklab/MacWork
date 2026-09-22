@@ -6,7 +6,7 @@ element had gone, a wait timed out — it is a fact about the moment, and an ope
 button that works once the page has loaded was gone for the rest of the task.
 
 Withheld while the screen is exactly as it was when it failed; offered again as soon as anything on it has
-changed. Nothing here is a timer or a count — `engine.max_repeats` was already the limit and still is.
+changed. Nothing here is a timer or a count — a stretch of steps that got nowhere (`engine.max_no_progress`) is the limit.
 """
 
 from macwork.engine import Engine
@@ -92,4 +92,4 @@ def test_it_does_not_come_back_for_ever(tmp_path):
 
     decider, res = run(tmp_path, helper, [again] * 12)
     tries = [s for s in res["steps"] if "Refresh" in s]
-    assert 1 < len(tries) <= 4, f"engine.max_repeats is the limit: {len(tries)} tries"
+    assert 1 < len(tries) <= 3, f"engine.max_no_progress is the limit: {len(tries)} tries"
