@@ -14,6 +14,7 @@ import os
 import select
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -45,6 +46,7 @@ class Helper:
         self.on_reset: Callable[[], None] | None = None   # set by the engine: a new helper invalidates its refs
         self._bg: Helper | None = None
         self._bg_lock = threading.Lock()
+        self._side: Path | None = None           # stdio mode: the socket the child opens for the second connection
         self._methods: set[str] | None = None   # what this helper answers to, from `ping`; per connection
 
     # ------------------------------------------------------------------ connect
@@ -87,7 +89,11 @@ class Helper:
         binary = self._binary()
         if binary is None:
             raise HelperError("start", "macwork-helper not built: run `macwork helper build`")
-        self._proc = subprocess.Popen([str(binary), "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        # The child also opens a socket, for the second connection: a second *child* is not an option — with
+        # two helper processes alive, every screen capture in both hung to its timeout (see main.swift).
+        self._side = Path(tempfile.gettempdir()) / f"macwork-helper-{os.getpid()}-{id(self) & 0xffff:x}.sock"
+        self._proc = subprocess.Popen([str(binary), "--stdio", "--socket", str(self._side)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.mode = "stdio"
 
     def background(self) -> "Helper":
@@ -105,6 +111,15 @@ class Helper:
         with self._bg_lock:
             if self._bg is None:
                 self._bg = Helper(self.cfg)
+                if self.mode == "stdio" and self._side is not None:
+                    deadline = time.monotonic() + float(self.cfg.get("helper.start_timeout_s", 6))
+                    while time.monotonic() < deadline and not (self._side.exists() and self._bg._connect_socket(self._side)):
+                        time.sleep(0.05)
+                    if self._bg.mode != "socket":
+                        # no second connection to be had: the foreground serves both, in turn — slower, never wrong
+                        log.warning("helper: the stdio helper opened no side socket at %s; background work shares the one connection", self._side)
+                        self._bg = self
+                        return self._bg
                 # In socket mode both connections are one helper: when it dies, every element reference the
                 # foreground holds is gone too, and the second connection had no `on_reset`, so a crash met
                 # there left every cache believed valid. (In stdio mode it is a second child, and dropping
@@ -119,9 +134,9 @@ class Helper:
 
     def close(self) -> None:
         with self._bg_lock:
-            if self._bg is not None:
+            if self._bg is not None and self._bg is not self:
                 self._bg.close()
-                self._bg = None
+            self._bg = None
         with self._lock:
             if self._sock:
                 self._sock.close()
@@ -129,6 +144,12 @@ class Helper:
                 self._proc.terminate()
             self._sock = self._proc = None
             self.mode = None
+            if self._side is not None:
+                try:
+                    self._side.unlink()
+                except OSError:
+                    pass
+                self._side = None
 
     # --------------------------------------------------------------------- call
     def _send(self, data: bytes) -> None:

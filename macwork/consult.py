@@ -90,7 +90,7 @@ class ConsultMixin:
             log.info("planner: already asked about this screen")
             return False
         task.memory.consulted.add(here)
-        planning = Planning(self.cfg, backend, self.redactor(task.id), self.audit)
+        planning = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id)
         try:
             ctx_brief = self._brief(task, ctx, obs, affs)
             plan = planning.plan(task.goal, ctx_brief) if task.plan is None else \
@@ -128,7 +128,7 @@ class ConsultMixin:
             # provided", and it is also what the answer is checked against afterwards.
             brief["seen_in_each_app"] = task.memory.facts.brief()
         try:
-            answer = Planning(self.cfg, backend, self.redactor(task.id), self.audit).answer(task.goal, brief)
+            answer = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).answer(task.goal, brief)
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
@@ -207,7 +207,7 @@ class ConsultMixin:
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
         try:
-            text = Planning(self.cfg, backend, self.redactor(task.id), self.audit).fill(
+            text = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).fill(
                 task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief) or None
         except PlannerError as exc:
             log.info("planner fill: %s", exc)

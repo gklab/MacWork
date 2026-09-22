@@ -457,6 +457,45 @@ def undescribed_share(nodes: list[dict[str, Any]], win: list[int] | None, action
     return round(1.0 - seen / float(cells * cells), 3)
 
 
+def undescribed_frame(nodes: list[dict[str, Any]], win: list[int] | None, actions: set[str], text_roles: set[str],
+                      cells: int = 48) -> list[int] | None:
+    """Where the undescribed part of the window is: the bounding box of the rows of the raster that are mostly
+    uncovered. A toolbar row is mostly covered and stays out; the grid below it is in. Nothing here knows what
+    a toolbar or a grid is — only which rows the tree describes and which it does not."""
+    if not win or len(win) != 4 or not win[2] or not win[3]:
+        return None
+    by_ref, kids = _tree(nodes)
+    x0, y0, w, h = float(win[0]), float(win[1]), float(win[2]), float(win[3])
+    covered = [[False] * cells for _ in range(cells)]
+
+    def described(n: dict[str, Any]) -> bool:
+        return bool(actions & set(n.get("actions") or [])) or n.get("role") in text_roles or \
+            (not kids.get(n["ref"]) and any(n.get(k) for k in ("title", "value", "description", "placeholder")))
+    # For *where* the chrome is, a container whose children are described covers its whole area: a toolbar's
+    # buttons are small and spaced, and by their own frames its row is mostly blank — but the toolbar as a
+    # node is not. (For the share, that container counts for nothing: its children already count.)
+    for n in nodes:
+        f = n.get("frame")
+        if not f or len(f) != 4 or n.get("role") == "AXWindow":
+            continue
+        if not (described(n) or any(described(by_ref[k]) for k in kids.get(n["ref"], []) if k in by_ref)):
+            continue
+        if float(f[2]) * float(f[3]) >= 0.9 * w * h:     # a node the size of the window says nothing about where
+            continue
+        cx0 = max(0, int((float(f[0]) - x0) / w * cells)); cy0 = max(0, int((float(f[1]) - y0) / h * cells))
+        cx1 = min(cells, int(math.ceil((float(f[0]) + float(f[2]) - x0) / w * cells)))
+        cy1 = min(cells, int(math.ceil((float(f[1]) + float(f[3]) - y0) / h * cells)))
+        for cy in range(cy0, cy1):
+            for cx in range(cx0, cx1):
+                covered[cy][cx] = True
+    rows = [cy for cy in range(cells) if sum(covered[cy]) <= cells // 2]
+    if not rows:
+        return None
+    cols = [cx for cx in range(cells) if any(not covered[cy][cx] for cy in rows)]
+    top, bottom, left, right = min(rows), max(rows) + 1, min(cols), max(cols) + 1
+    return [int(x0 + left / cells * w), int(y0 + top / cells * h), int((right - left) / cells * w), int((bottom - top) / cells * h)]
+
+
 def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
     ax = ctx.cfg.section("observe.ax")
     return ctx.helper.call("ax.snapshot", pid=ctx.app["pid"], scope=scope, max_nodes=ax.get("max_nodes", 3000),
@@ -581,8 +620,11 @@ def window(ctx: Ctx, obs: Observation) -> None:
     if nodes and obs.notes.get("window_frame"):
         # how much of the window the tree says nothing about: the one signal that does not depend on how
         # the app happened to structure its chrome (see `vision`)
-        obs.notes["undescribed_share"] = undescribed_share(nodes, obs.notes["window_frame"], actions, text_roles,
-                                                           int(ctx.cfg.get("observe.vision.coverage_cells", 48)))
+        cells = int(ctx.cfg.get("observe.vision.coverage_cells", 48))
+        obs.notes["undescribed_share"] = undescribed_share(nodes, obs.notes["window_frame"], actions, text_roles, cells)
+        region = undescribed_frame(nodes, obs.notes["window_frame"], actions, text_roles, cells)
+        if region:
+            obs.notes["undescribed_frame"] = region
     if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
         obs.notes["window_not_answering"] = True
     obs.notes["window_ms"] = s.get("ms")
@@ -850,7 +892,20 @@ def empty_crossings(boxes: list[dict[str, Any]], limit: int = 12) -> list[dict[s
     for b in sorted(items, key=lambda b: b["frame"][0]):
         home = next((c for c in columns if any(aligned(b["frame"], m["frame"]) for m in c)), None)
         (home.append(b) if home is not None else columns.append([b]))
-    columns = [c for c in columns if len(c) >= 2]             # one thing is not a column
+    # A column is continuous. Texts that happen to share a left edge from the title bar down to the grid —
+    # 「WPS Office」, a ribbon icon's caption, 「金额」, 「1790」 — are not one column, and treated as one
+    # they made every row between the title and the grid "part of its grid". A gap of more than three
+    # lines (the distance already used for "too far from the column") ends a column and starts another.
+    runs: list[list[dict[str, Any]]] = []
+    for c in columns:
+        run: list[dict[str, Any]] = []
+        for m in sorted(c, key=lambda m: m["frame"][1]):
+            if run and m["frame"][1] - (run[-1]["frame"][1] + run[-1]["frame"][3]) > 3 * h:
+                runs.append(run)
+                run = []
+            run.append(m)
+        runs.append(run)
+    columns = [c for c in runs if len(c) >= 2]                # one thing is not a column
     rows: list[list[dict[str, Any]]] = []
     for b in sorted(items, key=lambda b: b["frame"][1]):
         cy = b["frame"][1] + b["frame"][3] / 2
@@ -872,9 +927,11 @@ def empty_crossings(boxes: list[dict[str, Any]], limit: int = 12) -> list[dict[s
             out.append({"x": x, "y": y,
                         "row": [str(m["text"]) for m in sorted(r, key=lambda m: m["frame"][0])],
                         "column": [str(m["text"]) for m in sorted(c, key=lambda m: m["frame"][1])]})
-            if len(out) >= limit:
-                return out
-    return out
+    # The places worth offering first are the ones in the best-attested grid: a column of five figures
+    # before two captions that happen to share an edge. Top-down order put a toolbar's coincidences ahead
+    # of the table's last row, and the limit cut the table off.
+    out.sort(key=lambda e: (-len(e["column"]), -len(e["row"]), e["y"]))
+    return out[:limit]
 
 
 def _inside(inner: list[int], outer: list[int], slack: int = 2) -> bool:
@@ -1150,12 +1207,17 @@ def vision(ctx: Ctx, obs: Observation) -> None:
     # window is undescribed, looking at it is not one way of seeing what is there — it is the only one.
     win = obs.notes.get("window_frame") or []
     area = float(win[2]) * float(win[3]) if len(win) == 4 and win[2] and win[3] else 0.0
+    share = float(vc.get("canvas_area_share", 0.35))
     # …and "undescribed" has to mean the region holds nothing the tree named, not merely that the region
     # itself is unnamed. Chrome's web area is one unlabeled container covering the whole window, with 520
     # described controls inside it; Numbers' is one covering 72% with nothing inside at all. Measured the
     # first way they look identical, and Chrome would pay for an OCR on every look for nothing.
-    placed = [a.target["frame"] for a in obs.affordances
-              if a.channel in ("window", "pointer") and isinstance(a.target.get("frame"), (list, tuple))]
+    # An action on something the size of the window — raising the window, pressing a group that is the whole
+    # content area — describes nothing *in* it; counted as covering, it made every text read off a
+    # spreadsheet "already reached by the tree", and the sheet was declared unreadable with 60 texts in hand.
+    def describes(f: Any) -> bool:
+        return isinstance(f, (list, tuple)) and len(f) == 4 and not (area and float(f[2]) * float(f[3]) >= share * area)
+    placed = [a.target["frame"] for a in obs.affordances if a.channel in ("window", "pointer") and describes(a.target.get("frame"))]
     hollow = 0.0
     for u in unlabeled:
         f = u.get("frame")
@@ -1164,7 +1226,6 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         inside = sum(1 for g in placed if _inside(g, f))
         if inside <= int(vc.get("canvas_max_inside", 2)):
             hollow = max(hollow, float(f[2]) * float(f[3]))
-    share = float(vc.get("canvas_area_share", 0.35))
     # Two readings of the same fact. The hollow container: a node that covers most of the window with nothing
     # the tree named inside it (Numbers' scroll area). And the window as a whole: the area no described node
     # covers at all (`undescribed_share`) — a spreadsheet whose grid is not in the tree as anything, a Qt
@@ -1242,7 +1303,7 @@ def vision(ctx: Ctx, obs: Observation) -> None:
                                           {"ref": u["ref"], "pid": u["pid"], "action": u.get("action"), "frame": f}, context=u.get("context", "")))
     # Which of what was read is out of the tree's reach. `taken` is every frame the tree did reach, including
     # the unlabeled controls just named above — naming one does not make its text a separate target.
-    taken = [a.target["frame"] for a in obs.affordances if a.channel == "window" and a.target.get("frame")]
+    taken = [a.target["frame"] for a in obs.affordances if a.channel == "window" and describes(a.target.get("frame"))]
     uncovered = [b for b in boxes if b.get("frame") and not any(_inside(b["frame"], t) for t in taken)]
     canvas = len(uncovered) >= int(vc.get("canvas_min_texts", 6))
     obs.notes["vision_uncovered"] = len(uncovered)
@@ -1261,9 +1322,13 @@ def vision(ctx: Ctx, obs: Observation) -> None:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
                                               {"x": x, "y": y, "frame": b["frame"], "window_frame": win}))
-        for e in empty_crossings(uncovered, int(vc.get("max_empty_places", 12))):
-            # what was read lines up in rows and columns — a grid the tree holds as nothing — and the places
-            # where a row and a column cross with nothing in them are where something is to be put
+        # what was read lines up in rows and columns — a grid the tree holds as nothing — and the places
+        # where a row and a column cross with nothing in them are where something is to be put. Only the
+        # texts in the undescribed part of the window line up: a toolbar's words above a grid happen to
+        # share its columns, and crossings with them named rows after 「Page Layout」
+        region = obs.notes.get("undescribed_frame")
+        in_region = [b for b in uncovered if not region or _inside(b["frame"], region)]
+        for e in empty_crossings(in_region, int(vc.get("max_empty_places", 12))):
             beside = " ".join(f"「{t[:20]}」" for t in e["row"][:3])
             under = " ".join(f"「{t[:20]}」" for t in e["column"][:5])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click",
@@ -1790,14 +1855,20 @@ def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int
         k, n = group_of(a)
         groups.setdefault(k, []).append(a)
         names[k] = n
-    huge = {k for k in groups if fold_over and len(groups[k]) > fold_over and k not in expanded}   # e.g. every installed app
+    # What is on the screen in front is not a place to look into; it is the place. A spreadsheet read from
+    # the screen put 69 targets and 54 controls in the window's group, which made it "huge" like the list of
+    # every installed app, and the decider was shown 185 options — Format ▸ Rows ▸ Hide, eight URL schemes,
+    # the user's Shortcuts — with the whole sheet folded behind one "look into the window" it never opened.
+    # Where an action lives is still the only thing this goes by: on the screen now, before anywhere else.
+    on_screen = lambda k: k.startswith(("area:", "list:"))   # noqa: E731
+    huge = {k for k in groups if fold_over and len(groups[k]) > fold_over and k not in expanded and not on_screen(k)}
     if len(affs) <= budget and not huge:
         return affs, {}
     shown = {k for k in groups if (k in expanded or len(groups[k]) == 1) and k not in huge}   # folding one option saves nothing
     used = sum(len(groups[k]) for k in shown) + (len(groups) - len(shown))
-    for k in sorted((k for k in groups if k not in shown and k not in huge), key=lambda k: len(groups[k])):
-        if used - 1 + len(groups[k]) > budget:
-            break
+    for k in sorted((k for k in groups if k not in shown and k not in huge), key=lambda k: (not on_screen(k), len(groups[k]))):
+        if used - 1 + len(groups[k]) > budget and not on_screen(k):
+            break                 # the screen does not fold: if it alone is over the budget its tail is cut, and said
         shown.add(k)
         used += len(groups[k]) - 1
     folded: dict[str, tuple[str, list[Affordance]]] = {}
@@ -1806,7 +1877,8 @@ def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int
             names_ = ", ".join(m.label.split(" ▸ ")[-1][:40] for m in members[:sample])
             folded[k] = (f"look into {names[k]} ({len(members)} options: {names_}{', …' if len(members) > sample else ''})", members)
     opened = [a for a in affs if group_of(a)[0] in expanded]   # what the decider asked to see comes first if space runs out
-    flat = opened + [a for a in affs if group_of(a)[0] in shown and group_of(a)[0] not in expanded]
+    rest = [a for a in affs if group_of(a)[0] in shown and group_of(a)[0] not in expanded]
+    flat = opened + [a for a in rest if on_screen(group_of(a)[0])] + [a for a in rest if not on_screen(group_of(a)[0])]
     # Smallest groups first is not a guess at what matters — it is what shows the most *distinct* places at
     # once; the largest become one "look into …" each, so nothing is dropped for being judged uninteresting.
     # What can still be dropped is the tail of this list when even that does not fit, and the caller is told.

@@ -105,10 +105,19 @@ if args.contains("--version") {
     print(version)
     exit(0)
 }
-if let i = args.firstIndex(of: "--socket"), i + 1 < args.count {
-    let server = SocketServer(path: args[i + 1], dispatcher: dispatcher)
+// One process, however many connections. A stdio helper used to be one connection only, so the engine's
+// second connection (the glance taken while the tree is read) was a second *process* — and with two of
+// these alive, every ScreenCaptureKit capture in both hung to its timeout. Measured: one helper reads a
+// window in 350 ms; the moment a second one was spawned, both timed out at 8 s until it was gone. A stdio
+// helper may therefore also open a socket for its further connections, and the engine uses that.
+var socketPath: String? = nil
+if let i = args.firstIndex(of: "--socket"), i + 1 < args.count { socketPath = args[i + 1] }
+if let path = socketPath {
+    let server = SocketServer(path: path, dispatcher: dispatcher)
     do { try server.start() } catch { FileHandle.standardError.write(Data("\(error)\n".utf8)); exit(1) }
-} else {
-    Connection(input: .standardInput, output: .standardOutput, dispatcher: dispatcher, onClose: { holds.releaseAll(); exit(0) }).start()
+}
+if socketPath == nil || args.contains("--stdio") {
+    Connection(input: .standardInput, output: .standardOutput, dispatcher: dispatcher,
+               onClose: { holds.releaseAll(); if let p = socketPath { unlink(p) }; exit(0) }).start()
 }
 RunLoop.main.run()

@@ -603,6 +603,21 @@ def test_out_of_budget_the_decider_says_why_and_the_planner_words_it(tmp_path):
     assert res2["status"] in ("failed", "blocked") and len(res2["steps"]) == 4
 
 
+def test_the_screen_in_front_is_never_folded_behind_the_menus():
+    """A sheet read from the screen: 69 targets and 54 controls in the window's group, over `fold_over`, made
+    it "huge" like every installed app, and the decider got Format ▸ Rows ▸ Hide in full with the whole sheet
+    behind one "look into the window". What is on the screen is shown first; the menus fold."""
+    window = [Affordance(f"w{i}", "window", "press", f"button 「b{i}」", context="Toolbar") for i in range(54)] + \
+             [Affordance(f"o{i}", "pointer", "click", f"click the text 「{i}」") for i in range(69)]
+    menus = [Affordance(f"m{i}", "menu", "press", f"menu M{i // 5} ▸ item {i}", context=f"M{i // 5}") for i in range(90)]
+    flat, folded = arrange(menus + window, 150, set(), fold_over=60)
+    assert {a.id for a in flat} >= {a.id for a in window}, "the screen was folded"
+    assert flat[0].id == "w0" and all(k.startswith("menu:") for k in folded), (flat[:3], list(folded))
+    # and a screen alone over the budget is cut at the tail, and nothing else is folded for it
+    flat, folded = arrange(window, 100, set(), fold_over=60)
+    assert len(flat) == 100 and not folded
+
+
 def test_the_decider_can_open_a_folded_group_before_acting(tmp_path):
     c = cfg(tmp_path, config={"engine": {"max_options": 8}})
     d = ScriptedDecider([lambda s, q: {"pick": next(k for k, v in q["action"]["criteria"].items() if "「File」" in v)},

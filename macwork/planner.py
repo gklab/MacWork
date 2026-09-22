@@ -393,11 +393,12 @@ class Planning:
     What goes to a planner that is not on this Mac is redacted and audited like everything sent to the decider;
     pseudonyms in what comes back are restored before anything is typed."""
 
-    def __init__(self, cfg: Config, planner: Planner, redactor: Any = None, audit: Any = None) -> None:
+    def __init__(self, cfg: Config, planner: Planner, redactor: Any = None, audit: Any = None, task: str | None = None) -> None:
         self.cfg = cfg
         self.p = planner
         self.redactor = redactor
         self.audit = audit
+        self.task = task          # the audit record of every exchange names the task it was for
         self.max_steps = int(cfg.get("planner.max_steps", 8))
 
     @property
@@ -420,14 +421,17 @@ class Planning:
             fields = self.redactor.value(fields)
         system = self.cfg.question("planner_system")
         prompt = self.cfg.question(prompt_key).format(**{k: json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v for k, v in fields.items()})
+        out: dict[str, Any] | None = None
         try:
             out = self.p.complete(system, prompt, schema)
         finally:
             # after the call, not before: which planner answered is only known once it has. A refused one
-            # read the prompt before refusing, so it belongs in the record too.
+            # read the prompt before refusing, so it belongs in the record too — and so does the answer:
+            # a fill that came back empty was indistinguishable in the record from one never made.
             if self.audit is not None:
                 tried = list(getattr(self.p, "tried", []) or [str(getattr(self.p, "name", "?"))])
-                self.audit.record("plan", answered_by=tried[-1] if tried else "?", tried=tried, prompt=prompt)
+                self.audit.record("plan", task=self.task, answered_by=tried[-1] if tried else "?", tried=tried, prompt=prompt,
+                                  answer=json.dumps(out, ensure_ascii=False)[:2000] if out is not None else None)
         return self.redactor.restore(out) if self.redactor is not None else out
 
     def floor_words(self, language: str, categories: dict[str, str]) -> dict[str, list[str]]:

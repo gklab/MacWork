@@ -132,6 +132,11 @@ func screenOCR(_ p: Params) throws -> Any {
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = (p["fast"] as? Bool ?? false) ? .fast : .accurate
     req.recognitionLanguages = (p["languages"] as? [String]).flatMap { $0.isEmpty ? nil : $0 } ?? ocrLanguages()
+    // The first language is the recogniser; the rest are hints to it. A Mac set to English with Chinese
+    // second read a Chinese spreadsheet as Latin noise (显示器 → "bitT"), and the same window with the order
+    // reversed read every cell. Which language a line is in is for the recogniser to detect, line by line —
+    // not for the order of a preference list to decide for the whole screen.
+    if #available(macOS 13.0, *) { req.automaticallyDetectsLanguage = p["detect"] as? Bool ?? true }
     // off: it "corrects" towards the chosen languages, and what is being read is interface labels, file
     // names and code identifiers — the things a language model is most confident about and most wrong about
     req.usesLanguageCorrection = p["correct"] as? Bool ?? false
