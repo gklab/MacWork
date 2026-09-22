@@ -196,6 +196,9 @@ class Step:
                                                  # 「12×2」". "ok" only ever meant the action was carried out
     change: dict[str, Any] = field(default_factory=dict)   # the same, as facts (`Change.as_dict()`): what the
                                                  # engine reads; `outcome` is what the decider reads
+    promise: str = ""                            # what the action said it would do (contract.promise)
+    kept: bool | None = None                     # and whether it did: True / False / None = could not be judged
+    kept_why: str = ""
     produced: bool = False                       # it handed something back — a file's text, a window read in
                                                  # full, what a Shortcut returned. Such a step raises no
                                                  # Accessibility event, and "did anything happen" used to

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, NamedTuple
 
 from .appmodel import signature
-from .contract import kept
+from .contract import DEFERRED, kept, kept_by_change, promise
 from .decider import DeciderError, choice, noul
 from .planner import Planning
 from .privacy import RedactionError
@@ -904,7 +904,8 @@ class LoopMixin:
         self._floor(task.id, ctx, chosen, obs.window if obs else None, ask=False)
         self.spend(task, chosen)      # a confirmation covers this run of it, not the next one
         out, events = self._execute(ctx, chosen, params)
-        held, why = kept(ctx, chosen, params, out, events)   # did the action keep its promise?
+        promised = promise(chosen, params)
+        held, why = kept(ctx, chosen, params, out, events)   # the promises checked now; the rest at the next look
         if held is False:
             out = Outcome(False, watch_pid=out.watch_pid, target=out.target, output=out.output, error=why, wait=False)
             log.info("step %d did not keep its promise: %s", len(task.steps), why)
@@ -922,7 +923,8 @@ class LoopMixin:
         task.steps.append(Step(len(task.steps), chosen.label, chosen.id, out.ok, events, decision,
                                round((time.monotonic() - t0) * 1000), out.error, chosen.channel, chosen.verb,
                                chosen.context, sorted(params), before, key=chosen.key, effect=effect,
-                               produced=bool(out.output), unseen=bool(out.unseen)))
+                               produced=bool(out.output), unseen=bool(out.unseen),
+                               promise=promised, kept=held, kept_why=why))
         if out.ok and effect not in ("", "navigate", "enter") and ctx.app:
             task.changed.append({"n": len(task.steps) - 1, "action": chosen.label, "effect": effect,
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
@@ -1013,22 +1015,31 @@ class LoopMixin:
         if not prev or not prev.get("sig"):
             return
         events = [x for x in prev.get("events", []) if not x.startswith("wait failed")]
+        # a window that changes with nobody acting — a clock, live figures — raises events for everything;
+        # the engine measures that once per window (`ambient`), and there its events are not evidence
+        if f"{(app or {}).get('pid')}|{obs.window}" in self.cache.get("ambient", set()):
+            events = []
         # an effect is a new screen, a UI event, or different text on screen (a calculator's display, a field)
         changed = sig != prev["sig"] or bool(events) or (prev.get("screen") is not None and prev["screen"] != obs.screen_text)
         changed = changed or bool(seen and seen["cells"])      # a person would say it changed: they saw it change
         self.models.record(prev.get("app"), prev["sig"], prev["label"], sig, bool(prev.get("ok")), changed)
         handle = prev.get("handle") or prev["label"]
+        last = task.steps[-1] if task.steps else None
+        if last is not None and last.kept is None and last.promise in DEFERRED and prev.get("ok"):
+            # The deferred promises — the screen changes, something opens, a row is selected — are judged
+            # here, where the screen before and the screen after are both in hand. A step whose effect may
+            # not show in anything observed, with no glance to compare, is not judged at all.
+            last.kept, last.kept_why = kept_by_change(last.promise, changed, seen=not (prev.get("unseen") and seen is None))
         if not prev.get("ok"):
             # It could not be carried out — the app was busy, the element went away, a wait timed out. That
             # says something about the moment, not about the action, and this used to remove the action from
             # this screen for the rest of the task all the same. It is withheld while the screen is exactly
             # as it was when it failed (asking again there gets the same failure), and offered again once
-            # anything on it has changed. `engine.max_repeats` still ends it for good.
+            # anything on it has changed.
             task.memory.note_failed(prev["sig"], handle, exact_state(prev["sig"], prev.get("screen") or ""))
-        elif not changed and not (prev.get("unseen") and seen is None):
-            # nothing happened: never offered again from this screen in this task. Unless what it does is
-            # something the engine has no way to see — then "nothing changed" is a fact about the observer.
-            # With a glance before and after it *was* seen, and an unchanged picture is evidence like any other
+        elif last is not None and last.kept is False:
+            # it promised a change and nothing happened: a fact about this action on this screen, never
+            # offered from here again in this task
             task.memory.note_no_effect(prev["sig"], handle)
 
     # ------------------------------------------------------------------ routines

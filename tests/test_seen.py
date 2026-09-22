@@ -106,13 +106,23 @@ def test_the_clipboard_says_whether_the_write_took(tmp_path):
 
 
 def test_a_window_that_moves_by_itself_is_no_witness(tmp_path):
-    c = Ctx(cfg=cfg(tmp_path), helper=FakeHelper(), app={"pid": 42, "name": "Clock"}, goal="", inputs={}, task="t", gate=None,
-            cache={"ambient": {"42|World Clock"}})
-    a = Affordance("w1", "window", "press", "button 「Start」", {})
-    ok, why = kept(c, a, {}, Outcome(True), ["AXValueChanged"])
-    assert ok is None and "by itself" in why
-    c.cache["ambient"] = set()
-    assert kept(c, a, {}, Outcome(True), ["AXValueChanged"])[0] is True
+    """Its events are raised for everything; a press there kept its promise only if something else moved."""
+    from macwork.model import Step
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = eng._new_task("start it", {}, None)
+    obs = Observation(app={"pid": 42, "name": "Clock"}, window="World Clock", affordances=[])
+    obs.screen_text = "12:00"
+
+    def press_then_look(ambient):
+        eng.cache["ambient"] = {"42|World Clock"} if ambient else set()
+        task.steps.append(Step(len(task.steps), "button 「Start」", ok=True, events=["AXValueChanged"], promise="changed"))
+        task.prev = {"sig": "sigA", "label": "button 「Start」", "handle": "button 「Start」", "ok": True, "events": ["AXValueChanged"],
+                     "app": obs.app, "screen": "12:00", "window": "World Clock", "unseen": False, "glance": None}
+        eng._learn_from_prev(task, obs.app, "sigA", obs)
+        return task.steps[-1].kept
+
+    assert press_then_look(ambient=True) is False, "an event on a window that moves by itself is not a change"
+    assert press_then_look(ambient=False) is True
 
 
 def test_a_picture_that_changed_where_no_text_did_is_read_by_sight_at_once(tmp_path):

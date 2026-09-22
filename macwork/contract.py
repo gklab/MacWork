@@ -24,15 +24,35 @@ from .observe import Ctx
 log = logging.getLogger(__name__)
 
 
+# Promises checked the moment the action returns, and promises checked at the next look — when the screen
+# before and the screen after are both in hand. Nothing is "unknown": a press promises the screen will
+# change, and a screen that does not is the fact the memory records.
+IMMEDIATE = ("typed", "switched", "returned")
+DEFERRED = ("changed", "opened", "selected")
+
+
 def promise(a: Affordance, params: dict[str, Any]) -> str:
-    """What this action says it will do, in one word: typed / switched / changed / unknown."""
+    """What this action says it will do, in one word.
+
+    typed     the field holds the text                       (checked now, by reading it back)
+    switched  that app is in front                           (checked now, against the front app)
+    returned  it handed something back — a file's text,     (checked now: did it?)
+              a window read in full, a Shortcut's result
+    opened    a window or another app appears               (checked at the next look, from the change)
+    selected  a row or a range is selected                  (checked at the next look, from the change)
+    changed   the screen is not what it was                 (checked at the next look, from the change)
+    """
     if a.verb in ("type", "type_submit") and params.get("text") is not None:
         return "typed"
-    if a.verb in ("activate", "open", "reopen") or (a.channel == "app" and a.verb != "quit"):
+    if a.verb == "activate" or (a.channel == "app" and a.verb in ("open", "reopen")):
         return "switched"
+    if a.yields or a.verb in ("read", "read_all") or (a.channel == "clipboard" and a.verb == "read"):
+        return "returned"
+    if a.channel == "file" and a.verb == "open":
+        return "opened"
     if a.verb in ("select_text", "cursor_end", "select"):
         return "selected"
-    return "unknown"
+    return "changed"
 
 
 def _field_text(ctx: Ctx, ref: str) -> str | None:
@@ -112,11 +132,24 @@ def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list
         if pid and front.get("pid") != pid:
             return False, f"{front.get('name')} is in front, not the app that was asked for"
         return True, "that app is in front"
-    if events:
-        pid = (ctx.app or {}).get("pid")
-        # a window that changes with nobody acting — a clock, live figures — reacts to everything. The
-        # engine measures that once per window (`ambient`); its events are not evidence of this action
-        if pid is not None and any(k.startswith(f"{pid}|") for k in ctx.cache.get("ambient", set())):
-            return None, "the screen moved, but this app's window moves by itself"
-        return True, "the screen reacted"
-    return None, "nothing to check"
+    if kind == "returned":
+        if out.output:
+            return True, "it handed something back"
+        return False, "it was to hand something back, and handed back nothing"
+    return None, "judged at the next look, from what changed"
+
+
+def kept_by_change(step_promise: str, changed: bool, seen: bool) -> tuple[bool | None, str]:
+    """The deferred promises, judged once the next look has shown what the action did.
+
+    `changed`: the screen is not what it was (structure, text, an event, or the picture). `seen`: the
+    engine could have seen a change — a step whose effect may not show in anything observed (a key held
+    in a view that draws itself) with no glance before and after is not judged at all.
+    """
+    if step_promise not in DEFERRED:
+        return None, ""
+    if not seen:
+        return None, "what it does may not show on screen, and the screen could not be compared"
+    if changed:
+        return True, "the screen changed"
+    return False, "nothing on screen changed"
