@@ -701,6 +701,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         lap("sweep")
         row = base | {"status": res.get("status"), "passed": ok, "valid": True, "why": why, "reason": res.get("reason", ""),
                       "cause": res.get("cause"),      # why it ended, for a program (budget, screen_locked, …)
+                      "invariants_broken": (res.get("outputs") or {}).get("invariants_broken") or [],   # the engine's own bugs, as facts
                       "steps": len(res.get("steps", [])), "seconds": seconds, "decider_calls": res.get("decider", {}).get("calls", 0),
                       "cost_usd": max(0.0, res.get("decider", {}).get("cost_usd", 0.0)), "planned": bool(res.get("plan")),
                       "decider": answering,
@@ -762,6 +763,7 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
                "categories": {c: _rate(rs) for c, rs in sorted(cats.items())},
                "tasks_leaving_things_behind": sum(bool(r.get("left_by_engine")) for r in valid),
                "passed_by_answering_anyway": sum(bool(r.get("answered_anyway")) and r["passed"] for r in valid),
+               "runs_with_broken_invariants": sum(bool(r.get("invariants_broken")) for r in valid),
                "at": time.strftime("%Y-%m-%d %H:%M")}
     report = {"summary": summary, "rows": rows}
     if out_dir:
@@ -778,7 +780,8 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
               f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
               f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors"
               + (f" ({s['tasks_listed'] - s['tasks']} of {s['tasks_listed']} tasks never counted)" if s['tasks_listed'] > s['tasks'] else "")
-              + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else ""), "",
+              + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else "")
+              + (f"; **{s['runs_with_broken_invariants']} run(s) with a broken engine invariant**" if s.get("runs_with_broken_invariants") else ""), "",
               "| category | passed | rate | 95% CI |", "|---|---|---|---|"]
         md += [f"| {c} | {v['passed']}/{v['runs']} | {v['rate']:.0%} | {v['ci95'][0]:.0%}–{v['ci95'][1]:.0%} |" for c, v in s["categories"].items()]
         md += ["", "| task | runs | results | median s | note (last failure) |", "|---|---|---|---|---|"]

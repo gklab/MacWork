@@ -25,6 +25,7 @@ from typing import Any, Callable
 from .appmodel import AppModels
 from .config import Config
 from .budget import BudgetMixin
+from .invariants import check_ending
 from .consult import ConsultMixin
 from .decider import Decider, DeciderError, make_decider
 from .effects import EffectsMixin
@@ -499,6 +500,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             # to, looked again, chose the same action, and asked the same question a second time.
             task.confirm_key = self.approval_key(task.held)
         task.status, task.reason, task.pending = status, reason, pending or {}
+        check_ending(task, status)
         task.outputs["budget"] = self.ledger(task)      # what it used, of what: the first question about a task that stopped
         task.updated = time.time()
         self.store.save(task)

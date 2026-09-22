@@ -19,6 +19,7 @@ from typing import Any, Callable, NamedTuple
 
 from .appmodel import signature
 from .contract import DEFERRED, kept, kept_by_change, promise
+from .invariants import check_look, check_step
 from .decider import DeciderError, choice, noul
 from .planner import Planning
 from .privacy import RedactionError
@@ -160,6 +161,7 @@ class LoopMixin:
                 if isinstance(look, dict):
                     return look
                 last_look = look
+                check_look(task, look.affs, look.sig, look.ctx.app)
                 if task.plan is None and not task.steps and self.cfg.get("planner.when", "auto") == "always":
                     # The plan that sets the whole trajectory was written before the first look — with no
                     # app, no screen and no running apps in the brief, while every later plan saw all three.
@@ -932,6 +934,7 @@ class LoopMixin:
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
+        check_step(task, task.steps[-1], had_look=look is not None)
         task.prev = {"sig": sig, "label": chosen.label, "handle": chosen.handle(), "ok": out.ok, "events": events, "app": ctx.app,
                      "screen": obs.screen_text if obs else None, "window": obs.window if obs else None,
                      "unseen": bool(out.unseen), "glance": (obs.notes.get("glance") if obs else None)}

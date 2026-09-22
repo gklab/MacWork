@@ -70,6 +70,29 @@ request as everything else, whether the screen shows that evidence, and the plan
 The task's live working state (`TaskScope`) went the same way: one object per task instead of per-task
 keys in the engine's cache.
 
+## Correct by construction
+
+The four changes above were pointed at by measurements. The next four were pointed at by a question: if
+the engine's own bugs are found only by running it on a Mac, the design is letting them in. Each closes a
+class of bug rather than one instance.
+
+* **One way into memory, one way out** (`Memory.note_*`, `withheld_reason`). Five call sites wrote memory
+  by hand, each spelling the key its own way; a step recorded under the wrong spelling was simply never
+  remembered. The loop asks one question — why is this option withheld — and gets one answer.
+* **Every action promises something, and every promise is checked** (`contract.promise`, `kept`,
+  `kept_by_change`). A typed, switched or returned promise is checked on the spot; a changed, opened or
+  selected one at the next look, from the `Change` facts. A step that broke its promise is a failed step,
+  not an ok one with a note.
+* **One rule for a task going nowhere** (`engine.max_no_progress`, `_no_progress_run`). Repeats, circles
+  and an unchanged screen were three counters with three thresholds that agreed by accident. A step went
+  nowhere if it failed, broke its promise, led back or moved nothing; a run of those is the one thing
+  consulted about and the one thing that ends the task.
+* **Invariants checked where they must hold** (`invariants.py`). After every look: options can be told
+  apart and remembered; after every step: it says where it was taken from and what it promised, and a
+  broken promise is never an ok step; at every ending: the status is one the callers know and a stop
+  short says why. A violation is the engine's own bug, recorded as a fact in `outputs.invariants_broken`
+  and counted per run in every eval report — never an exception, never something to dig out of a trace.
+
 ## Also in v5
 
 * An app's own sheet or dialog is an interruption like a prompt from another process: the task, something
