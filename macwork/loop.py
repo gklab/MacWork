@@ -20,6 +20,7 @@ from typing import Any, Callable, NamedTuple
 from .appmodel import signature
 from .contract import kept
 from .decider import DeciderError, choice, noul
+from .planner import Planning
 from .privacy import RedactionError
 from .act import Outcome
 from . import sight
@@ -677,7 +678,9 @@ class LoopMixin:
             task.pace.settled_done = True
             log.info("step %d: settling before judging done", len(task.steps))
             return AGAIN
-        if self._verified_done(task, look.decision):
+        verified = self._verified_done(task, look.decision)
+        doubt = self._second_opinion_on_done(task, look) if verified and task.steps else ""
+        if verified and not doubt:
             if (task.wants_answer or 0.0) >= float(self.cfg.get("engine.thresholds.wants_answer", 0.5)):
                 self._write_answer(task, look.ctx, look.obs)
                 # A goal that asks for something to be reported is not accomplished until there is something to
@@ -694,7 +697,7 @@ class LoopMixin:
             if len(again) < 2:
                 return self._finish(task, "failed", "judged done but the evidence is missing")
             try:
-                ans2 = look.ctx.gate.decide(self.redactor(task.id), {**look.state, "not_done_yet": "the screen does not show the goal accomplished"},
+                ans2 = look.ctx.gate.decide(self.redactor(task.id), {**look.state, "not_done_yet": doubt or "the screen does not show the goal accomplished"},
                                             {"action": choice(self.cfg.question("action"), again)}, task=task.id)
             except DeciderError as exc:
                 return self._finish(task, "failed", f"decider: {exc}", cause="decider_unreachable")
@@ -706,6 +709,34 @@ class LoopMixin:
                     return AGAIN
                 key = ""
         return move, key, probs
+
+    def _second_opinion_on_done(self, task: Task, look: Look) -> str:
+        """Why the planner thinks the goal is not done, or "" when it agrees or is not asked.
+
+        The decider judged "done" in the same request that chose the step, on the same screen, with a bar
+        set low on purpose after acting. Real runs ended done with the Open dialog up instead of Settings,
+        with 144 still on the calculator's display, with a sign-in that never happened. A different model
+        reading the same screen is a second, independent judgement — the same rule as for "blocked" — and
+        it costs one planner call at the end of a task, not one per step.
+        """
+        backend = self.planning_backend
+        if backend is None or not self.cfg.get("planner.second_opinion_on_done", True):
+            return ""
+        if task.pace.done_opinions >= int(self.cfg.get("planner.max_done_opinions", 2)):
+            return ""
+        task.pace.done_opinions += 1
+        try:
+            agrees, why = Planning(self.cfg, backend, self.redactor(task.id), self.audit).judge_done(
+                task.goal, self._brief(task, look.ctx, look.obs, look.affs))
+        except Exception as exc:  # noqa: BLE001  (an opinion that could not be had is no opinion; it never fails the task)
+            log.info("second opinion on done: %s", exc)
+            return ""
+        if agrees:
+            return ""
+        doubt = f"a second look says the goal is not done yet: {why}"[:240]
+        task.outputs.setdefault("done_doubted", []).append(why[:200])
+        log.info("step %d: %s", len(task.steps), doubt)
+        return doubt
 
     def _on_blocked(self, task: Task, look: Look, move: str) -> _Again | dict[str, Any]:
         """Before giving up, a second opinion: the planner may know another way in (it never signs in for the user)."""

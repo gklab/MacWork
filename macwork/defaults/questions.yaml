@@ -164,6 +164,13 @@ planner_answer: |-
   What the Mac shows now (and what was found on the web): {context}
   Answer the question in one short sentence, in the language of the question, using only what is shown there.
   If the answer is not shown, say that it could not be found. Reply with JSON: {{"answer": "..."}}.
+planner_done: |-
+  Goal: {goal}
+  What the Mac shows now: {context}
+  Another component believes the goal is fully accomplished. Judging only from what is shown — the window,
+  its text, what was done so far — is it? Be strict: a dialog that is merely open, a value not yet entered, a
+  result not yet on screen, a wrong window in front, is not done. Reply with JSON: {{"done": true or false,
+  "why": "one short sentence"}}.
 planner_fill: |-
   Goal: {goal}
   Current step: {step}

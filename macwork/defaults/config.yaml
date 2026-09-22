@@ -151,6 +151,7 @@ observe:
                                  # only evidence there is in a window that draws itself (a game, a map, a canvas)
     enabled: true
     grid: 32                     # cells a side
+    overlap: true                # taken on the helper's second connection while the tree is read on the first
     tolerance: 2                 # brightness levels (of 255) a cell may differ by and still be the same: the capture's
                                  # own noise floor, measured on an idle window — not a judgement about what matters
     timeout_s: 3
@@ -243,6 +244,10 @@ planner:
   max_steps: 8                   # sub-goals per plan
   max_replans: 2
   max_corrections: 3             # replans after a step judged to have gone wrong are counted on their own
+  second_opinion_on_done: true   # before a task ends `done` after acting, a different model reads the same screen
+                                 # and says whether it agrees; a "no" sends the decider back with "done" off the
+                                 # table. Real runs ended done with the Open dialog up, or 144 still on the display
+  max_done_opinions: 2           # per run; past this the decider's own verdict stands
   fill_inputs: true              # let the planner write text a step needs instead of asking the caller
   trust_on_device: true          # on-device planners see unredacted text; cloud planners never do
   endpoints:                     # any OpenAI-compatible chat API

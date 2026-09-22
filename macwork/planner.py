@@ -61,6 +61,8 @@ def _tries(raw: Any) -> list[dict[str, Any]]:
     return out
 TEXT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": False}
 ANSWER_SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"], "additionalProperties": False}
+DONE_SCHEMA = {"type": "object", "properties": {"done": {"type": "boolean"}, "why": {"type": "string"}},
+               "required": ["done", "why"], "additionalProperties": False}
 
 
 class PlannerError(RuntimeError):
@@ -421,6 +423,11 @@ class Planning:
 
     def answer(self, goal: str, context: dict[str, Any]) -> str:
         return str(self._ask("planner_answer", ANSWER_SCHEMA, goal=goal, context=context).get("answer", "")).strip()
+
+    def judge_done(self, goal: str, context: dict[str, Any]) -> tuple[bool, str]:
+        """A second opinion on "done", from a different model reading the same screen."""
+        out = self._ask("planner_done", DONE_SCHEMA, goal=goal, context=context)
+        return bool(out.get("done")), str(out.get("why") or "").strip()
 
     def fill(self, goal: str, step: str, slot: str, context: dict[str, Any]) -> str:
         return str(self._ask("planner_fill", TEXT_SCHEMA, goal=goal, step=step, slot=slot, context=context).get("text", ""))

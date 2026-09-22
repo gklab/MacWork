@@ -505,6 +505,8 @@ def window(ctx: Ctx, obs: Observation) -> None:
     if nodes and nodes[0].get("role") == "AXWindow":
         obs.window = nodes[0].get("title") or obs.window
         obs.notes["window_frame"] = nodes[0].get("frame")
+        if nodes[0].get("frame"):
+            ctx.cache.setdefault("window_frame_by_pid", {})[ctx.app["pid"]] = nodes[0]["frame"]
         if nodes[0].get("document"):      # the file this window is showing, as the app itself reports it
             obs.notes["window_document"] = nodes[0]["document"]
     n0 = len(obs.affordances)
@@ -879,12 +881,52 @@ def _right_click_by_name(ctx: Ctx, obs: Observation, vc: dict[str, Any], boxes: 
         slots={"what": Slot("text", "the text on screen to aim at")}, context=(ctx.app or {}).get("name", "")))
 
 
+def _start_glance(ctx: Ctx) -> dict[str, Any] | None:
+    """Begin the glance on the helper's second connection while the tree is being read on the first.
+
+    The glance is a screen capture and a resize; the tree is Accessibility round trips. They share nothing
+    but the app, and were taken one after the other on every look. In socket mode the helper serves each
+    connection on its own thread and the capture never needs the main thread, so the two overlap. The
+    window frame is the last one seen for this app: close enough to pick the same window, and the glance
+    of a window that has moved is compared against nothing anyway.
+    """
+    sc = ctx.cfg.section("observe.sight")
+    bg = getattr(ctx.helper, "background", None)
+    if not ctx.app or not sc.get("enabled", True) or bg is None:
+        return None
+    helper, pid = bg(), ctx.app["pid"]
+    near = (ctx.cache.get("window_frame_by_pid") or {}).get(pid)
+    holder: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            holder["glance"] = helper.call("screen.glance", pid=pid, near=near, grid=int(sc.get("grid", 32)),
+                                           timeout=float(sc.get("timeout_s", 3)))
+        except HelperError as exc:
+            holder["error"] = exc.code
+        except Exception as exc:  # noqa: BLE001  (a fake or a dying connection: the look goes on without a glance)
+            holder["error"] = str(exc)[:80]
+
+    thread = threading.Thread(target=run, name="glance", daemon=True)
+    thread.start()
+    holder["thread"] = thread
+    return holder
+
+
 @provider("sight")
 def sight(ctx: Ctx, obs: Observation) -> None:
     """One coarse look at the window, kept with the observation (see sight.py). It offers nothing: it is what
     lets the next look say whether the picture changed."""
     sc = ctx.cfg.section("observe.sight")
     if not ctx.app or not sc.get("enabled", True):
+        return
+    started = obs.notes.pop("_glance", None)
+    if started is not None:                       # begun with the look: collect it
+        started["thread"].join(float(sc.get("timeout_s", 3)) + 1)
+        if "glance" in started:
+            obs.notes["glance"] = started["glance"]
+        else:
+            obs.notes["glance_unavailable"] = started.get("error", "timeout")
         return
     try:
         obs.notes["glance"] = ctx.helper.call("screen.glance", pid=ctx.app["pid"], near=obs.notes.get("window_frame"),
@@ -1698,7 +1740,12 @@ def _disambiguate(affs: list[Affordance]) -> None:
 def observe(ctx: Ctx) -> Observation:
     t0 = time.monotonic()
     obs = Observation(app=ctx.app, window=None, affordances=[])
-    for name in ctx.cfg.get("observe.providers") or []:
+    providers = ctx.cfg.get("observe.providers") or []
+    if "sight" in providers and bool(ctx.cfg.get("observe.sight.overlap", True)):
+        started = _start_glance(ctx)
+        if started is not None:
+            obs.notes["_glance"] = started
+    for name in providers:
         fn = get_provider(name)
         if fn is None:
             log.warning("unknown provider %s", name)

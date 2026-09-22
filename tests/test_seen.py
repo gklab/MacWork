@@ -152,3 +152,30 @@ def test_a_fingerprint_taken_a_moment_ago_is_the_baseline_an_action_moves_from(t
     assert eng._recent_fingerprint(c) == fp and len(h.did("ax.fingerprint")) == n, "no second round trip"
     _time.sleep(0.25)
     assert eng._recent_fingerprint(c) is None, "too old to stand in for the screen now"
+
+
+def test_the_glance_is_taken_while_the_tree_is_read(tmp_path):
+    """A screen capture and Accessibility round trips share nothing but the app, and were taken one after
+    the other on every look."""
+    import threading
+
+    class Glancing(FakeHelper):
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.glance":
+                self.calls.append((method, p, threading.current_thread().name))
+                return {"cells": [0] * 4, "frame": p.get("near")}
+            return super().call(method, timeout, **p)
+
+    h = Glancing()
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "sight"]}}), helper=h, decider=ScriptedDecider([]))
+    seen = eng.observe()
+    assert seen["notes"]["glance"]["cells"] == [0] * 4 and "_glance" not in seen["notes"]
+    glances = [c for c in h.calls if c[0] == "screen.glance"]
+    assert len(glances) == 1 and glances[0][2] == "glance", "on its own thread, begun with the look"
+    eng.cache["window_frame_by_pid"] = {42: [10, 20, 300, 200]}       # what the window provider records once it has seen one
+    eng.observe()
+    assert [c for c in h.calls if c[0] == "screen.glance"][-1][1]["near"] == [10, 20, 300, 200], "the last window frame seen for this app"
+
+    eng2 = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "sight"], "sight": {"overlap": False}}}), helper=Glancing(),
+                  decider=ScriptedDecider([]))
+    assert "glance" in eng2.observe()["notes"], "the serial path still works"

@@ -111,3 +111,28 @@ def test_the_planners_blocked_is_an_opinion_until_the_decider_agrees(tmp_path):
     eng._planner = FakeBackend([{"steps": [], "inputs": {}, "blocked": "the user must sign in first"}])
     res = eng.do("make a new document")
     assert res["status"] == "blocked" and "sign in" in res["reason"], "when the decider agrees, the planner's reason is the reason"
+
+
+def test_done_needs_a_second_opinion_after_acting(tmp_path):
+    """The decider judged "done" in the same request that chose the step, on a bar set low after acting.
+    Real runs ended done with the Open dialog up instead of Settings, and with 144 still on the display."""
+    from tests.test_flex import FakeBackend
+    d = ScriptedDecider([{"pick": "New"}, {"pick": "done", "done": 0.95}, {"pick": "Refresh"}, {"pick": "done", "done": 0.95}])
+    eng = Engine(cfg(tmp_path), helper=EnglishMac(), decider=d)
+    back = FakeBackend([{"done": False, "why": "the document window is not open yet"}, {"done": True, "why": ""}])
+    eng._planner = back
+    res = eng.do("make a new document")
+    assert res["status"] == "done" and [s[:12] for s in res["steps"]] == ["menu File ▸ ", "button 「Refr"], res["steps"]
+    assert res["outputs"]["done_doubted"] == ["the document window is not open yet"]
+    redecided = [s for s, q in d.seen if "not_done_yet" in s]
+    assert redecided and "not open yet" in redecided[0]["not_done_yet"], "the doubt is what the decider is sent back with"
+    assert len(back.prompts) == 2
+
+
+def test_the_second_opinion_is_bounded_and_optional(tmp_path):
+    from tests.test_flex import FakeBackend
+    d = ScriptedDecider([{"pick": "New"}, {"pick": "done", "done": 0.95}])
+    eng = Engine(cfg(tmp_path, config={"planner": {"second_opinion_on_done": False}}), helper=EnglishMac(), decider=d)
+    back = FakeBackend([{"done": False, "why": "never asked"}])
+    eng._planner = back
+    assert eng.do("make a new document")["status"] == "done" and not back.prompts
