@@ -287,8 +287,8 @@ def _dialogs_above(engine: Engine, before: dict[int, set[int]]) -> list[dict[str
     out = []
     for w in wins:
         f = w.get("frame") or [0, 0, 0, 0]
-        if w.get("layer", 0) > 0 and f[2] >= 200 and f[3] >= 100 and w.get("id") is not None \
-                and int(w["id"]) not in before.get(int(w["pid"]), set()):
+        if w.get("layer", 0) > 0 and f[2] >= 200 and f[3] >= 100 and w.get("id") is not None and w.get("alpha", 1) \
+                and int(w["id"]) not in before.get(int(w["pid"]), set()):      # alpha 0: a launcher's hidden panel is not on screen
             out.append({"app": w.get("owner") or "?", "pid": int(w["pid"]), "new_app": False, "windows": 1,
                         "ids": [int(w["id"])], "dialog": True, "title": str(w.get("title") or "")[:80]})
     return out
@@ -592,7 +592,7 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
     try:
         for n in range(runs):
             for t0_task in tasks:
-                rows.append(_run_task(engine, suite, t0_task, n, runs, progress))
+                rows.append(_run_task(engine, suite, t0_task, n, runs, progress, start))
     finally:
         final = sweep(engine, start)       # whatever happens, the desktop goes back to how the run found it
         if final:
@@ -635,7 +635,7 @@ def _forget(engine: Engine) -> None:
 
 
 def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: int, runs: int,
-              progress: Callable[[str], None]) -> dict[str, Any]:
+              progress: Callable[[str], None], start: tuple[dict[int, set[int]], set[int]] | None = None) -> dict[str, Any]:
     if suite.get("fresh", True):
         _forget(engine)
     eval_dir = str(_sandbox(engine, task)) if suite.get("sandbox") else ""
@@ -666,7 +666,10 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         lap("launch")
         cleanup(engine, t, "setup")
         before = _desktop(engine)          # after setup: what the task itself must leave as it found it
-        above = _dialogs_above(engine, {})   # any prompt above every window, whoever left it: this run is not a clean one, and says so
+        # a prompt above every window that was not there when the suite began — an earlier task's doing, and
+        # this run is not a clean one; what the person had up before the suite (a launcher, an input method's
+        # panel) is theirs and is not reported
+        above = _dialogs_above(engine, start[0]) if start else []
         if above:
             log_harness("on screen before this task, above every window: " + "; ".join(f"「{d['title'] or d['app']}」" for d in above))
         text_before = _text_of(engine, t.get("app"))[1] if "app_changed" in (t.get("check") or {}) else ""
@@ -743,6 +746,9 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         row = base | {"status": res.get("status"), "passed": ok, "valid": True, "why": why, "reason": res.get("reason", ""),
                       "cause": res.get("cause"),      # why it ended, for a program (budget, screen_locked, …)
                       "invariants_broken": (res.get("outputs") or {}).get("invariants_broken") or [],   # the engine's own bugs, as facts
+                      # what a task that stopped to ask was asking about: the held action and the floor's reasons
+                      "asked": {"action": str(((res.get("pending") or {}).get("confirm") or (res.get("pending") or {}).get("affordance") or {}).get("label") or "")[:120],
+                                "because": (res.get("pending") or {}).get("because") or []} if res.get("pending") else None,
                       "steps": len(res.get("steps", [])), "seconds": seconds, "decider_calls": res.get("decider", {}).get("calls", 0),
                       "cost_usd": max(0.0, res.get("decider", {}).get("cost_usd", 0.0)), "planned": bool(res.get("plan")),
                       "decider": answering,

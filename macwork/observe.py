@@ -1579,7 +1579,10 @@ def services(ctx: Ctx, obs: Observation) -> None:
         slot = "file" if wants_file else "text"
         asks = f"{'the path of the file' if wants_file else 'the text'} to hand over"
         obs.affordances.append(Affordance(
-            f"v{len(obs.affordances)}", "service", "perform", f"hand content to {s['app']}: 「{s['name']}」",
+            # Named by what the Service is called, not by a gloss of the engine's own: "hand content to TextEdit"
+            # read as sending, and the floor stopped 「New TextEdit Window Containing Selection」 and 「Look Up in
+            # Dictionary」 as outward-facing on three cross-app tasks in a row. The Service's name is the fact.
+            f"v{len(obs.affordances)}", "service", "perform", f"「{s['name']}」 — a Service of {s['app']} on this Mac",
             {"name": s["name"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
             context=f"{s['app']} (a system service)"))
 

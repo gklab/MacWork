@@ -36,11 +36,14 @@ DOC = {"pid": 1, "id": 10, "owner": "TextEdit", "layer": 0, "alpha": 1, "frame":
 PROMPT = {"pid": 77, "id": 90, "owner": "UserNotificationCenter", "layer": 8, "alpha": 1, "frame": [400, 300, 420, 200],
           "title": "Allow \u201cGraphDB Desktop\u201d to find devices on local networks?"}
 BANNER = {"pid": 78, "id": 91, "owner": "NotificationCenter", "layer": 24, "alpha": 1, "frame": [900, 40, 350, 90], "title": ""}
+HIDDEN = {"pid": 79, "id": 92, "owner": "Spotlight", "layer": 23, "alpha": 0, "frame": [569, 253, 844, 577], "title": ""}
 
 
 def test_a_dialog_above_every_window_counts_as_a_window_and_a_banner_does_not():
-    wins = evals._real_windows(Eng([DOC, PROMPT, BANNER]))
+    wins = evals._real_windows(Eng([DOC, PROMPT, BANNER, HIDDEN]))
     assert wins == {1: {10}, 77: {90}}
+    assert evals._dialogs_above(Eng([DOC, PROMPT, BANNER, HIDDEN]), {}) == evals._dialogs_above(Eng([PROMPT]), {}), \
+        "a launcher's hidden panel (alpha 0) was taken for a dialog"
 
 
 def test_a_prompt_that_was_not_there_before_is_a_leftover_owned_by_nobody_in_the_app_list():
