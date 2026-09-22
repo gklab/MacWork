@@ -111,6 +111,27 @@ class of bug rather than one instance.
 * **Every ending short of done carries a cause**, checked as an invariant; the diagnosis passes `budget`
   or `no_route` through and names `needs_user`, `impossible`, `unclear_goal`, `unfinished` otherwise.
 
+### …and then done on the Mac (same day, WPS Office, one CSV)
+
+The three changes above were written without the Mac; the first run with it failed exactly as before, and
+the trace named five more things, each general and each measured:
+
+* **Two helper processes and no capture works.** In stdio mode the second connection was a second child,
+  and with two alive every ScreenCaptureKit capture in both hung to its 8 s timeout — every OCR since the
+  glance overlap was introduced, in every run that day. One process, a side socket for the second connection.
+* **A window-sized action is not coverage.** "Raise the window" carried the window's frame and so
+  "covered" all 60 texts read off the sheet, which was then declared unreadable.
+* **The recogniser detects the language per line.** With the Mac's first language English, every Chinese
+  cell came back as Latin noise; reversed, every cell read. Neither order is right for a screen with both.
+* **The screen in front is never folded.** 123 on-screen options were one "look into the window" behind
+  Format ▸ Rows ▸ Hide shown in full, because the on-screen group was over `fold_groups_over` like the
+  list of every installed app.
+* **A formula is made of what is on screen.** The planner wrote `=SUM(B2:B4)` and the judge that keeps
+  invented values out refused it as a computed figure; the second opinion on done doubted 2388's provenance.
+
+Result: the same task, failed twice before, done in 33 s — the empty crossing of the 「合计」 row and the
+「金额」 column clicked, the formula typed, the total on screen.
+
 ## Also in v5
 
 * An app's own sheet or dialog is an interruption like a prompt from another process: the task, something
