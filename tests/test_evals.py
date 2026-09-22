@@ -331,3 +331,14 @@ def test_the_sampled_suite_parses_and_its_templates_are_shaped_like_tasks():
     for tpl in doc["templates"]:
         assert set(tpl) - {"needs"} <= TASK_KEYS and tpl["id"] and "{app}" in tpl["goal"]
         assert set(tpl.get("check") or {}) <= CHECKS
+
+
+def test_the_draw_leaves_out_what_no_person_launches(tmp_path):
+    installed = [_bundle(tmp_path, "Onboarding", "x.onboard", plist_extra={"LSUIElement": True}),
+                 _bundle(tmp_path, "Agent", "x.agent", plist_extra={"LSBackgroundOnly": True}),
+                 _bundle(tmp_path, "Real", "x.real")]
+    inner = tmp_path / "System" / "Library" / "CoreServices"
+    inner.mkdir(parents=True)
+    installed.append(_bundle(inner, "Piece", "x.piece"))
+    suite = {"sample": {"apps": 6, "seed": 1}, "templates": [{"id": "settings-window", "goal": "{app}", "check": {"app_windows_grew": True}}]}
+    assert {t["app"] for t in evals.sampled_tasks(None, suite, installed=installed, named="")} == {"x.real"}

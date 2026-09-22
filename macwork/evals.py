@@ -424,6 +424,18 @@ def _toolkit(app_path: str) -> str:
     return "appkit"
 
 
+def _for_people(app_path: str) -> bool:
+    """An app a person launches, as its bundle says: not one that declares it has no interface or runs in
+    the background (`LSUIElement`, `LSBackgroundOnly`), and not one macOS keeps inside a framework or
+    CoreServices directory, where it puts the pieces of itself that are not meant to be opened by anyone.
+    The first draw took an onboarding panel and a pasteboard progress window for apps."""
+    info = _info_plist(app_path)
+    if info.get("LSUIElement") or info.get("LSBackgroundOnly"):
+        return False
+    parts = set(Path(app_path).parts)
+    return not (parts & {"Frameworks", "PrivateFrameworks", "CoreServices", "Support", "Resources", "Helpers", "XPCServices"})
+
+
 def _opens_text(app_path: str) -> bool:
     info = _info_plist(app_path)
     kinds = {str(x).casefold() for t in info.get("CFBundleDocumentTypes") or []
@@ -446,7 +458,7 @@ def sampled_tasks(engine: Engine, suite: dict[str, Any], installed: list[dict[st
     conf = suite.get("sample") or {}
     named = _named_anywhere() if named is None else named
     apps = installed if installed is not None else installed_apps(engine.cfg, engine.helper)
-    fresh = [a for a in apps if a.get("bundle_id") and a.get("path") and a.get("name")
+    fresh = [a for a in apps if a.get("bundle_id") and a.get("path") and a.get("name") and _for_people(a["path"])
              and str(a["bundle_id"]).casefold() not in named
              and not re.search(r"(?<!\w)" + re.escape(str(a["name"]).casefold()) + r"(?!\w)", named)]
     for a in fresh:
