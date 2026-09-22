@@ -149,6 +149,7 @@ class ScriptedDecider:
         self.calls, self.cost_usd, self.last_ms = 0, 0.0, 1.0
 
     verify = 1.0     # answer to the stricter "is it really done?" check
+    answers = 1.0    # "does the answer answer the goal?"
     backs_out = 0.0
     calls_for = 1.0
     serves = 1.0
@@ -191,7 +192,8 @@ class ScriptedDecider:
                 else:
                     out[k] = {"type": "noul", "noul": self.backs_out if k == "backs_out" else self.verify if k == "verified"
                               else self.calls_for if k == "calls_for" else self.serves if k == "serves"
-                              else self.stands if k == "stands" else self.about if k == "about" else 1.0}
+                              else self.stands if k == "stands" else self.about if k == "about"
+                              else self.answers if k == "answers" else 1.0}
             return out
         self.seen.append((state, questions))
         step = self.script.pop(0)

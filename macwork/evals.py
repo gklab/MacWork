@@ -113,9 +113,12 @@ def _expected(task: dict[str, Any]) -> list[str]:
 
 
 def _sub(value: Any, eval_dir: str) -> Any:
-    """``{eval_dir}`` in any string of a task."""
+    """``{eval_dir}`` and ``{day}`` (today's day of the month, as a number) in any string of a task.
+
+    A check for a date used to look for 「日」, which is also the second character of 「日期」: an answer saying
+    "the date is not shown" passed it. What today is, the harness knows."""
     if isinstance(value, str):
-        return value.replace("{eval_dir}", eval_dir)
+        return value.replace("{eval_dir}", eval_dir).replace("{day}", str(time.localtime().tm_mday))
     if isinstance(value, list):
         return [_sub(v, eval_dir) for v in value]
     if isinstance(value, dict):
@@ -444,7 +447,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
     if suite.get("fresh", True):
         _forget(engine)
     eval_dir = str(_sandbox(engine, task)) if suite.get("sandbox") else ""
-    t = _sub(task, eval_dir) if eval_dir else task
+    t = _sub(task, eval_dir)
     progress(f"[{t['id']}{f' #{n + 1}' if runs > 1 else ''}] {t['goal']}")
     base = {"id": t["id"], "run": n + 1, "category": t.get("category", ""), "app": t.get("app") or "", "goal": t["goal"]}
     phase: dict[str, float] = {}                  # where the harness itself spends time (not counted in "seconds")
@@ -580,10 +583,15 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
     # task counts once, as whichever way most of its runs went.
     per_task = [sum(rs_) * 2 > len(rs_) for rs_ in ([r["passed"] for r in rs] for rs in by_task.values())]
     lo, hi = wilson(sum(per_task), len(per_task))
+    rate = _rate(valid)
+    # `runs` is every row and `valid` the ones that count. `**_rate(valid)` used to land after both and
+    # overwrite `runs` with the valid count, so the headline subtracted the invalid rows from a number
+    # they were already out of: a ×3 run with six invalid rows read "17/12 runs". And a task whose every
+    # run was invalid is not a task this run says anything about, so `tasks` is the ones it does.
     summary = {"suite": str(suite_path), "suite_sha256": hashlib.sha256(raw).hexdigest()[:16], "repeat": runs,
-               "tasks": len({r["id"] for r in rows}), "runs": len(rows), "valid": len(valid),
+               "tasks": len(by_task), "tasks_listed": len({r["id"] for r in rows}), "runs": len(rows), "valid": len(valid),
                "invalid": sum(r["status"] == "invalid" for r in rows), "errors": sum(r["status"] == "error" for r in rows),
-               **_rate(valid),
+               "passed": rate["passed"], "rate": rate["rate"],
                "passed_tasks": sum(per_task), "ci95": [round(lo, 3), round(hi, 3)], "ci95_over": "tasks",
                "pass_all": sum(all(r["passed"] for r in rs) for rs in by_task.values()),   # pass^N: passed every time
                "success_rate": round(sum(r["passed"] for r in valid) / (len(valid) or 1), 3),
@@ -604,9 +612,10 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
         s = summary
         md = [f"# {suite_path.name} — {s['at']} (sha256 {s['suite_sha256']}, ×{runs})", "",
               f"**{s['passed_tasks']}/{s['tasks']} tasks passed (95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%}, over tasks — "
-              f"repeats of one task are not independent trials)**; {s['passed']}/{s['runs'] - s['invalid'] - s['errors']} runs ({s['rate']:.0%}); "
+              f"repeats of one task are not independent trials)**; {s['passed']}/{s['valid']} runs ({s['rate']:.0%}); "
               f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
               f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors"
+              + (f" ({s['tasks_listed'] - s['tasks']} of {s['tasks_listed']} tasks never counted)" if s['tasks_listed'] > s['tasks'] else "")
               + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else ""), "",
               "| category | passed | rate | 95% CI |", "|---|---|---|---|"]
         md += [f"| {c} | {v['passed']}/{v['runs']} | {v['rate']:.0%} | {v['ci95'][0]:.0%}–{v['ci95'][1]:.0%} |" for c, v in s["categories"].items()]

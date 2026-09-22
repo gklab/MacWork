@@ -155,6 +155,20 @@ class ConsultMixin:
             return
         if answer:
             task.outputs["answer"] = answer
+            # A real run ended "屏幕上没有显示今天的日期，无法得知今天是几号", which stood (nothing in it was
+            # invented) and turned the task into `done`. It is reported — the caller should hear what was
+            # found — and it is not an answer to the question, so it must not end the task as one.
+            if not self._answers(task, ctx, answer):
+                task.outputs["answer_is_no_answer"] = True
+
+    def _answers(self, task: Task, ctx: Ctx | None, answer: str) -> bool:
+        gate = (getattr(ctx, "gate", None) if ctx is not None else None) or self.gate
+        try:
+            ans = gate.decide(self.redactor(task.id), {"goal": task.goal, "answer": answer},
+                              {"answers": noul(self.cfg.question("answer_answers"))}, task=task.id)
+        except DeciderError:
+            return True          # unjudged is not "no": the answer stands as written, and the caller reads it
+        return float(ans.get("answers", {}).get("noul", 1.0)) >= float(self.cfg.get("engine.thresholds.answer_answers", 0.5))
 
     def _plan_inputs(self, task: Task, ctx: Ctx | None, inputs: dict[str, Any]) -> None:
         """Text a plan wants put into `task.inputs`.

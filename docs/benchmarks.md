@@ -28,10 +28,23 @@ time. `macwork compare <before.json> <after.json>` is what says so. Repeats are 
 
 **Neither report was kept.** The two runs above exist as numbers in a commit message and nothing else, so
 nothing can be paired with them now. From 2026-09-22 a report is committed per suite in `evals/baseline/`
-and `macwork compare <report>.json` pairs a new run with it; the first baseline is the behaviour suite's
-single run of 2026-09-21 (3/6), and a ×3 run should replace it as soon as the machine is free
-(`evals/baseline/README.md`). A pass that came from answering the question without finishing the task is
-now counted apart in every report (`passed_by_answering_anyway`).
+and `macwork compare <report>.json` pairs a new run with it. The first baseline was the behaviour suite's
+single run of 2026-09-21 (3/6); a ×3 run on 2026-09-22 replaced it (`evals/baseline/README.md`). A pass that
+came from answering the question without finishing the task is now counted apart in every report
+(`passed_by_answering_anyway`).
+
+### `evals/behaviour.yaml` ×3 (2026-09-22, decider jev, planner deepseek-flash)
+
+| | tasks | runs | note |
+|---|---|---|---|
+| baseline, ×1, 2026-09-21 | 3/6 | 3/6 | before the seven commits of 2026-09-22 |
+| ×1, first run after them | 4/8 | 4/8 | found five things no reading of the code had (commit 16223ba) |
+| ×3, after those fixes | 6/6 | 17/18 | **two of the passes were false**: the clock task answered "the date is not shown", and 「日」 in the check matched 「日期」 |
+| ×3, check corrected and the engine refusing a non-answer | **5/6** | 14/18 | the committed baseline. Clock task 0/3; calculator task 2/3 |
+
+Paired against the ×1 baseline: 3 fixed, 0 broken, exact McNemar p = 0.25 — three tasks moved, and chance
+alone does that a quarter of the time. The two Numbers tasks are `invalid` on this Mac, which has no
+Numbers, and are counted nowhere.
 
 The first time the suite ran, it crashed. Nine things surfaced that no amount of reading the code had
 found, among them: the harness called a function it never imported (436 unit tests were green over a

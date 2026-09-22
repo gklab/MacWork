@@ -485,7 +485,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             # …and `blocked` too: a real run read the file, answered "金额最高的是显示器" correctly, then met
             # the app's own recovery prompt and reported that only the user could go on — true of the
             # app, not of the question, which was answered
-            if status in ("failed", "need_continue", "blocked") and task.outputs.get("answer"):
+            if status in ("failed", "need_continue", "blocked") and task.outputs.get("answer") \
+                    and not task.outputs.get("answer_is_no_answer"):
                 task.outputs["unfinished_but_answered"] = reason
                 status, reason, answered_anyway = "done", "the question is answered from what the task saw", ""
         if status == "need_confirm" and task.held is not None and not task.confirm_key:

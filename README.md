@@ -232,7 +232,7 @@ macwork profile                                      # where each step's time go
 prompt injection, using only apps that ship with macOS. The current result is **14/29 on a single run** —
 which is not a success rate: the move from 12/29 was 2 fixed and 0 broken, p = 0.50, and no report of it was
 kept. `compare` refuses to pair reports from a different suite or decider; the baseline a run is held against
-is committed in `evals/baseline/` (one suite, one run, so far). History: [docs/benchmarks.md](docs/benchmarks.md).
+is committed in `evals/baseline/` (the behaviour suite, ×3: 5/6 tasks). History: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Configuration
 

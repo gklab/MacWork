@@ -242,3 +242,23 @@ def test_a_report_never_names_this_user(tmp_path, monkeypatch):
     for f in tmp_path.glob("*.json"):
         assert "/Users/somebody" not in f.read_text(encoding="utf-8")
         assert "~/Library/Caches/x.txt" in f.read_text(encoding="utf-8")
+
+
+def test_the_headline_counts_runs_and_tasks_that_count(tmp_path):
+    """`runs` was overwritten by the valid count and then had the invalid rows subtracted again: a ×3 run
+    with six invalid rows read "17/12 runs". And a task invalid every time is not one the run speaks about."""
+    def row(tid, status, passed, valid=True):
+        return {"id": tid, "category": "-", "status": status, "passed": passed, "valid": valid, "seconds": 1.0,
+                "decider_calls": 1, "cost_usd": 0.0, "why": ""}
+    rows = [row("a", "done", True), row("a", "done", True), row("b", "failed", False), row("b", "done", True),
+            row("c", "invalid", False, valid=False), row("c", "invalid", False, valid=False)]
+    summary = evals._report(tmp_path / "s.yaml", b"", rows, 2, tmp_path)["summary"]
+    assert (summary["runs"], summary["valid"], summary["invalid"], summary["passed"]) == (6, 4, 2, 3)
+    assert (summary["tasks"], summary["tasks_listed"], summary["passed_tasks"]) == (2, 3, 1)
+    md = next(tmp_path.glob("*.md")).read_text(encoding="utf-8")
+    assert "1/2 tasks passed" in md and "3/4 runs" in md and "1 of 3 tasks never counted" in md
+
+
+def test_today_is_something_the_harness_knows():
+    import time as _time
+    assert evals._sub({"check": {"answer_contains": ["{day}"]}}, "")["check"]["answer_contains"] == [str(_time.localtime().tm_mday)]

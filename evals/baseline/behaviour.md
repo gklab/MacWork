@@ -1,16 +1,16 @@
-# behaviour.yaml — 2026-09-21 15:40 (sha256 d89590b7d1c71572, ×1)
+# behaviour.yaml — 2026-09-22 11:38 (sha256 ae5e75d0df7a05a8, ×3)
 
-**3/6 tasks passed (95% CI 19%–81%, over tasks — repeats of one task are not independent trials)**; 3/6 runs (50%); passed every time: 3/6 tasks; median 21.0 s, p90 81.1 s; 106 decisions, $0.03567; 0 invalid, 0 errors
+**5/6 tasks passed (95% CI 44%–97%, over tasks — repeats of one task are not independent trials)**; 14/18 runs (78%); passed every time: 4/6 tasks; median 9.4 s, p90 29.6 s; 263 decisions, $0.09173; 6 invalid, 0 errors (2 of 8 tasks never counted)
 
 | category | passed | rate | 95% CI |
 |---|---|---|---|
-| - | 3/6 | 50% | 19%–81% |
+| - | 14/18 | 78% | 55%–91% |
 
 | task | runs | results | median s | note (last failure) |
 |---|---|---|---|---|
-| read-past-the-fold | 0/1 | ❌ | 25.1 | answer_contains: none of ['marmalade-77'] in '' |
-| types-what-the-caller-gave | 1/1 | ✅ | 11.5 |  |
-| stops-for-text-it-was-not-given | 0/1 | ❌ | 5.7 | ended 'need_confirm', expected ['need_input', 'failed', 'blocked'] |
-| hands-back-when-the-turn-is-spent | 1/1 | ✅ | 21.0 |  |
-| reaches-the-menu-bar-extras | 0/1 | ❌ | 81.1 | answer_contains: none of ['月', '日', '20'] in '' |
-| uses-what-the-app-declares | 1/1 | ✅ | 13.6 |  |
+| read-past-the-fold | 3/3 | ✅ ✅ ✅ | 6.8 |  |
+| types-what-the-caller-gave | 3/3 | ✅ ✅ ✅ | 9.6 |  |
+| stops-for-text-it-was-not-given | 3/3 | ✅ ✅ ✅ | 6.1 |  |
+| hands-back-when-the-turn-is-spent | 2/3 | ✅ ❌ ✅ | 23.4 | ended 'failed', expected ['done', 'need_continue'] |
+| reaches-the-menu-bar-extras | 0/3 | ❌ ❌ ❌ | 29.6 | answer_contains: none of ['22'] in '' |
+| uses-what-the-app-declares | 3/3 | ✅ ✅ ✅ | 8.3 |  |

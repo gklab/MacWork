@@ -9,7 +9,7 @@ message, and cannot be paired with anything now. A baseline that is in the repos
 
 | suite | taken | runs per task | passed | suite sha256 | note |
 |---|---|---|---|---|---|
-| `behaviour.yaml` | 2026-09-21 15:40 | ×1 | 3/6 tasks | `d89590b7d1c71572` | the suite has since gained two tasks (`table-total`, `table-largest-row`); `compare` pairs by task id and says the suite changed |
+| `behaviour.yaml` | 2026-09-22 11:38 | ×3 | 5/6 tasks, 14/18 runs | `ae5e75d0df7a05a8` | decider jev, planner deepseek-flash (thinking off). The two Numbers tasks are `invalid` on this Mac (not installed) and never counted. `reaches-the-menu-bar-extras` 0/3; `hands-back-when-the-turn-is-spent` 2/3 |
 | `v2.yaml` | — | — | — | — | **no report was kept.** The 14/29 in `docs/benchmarks.md` has no file behind it |
 
 ## Replacing one
@@ -22,5 +22,7 @@ cp evals/reports/<stamp>.json evals/baseline/behaviour.json
 cp evals/reports/<stamp>.md   evals/baseline/behaviour.md
 ```
 
-Then update the table above. One run is not a success rate: a baseline from a single run (the one here)
-is the honest starting point, not the standard — a ×3 run should replace it as soon as the machine is free.
+Then update the table above. One run is not a success rate, and three are barely one: the interval on six
+tasks is wide, and `compare` says so. The first baseline (2026-09-21, ×1, 3/6) was replaced the next day by
+a ×3 run — after the ×3 run itself turned up a false pass (an answer saying "the date is not shown" matched
+a check for 「日」 through 「日期」), which the check and the engine both now refuse.

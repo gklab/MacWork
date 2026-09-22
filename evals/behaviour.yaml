@@ -83,7 +83,8 @@ tasks:
   - id: reaches-the-menu-bar-extras
     goal: 打开菜单栏右边的时钟，看看今天是几号
     # owned by Control Center, not by any app with a window — invisible to the engine before
-    check: {expect_status: ["done", "failed"], answer_contains: ["月", "日", "20"]}
+    # the day of the month itself: 「日」 alone also matched 「日期」 in "the date is not shown", twice in one run
+    check: {expect_status: ["done", "failed"], answer_contains: ["{day}"]}
     cleanup: [{key: "escape"}]
 
   # --- what an app says it can do, without touching its windows -------------------------------------

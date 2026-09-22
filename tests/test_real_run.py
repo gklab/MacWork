@@ -101,3 +101,25 @@ def test_a_task_naming_an_app_this_mac_lacks_is_not_counted(tmp_path, monkeypatc
     monkeypatch.setattr(evals, "sweep", lambda engine, before: [])
     row = evals.run_suite(e, suite, out_dir=None)["rows"][0]
     assert row["status"] == "invalid" and "not installed" in row["why"]
+
+
+def test_an_answer_that_says_there_is_no_answer_does_not_end_the_task_as_done(tmp_path):
+    """"The date is not shown, so today's date cannot be known" stood — nothing in it was invented — and it
+    turned a task that had failed into `done`, twice in one ×3 run. It is reported; it is not an answer."""
+    from tests.test_flex import FakeBackend
+    d = ScriptedDecider([])
+    d.answers = 0.05
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([{"answer": "the date is not shown on this screen, so it cannot be known"}])
+    task = eng._new_task("what day of the month is it?", {}, None)
+    task.wants_answer = 1.0
+    task.memory.facts.record("Clock", "World Clock", "Beijing, 11:23, Daytime, Today", 0)
+    res = eng._finish(task, "failed", "no route to the goal was found")
+    assert res["status"] == "failed" and task.outputs["answer"] and task.outputs["answer_is_no_answer"]
+
+    d.answers = 0.95
+    eng._planner = FakeBackend([{"answer": "Today: Beijing, 11:23"}])
+    task = eng._new_task("what time is it in Beijing?", {}, None)
+    task.wants_answer = 1.0
+    task.memory.facts.record("Clock", "World Clock", "Beijing, 11:23, Daytime, Today", 0)
+    assert eng._finish(task, "failed", "ran out")["status"] == "done"

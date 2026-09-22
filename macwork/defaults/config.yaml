@@ -353,6 +353,8 @@ engine:
     wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done
     interruption_is_the_task: 0.6   # below this, a prompt that turned up is in the way of the goal, not part of it
     answer_stands: 0.6           # an answer no screen holds word for word is reported only if it follows from what was seen
+    answer_answers: 0.5          # …and it counts as answering the goal only above this: "the date is not shown"
+                                 # is reported, but does not turn a task that ran out into `done`
     text_stands: 0.75            # …and text to type is held to more: the same value rewritten, never a new one
     serves_goal: 0.35            # leaving the app worked in (another app, a Shortcut, the web) must serve the stated goal
     goal_calls_for: 0.3          # a floor-gated action the goal does not call for is dropped instead of asking the user
