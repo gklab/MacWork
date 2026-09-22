@@ -55,3 +55,15 @@ def test_an_error_reply_is_matched_by_id_too(wire):
     with pytest.raises(HelperError) as raised:
         helper.call("ax.perform")
     assert raised.value.code == "stale_ref"
+
+
+def test_the_background_connection_reports_a_dead_helper_too(tmp_path):
+    """Two connections, one helper: when it dies, the element references handed to the foreground are
+    gone as well. The second connection had no `on_reset`, so a crash met there left every cache believed
+    valid. It is forwarded, not copied — the engine sets its handler after the helper object exists."""
+    helper = Helper(cfg(tmp_path))
+    bg = helper.background()
+    dropped = []
+    helper.on_reset = lambda: dropped.append("caches dropped")     # set afterwards, as the engine does
+    bg._reset()
+    assert dropped == ["caches dropped"]

@@ -147,3 +147,24 @@ def test_the_daemon_plist_says_what_it_should(tmp_path, monkeypatch):
     assert plist["ProgramArguments"][1:] == ["serve", "--transport", "streamable-http"]
     assert plist["KeepAlive"] == {"SuccessfulExit": False}, "come back from a crash, stay down after a clean stop"
     assert plist["ProcessType"] == "Interactive", "it drives the UI and must not be throttled"
+
+
+def test_what_the_cache_keeps_per_task_goes_with_the_task(tmp_path):
+    """The pictures of every screen a task saw — about 1.4 KB each, up to 200 — and the windows it asked to
+    read by sight were keyed on the task id and never collected: `_gc` dropped the task and left them."""
+    import time as _time
+    from macwork.engine import Engine
+    from macwork.model import Task
+    from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+    eng = Engine(cfg(tmp_path, config={"engine": {"tasks_ttl_s": 0.01, "persist": False}}),
+                 helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = Task(goal="look around")
+    eng.tasks[task.id] = task
+    eng.cache.setdefault("pictures", {})[task.id] = {"sig": b"..."}
+    eng.cache.setdefault("vision.wanted", {})[task.id] = {"w1"}
+    eng.cache["pictures"]["another-task"] = {}
+    _time.sleep(0.02)
+    eng._gc()
+    assert task.id not in eng.tasks
+    assert task.id not in eng.cache["pictures"] and task.id not in eng.cache["vision.wanted"]
+    assert "another-task" in eng.cache["pictures"], "only what belonged to the expired task"

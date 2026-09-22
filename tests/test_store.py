@@ -95,3 +95,39 @@ def test_the_file_is_private(tmp_path):
     path = tmp_path / "tasks.db"
     Store(cfg(tmp_path, config={"engine": {"store": str(path)}}))
     assert path.stat().st_mode & 0o777 == 0o600, "it holds what the tasks saw"
+
+
+def test_where_the_planner_was_asked_comes_back_hashable(tmp_path):
+    """`memory.consulted` is keyed on (screen, plan step, started). JSON has no tuples, and this was the one
+    set not rebuilt on the way back: a resumed task's first replan raised on `.add` of a list."""
+    task = _rich()
+    task.memory.consulted.add(("sig-a", 1, True))
+    after = load(dump(task))
+    assert after.memory.consulted == {("sig-a", 1, True)}
+    after.memory.consulted.add(("sig-b", 2, False))          # what the resumed task does next
+    assert ("sig-a", 1, True) in after.memory.consulted
+
+
+def test_time_already_spent_is_not_forgotten_on_the_way_back(tmp_path):
+    """`started` was set with `min(spent_s, 0.0)`, which is always 0.0: every task came back as if it had
+    just begun, and `seconds` in its result started over."""
+    after = load(dump(_rich()))          # 12.5 s of working time before the restart
+    assert after.result()["seconds"] >= 12.5
+
+
+def test_a_confirmation_given_after_a_restart_still_applies(tmp_path):
+    """The held action is a live element and is not stored — so a task picked up after a restart had the
+    caller's "yes" and nothing to apply it to: it looked again, chose the same action, and asked again.
+    What the yes is *for* is named when the question is asked, and that name survives."""
+    from macwork.model import Affordance
+    eng = Engine(cfg(tmp_path, config={"engine": {"store": str(tmp_path / "tasks.db")}}),
+                 helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = _rich()
+    task.held = Affordance("w3", "window", "press", "button 「Delete」", {"bundle_id": "com.apple.TextEdit"}, key="ax|AXButton|delete:")
+    eng._finish(task, "need_confirm", "this action is irreversible")
+    assert task.confirm_key == eng.approval_key(task.held)
+
+    back = load(dump(task))
+    assert back.held is None and back.confirm_key == task.confirm_key
+    eng.resume_approval(back)
+    assert eng.approval_key(task.held) in back.approved

@@ -43,7 +43,14 @@ CREATE INDEX IF NOT EXISTS tasks_updated ON tasks (updated);
 
 # Rebuilt from their own fields; anything not listed is a plain value.
 _PARTS = {"pace": Pace, "memory": Memory, "desktop": Desktop}
-_SETS = {"approved", "no_effect", "expanded", "screens_seen", "declined", "yielded"}
+_SETS = {"approved", "no_effect", "expanded", "screens_seen", "declined", "yielded", "consulted"}
+
+
+def _as_set(items: list[Any]) -> set[Any]:
+    """A set read back from JSON. JSON has no tuples, so a tuple went out as a list and has to come back as
+    a tuple to be hashable again — `memory.consulted` is keyed on (screen, plan step, started), and it was
+    the one set left off the list: a resumed task's first replan raised on `.add` of a list."""
+    return {tuple(x) if isinstance(x, list) else x for x in items}
 
 
 def _plain(value: Any) -> Any:
@@ -95,12 +102,12 @@ def load(text: str) -> Task:
             for pf in fields(part):
                 if pf.name in value:
                     got = value[pf.name]
-                    setattr(part, pf.name, set(got) if pf.name in _SETS and isinstance(got, list) else got)
+                    setattr(part, pf.name, _as_set(got) if pf.name in _SETS and isinstance(got, list) else got)
             setattr(task, f.name, part)
         elif f.name == "steps":
             task.steps = [Step(**{k: v for k, v in s.items() if k in {x.name for x in fields(Step)}}) for s in value]
         elif f.name in _SETS and isinstance(value, list):
-            setattr(task, f.name, set(value))
+            setattr(task, f.name, _as_set(value))
         else:
             setattr(task, f.name, value)
     facts = (state.get("memory") or {}).get("facts") or {}
@@ -113,7 +120,9 @@ def load(text: str) -> Task:
     if isinstance(desktop.initial_windows, dict):
         desktop.initial_windows = {int(k): set(v) for k, v in desktop.initial_windows.items()}
     desktop.opened = {int(k): v for k, v in (desktop.opened or {}).items()}
-    task.started = time.monotonic() - min(task.spent_s, 0.0)   # the monotonic clock restarted with the process
+    # The monotonic clock restarted with the process: the task began `spent_s` of working time ago as far as
+    # it can tell. (`min` was written here; it is always 0.0, and every task came back having taken no time.)
+    task.started = time.monotonic() - max(task.spent_s, 0.0)
     return task
 
 

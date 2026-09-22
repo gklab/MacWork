@@ -104,7 +104,17 @@ class Helper:
         with self._bg_lock:
             if self._bg is None:
                 self._bg = Helper(self.cfg)
+                # In socket mode both connections are one helper: when it dies, every element reference the
+                # foreground holds is gone too, and the second connection had no `on_reset`, so a crash met
+                # there left every cache believed valid. (In stdio mode it is a second child, and dropping
+                # the caches is only over-cautious.) Forwarded, not copied: the engine sets its handler
+                # after this object exists.
+                self._bg.on_reset = self._forward_reset
             return self._bg
+
+    def _forward_reset(self) -> None:
+        if self.on_reset is not None:
+            self.on_reset()
 
     def close(self) -> None:
         with self._bg_lock:

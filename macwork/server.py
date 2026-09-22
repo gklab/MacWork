@@ -116,9 +116,10 @@ def build(cfg: Config | None = None, engine: Engine | None = None) -> Any:
         return {**res, **note}
 
     @mcp.tool()
-    async def mac_status() -> dict[str, Any]:
-        """Helper permissions, decider, cost so far, dry-run state."""
-        return await anyio.to_thread.run_sync(eng.status)
+    async def mac_status(task_id: str | None = None) -> dict[str, Any]:
+        """Helper permissions, decider, cost so far, queue, dry-run state — or, with a task_id (from mac_submit
+        or mac_do), that task: its status, result so far, and its place in the queue while it waits."""
+        return await anyio.to_thread.run_sync(lambda: eng.status(task_id))
 
     return mcp
 

@@ -384,6 +384,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             self._done_events.pop(task_id, threading.Event()).set()
         return {"task_id": task_id, "cancelled": True, "was_queued": dropped}
 
+    # What the cache keeps per task, keyed on the task id. Collected with the task: the pictures alone are
+    # about 1.4 KB a screen, up to 200 screens, and nothing dropped them for the life of the process.
+    PER_TASK_CACHES = ("pictures", "vision.wanted")
+
     def _gc(self) -> None:
         ttl = float(self.cfg.get("engine.tasks_ttl_s", 1800))
         for tid, t in list(self.tasks.items()):
@@ -391,6 +395,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 self.tasks.pop(tid, None)
                 self._redactors.pop(tid, None)
                 self._cancelled.discard(tid)   # else the set grows for the life of the process
+                for key in self.PER_TASK_CACHES:
+                    (self.cache.get(key) or {}).pop(tid, None)
         self.store.sweep()
 
     def exclusive(self) -> bool:
@@ -438,6 +444,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             if status in ("failed", "need_continue") and task.outputs.get("answer"):
                 task.outputs["unfinished_but_answered"] = reason
                 status, reason, answered_anyway = "done", "the question is answered from what the task saw", ""
+        if status == "need_confirm" and task.held is not None and not task.confirm_key:
+            # What the "yes" will be for, by name. The held action itself is a live element and is not
+            # stored; a task picked up after a restart had the caller's confirmation and nothing to apply it
+            # to, looked again, chose the same action, and asked the same question a second time.
+            task.confirm_key = self.approval_key(task.held)
         task.status, task.reason, task.pending = status, reason, pending or {}
         task.updated = time.time()
         self.store.save(task)
@@ -573,7 +584,18 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             return False
         return True
 
-    def status(self) -> dict[str, Any]:
+    def status(self, task_id: str | None = None) -> dict[str, Any]:
+        """The engine's state — or, given a task id, that task's: its result so far and where it is in the
+        queue. `submit` hands back an id and says "follow it with status", and status took no id."""
+        if task_id is not None:
+            task = self.tasks.get(task_id) or self._recall(task_id)
+            if task is None:
+                return {"task_id": task_id, "error": "unknown or expired task"}
+            out = task.result()
+            place = next((q for q in self.queue() if q["task_id"] == task_id), None)
+            if place is not None:
+                out["position"] = place["position"]
+            return out
         out: dict[str, Any] = {"config": str(self.cfg.get("helper.mode"))}
         try:
             ping = self.helper.call("ping", timeout=5)

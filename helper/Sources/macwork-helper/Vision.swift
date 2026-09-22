@@ -69,6 +69,28 @@ func ocrLanguages() -> [String] {
     return out.isEmpty ? ["en-US"] : out
 }
 
+/// Which of ``screens`` a window is on, for its backing scale: the one holding its centre, else the one it
+/// overlaps most, else none.
+///
+/// ``frame`` is the window's frame as CoreGraphics and ScreenCaptureKit report it — origin at the top-left of
+/// the primary display, y downwards — and ``screens`` are AppKit's, origin at the bottom-left of the primary
+/// display, y upwards. The two were compared as if they were one space. On the primary display they
+/// coincide by accident (both span the same y range), so it worked there; a window on a display above the
+/// primary has a negative y in one and a y above the primary's height in the other, matched no screen, and
+/// was captured at the primary's scale — every OCR box, and every click derived from one, off by that ratio.
+func screenIndex(forWindow frame: CGRect, screens: [CGRect]) -> Int? {
+    guard let primary = screens.first else { return nil }        // AppKit puts the primary display first, at (0, 0)
+    let flipped = CGRect(x: frame.minX, y: primary.maxY - frame.maxY, width: frame.width, height: frame.height)
+    let centre = CGPoint(x: flipped.midX, y: flipped.midY)
+    if let i = screens.firstIndex(where: { $0.contains(centre) }) { return i }
+    let overlaps = screens.map { s -> CGFloat in
+        let r = s.intersection(flipped)
+        return r.isNull ? 0 : r.width * r.height
+    }
+    guard let best = overlaps.indices.max(by: { overlaps[$0] < overlaps[$1] }), overlaps[best] > 0 else { return nil }
+    return best
+}
+
 /// The on-screen window of ``pid`` closest to ``near`` (the AX frame), or its largest one.
 private func captureWindow(pid: pid_t, near: CGRect?, maxWidth: CGFloat? = nil) throws -> (CGImage, CGRect) {
     try runAsync(timeout: 8) {
@@ -80,13 +102,8 @@ private func captureWindow(pid: pid_t, near: CGRect?, maxWidth: CGFloat? = nil) 
         guard let win = pick else { throw RPCError("no_window", "no on-screen window for pid \(pid)") }
         // the screen the window's centre is on: "the first screen it touches" gets a window straddling a
         // Retina and a non-Retina display captured at the wrong scale, and every OCR box lands off by a factor
-        let centre = CGPoint(x: win.frame.midX, y: win.frame.midY)
-        func overlap(_ s: NSScreen) -> CGFloat {
-            let r = s.frame.intersection(win.frame)
-            return r.isNull ? 0 : r.width * r.height
-        }
-        let screen = NSScreen.screens.first(where: { $0.frame.contains(centre) })
-            ?? NSScreen.screens.max(by: { overlap($0) < overlap($1) })
+        let screens = NSScreen.screens
+        let screen = screenIndex(forWindow: win.frame, screens: screens.map { $0.frame }).map { screens[$0] }
         var scale = screen?.backingScaleFactor ?? 2
         if let w = maxWidth { scale = min(scale, w / win.frame.width) }   // a glance needs no detail: let the capture shrink it
         let cfg = SCStreamConfiguration()

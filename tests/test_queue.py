@@ -152,3 +152,20 @@ def test_the_worker_is_not_left_behind_when_there_is_nothing_to_do(eng):
             break
         time.sleep(0.01)
     assert eng._worker is None
+
+
+def test_a_handed_in_task_can_be_followed_by_its_id(eng):
+    """`submit` said "follow it with status", and status took no id."""
+    eng.hold.clear()
+    first = eng.submit("first")["task_id"]
+    second = eng.submit("second")["task_id"]
+    time.sleep(0.05)
+    waiting = eng.status(second)
+    assert waiting["task_id"] == second and waiting["status"] == "queued" and waiting["position"] == 2
+    eng.hold.set()
+    for _ in range(200):
+        if eng.status(first).get("status") == "done":
+            break
+        time.sleep(0.01)
+    assert eng.status(first)["status"] == "done" and "position" not in eng.status(first)
+    assert eng.status("nobody")["error"] == "unknown or expired task"
