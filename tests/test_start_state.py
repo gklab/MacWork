@@ -229,3 +229,34 @@ def test_a_run_that_starts_with_what_an_earlier_task_left_is_not_counted(tmp_pat
     assert "started with what an earlier task left: com.apple.SystemProfiler" in row["why"]
     assert any(w["id"] == 11 for w in stuck.windows), "a window of the app the task is checked in is that task's business"
     assert evals._summary("s", "x", [row], 1)["runs_started_dirty"] == 1
+
+
+class Stubborn(Mac):
+    """An app an earlier task opened is still up, and quits only when it is forced."""
+
+    def call(self, method, **p):
+        if method == "apps.quit":
+            self.calls.append((method, p))
+            if p.get("force"):
+                self.apps = [a for a in self.apps if a["pid"] != p["pid"]]
+            return {"terminated": bool(p.get("force"))}
+        return super().call(method, **p)
+
+
+def test_a_quit_forced_before_a_run_is_counted_however_the_run_ended(tmp_path, monkeypatch):
+    """The sweep before a task can force-quit an app an earlier task left. The count went only into the rows
+    of runs that finished, or started dirty: a run that then ended as an error dropped it from the report."""
+    import types
+    monkeypatch.setattr(evals.time, "sleep", lambda s: None)
+    monkeypatch.setattr(evals, "_discard_prompt", lambda *a, **k: False)
+    left = {"pid": 99, "name": "Leftover", "bundle_id": "com.example.leftover", "regular": True}
+    eng = Harnessed(Stubborn([DOC], [TEXTEDIT, left]), tmp_path)
+
+    def fell_back(goal, *a, **k):      # the decider in front could not answer, and the next one took over
+        eng.decider = types.SimpleNamespace(name="local", calls=1, cost_usd=0.0, last_ms=1.0)
+        return {"status": "done", "task_id": "t", "steps": [], "decider": {"calls": 1, "cost_usd": 0.0}}
+    eng.do = fell_back
+    row = evals._run_task(eng, {"fresh": False}, {"id": "t1", "goal": "anything", "check": {}}, 0, 1, lambda m: None,
+                          ({1: {10}}, {1}))
+    assert row["status"] == "error" and row.get("forced_quits") == ["com.example.leftover"], row
+    assert evals._summary("s", "x", [row], 1)["forced_quits"] == 1

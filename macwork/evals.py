@@ -966,9 +966,13 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
     eval_dir = str(_sandbox(engine, task)) if suite.get("sandbox") else ""
     t = _sub(task, eval_dir)
     progress(f"[{t['id']}{f' #{n + 1}' if runs > 1 else ''}] {t['goal']}")
-    base = {"id": t["id"], "run": n + 1, "category": t.get("category", ""), "app": t.get("app") or "", "goal": t["goal"],
-            "task_sha": _task_sha(task)}      # the definition as the suite gives it: what `compare` pairs by
+    # Bundle ids the harness had to force-quit, before this task ran (what an earlier task left) or after it.
+    # Every row of the run carries it, however the run ended: a run that became an error row after the sweep
+    # before it had forced a quit dropped that quit from the report.
     forced: list[str] = []
+    base = {"id": t["id"], "run": n + 1, "category": t.get("category", ""), "app": t.get("app") or "", "goal": t["goal"],
+            "task_sha": _task_sha(task),      # the definition as the suite gives it: what `compare` pairs by
+            "forced_quits": forced}
     phase: dict[str, float] = {}                  # where the harness itself spends time (not counted in "seconds")
     mark = [time.monotonic()]
 
@@ -1001,7 +1005,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         if left:
             progress(f"   INVALID started with what an earlier task left: {', '.join(left)} (not counted)")
             return base | {"status": "invalid", "passed": False, "valid": False, "why": f"started with what an earlier task left: {', '.join(left)}",
-                           "started_dirty": left, "forced_quits": forced, "reason": "", "steps": 0, "seconds": 0.0,
+                           "started_dirty": left, "reason": "", "steps": 0, "seconds": 0.0,
                            "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
         before = _desktop(engine)          # after setup: what the task itself must leave as it found it
         # a prompt above every window that was not there when the suite began — an earlier task's doing, and
@@ -1109,7 +1113,6 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                       "harness_s": phase, "left_by_engine": left_by_engine,
                       "on_screen_before": [d["title"] or d["app"] for d in above],   # a prompt from an earlier task, still up: not a clean run
                       "left_after_sweep": [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in stuck],
-                      "forced_quits": forced,                                  # bundle ids the sweep had to force
                       "planner": res.get("planner"), "timing": res.get("timing")}
         if elsewhere:        # says nothing either way: not counted, and reported apart (stopped_by_the_floor)
             row |= {"status": "not_reached", "ended": res.get("status"), "passed": False, "valid": False, "why": elsewhere}
