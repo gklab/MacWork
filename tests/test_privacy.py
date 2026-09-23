@@ -142,3 +142,14 @@ def test_what_was_left_in_place_is_counted_by_kind(tmp_path):
     sent = r.value(["open app Safari", "来自北京的消息", "menu Keynote讲演 ▸ 设置…"], tally=tally)
     assert sent == ["open app Safari", "来自⟦PLACE_1⟧的消息", "menu Keynote讲演 ▸ 设置…"]
     assert tally == {"glued": {"PERSON": 1}, "replaced_glued": {"PLACE": 1}, "in_a_name": {"PERSON": 1}}
+
+
+# --- privacy-check ------------------------------------------------------------------------------------
+
+def test_privacy_check_writes_nothing_to_the_real_audit(tmp_path):
+    """Its through-the-gate pass wrote every corpus request into the engine's audit log, as a task called ''."""
+    from macwork import privacycheck
+    c = cfg(tmp_path)
+    res = privacycheck.run(c, lambda ts: [[] for _ in ts], ["Safari"])
+    assert res["through_the_gate"]["requests"] == len(privacycheck.corpus())
+    assert not (tmp_path / "audit.jsonl").exists()

@@ -162,3 +162,53 @@ def test_what_a_step_changed_is_never_told_with_a_word_cut_in_two():
     assert change.describe() == ("window 「Downloads」 → 「The Unarchiver finished…」, "
                                  "appeared: The Unarchiver finished extracting the…")
     assert change.describe(60) == "window 「Downloads」 → 「The Unarchiver finished…」, appeared:…"
+
+
+# --------------------------------------------------------------------------- measured, not trusted
+
+def test_privacy_check_measures_one_task_not_one_text(monkeypatch, tmp_path):
+    """privacy-check gave every text a fresh redactor, so what one text taught could never show up in another —
+    where redaction went wrong on a real Mac. One task's worth of text now goes through one redactor, and each
+    count stands beside what raw substring replacement of the same learned values would have sent."""
+    from macwork import privacycheck
+    monkeypatch.setattr(privacycheck, "VALUES", {**privacycheck.VALUES, "person": ["王芳", "Emily Johnson"]})
+    monkeypatch.setattr(privacycheck, "GIVEN", ["一诺", "语嫣"])      # from a message, and from a bare label
+    names = ["王芳", "Emily Johnson", "一诺", "语嫣", "Safari"]
+
+    def ents(texts):     # a name where it stands apart, never glued: a tagger that misses names in running text
+        stands = lambda n, t: any(f"{a}{n}{b}" in f" {t} " for a in " ：:" for b in " ：:")   # noqa: E731
+        return [[{"type": "PERSON", "text": n} for n in names if stands(n, t)] for t in texts]
+    cfg = Config.load(overrides={"config": {"audit": {"path": str(tmp_path / "a.jsonl")}}})
+    one = privacycheck.run(cfg, ents, ["Safari", "小红鼠VPN"])["one_task"]
+    by = {group: (n["leaked"], n["leaked_as_substrings"]) for group, n in one["by_probe"].items()}
+    assert by["glued"] == (0, 0) and by["one_letter_ending"] == (0, 0)
+    assert by["given_from_a_message"] == (0, 0)
+    assert by["camel_case"] == (1, 0)                 # 「Emily JohnsonNotes.txt」: the price of whole words, shown
+    assert by["given_from_a_label"] == (3, 0)         # 「语嫣」: not a name alone, never seen in running text
+    assert one["app_names_hidden_by_mistake"] == 0
+
+
+def test_a_recorded_task_is_replayed_through_one_redactor():
+    from macwork import privacycheck
+    requests = [{"state": {"goal": "open Safari", "app": "Finder"},
+                 "questions": {"action": {"criteria": {
+                     "g0": "look into the service actions (2 options: 「Add to Reading List」 — a Service of Saf, …)",
+                     "a1": "open app Safari浏览器 (Safari)"}}}}] * 2
+    out = privacycheck.replay(Config.load(), tagger({"a Service of Saf": [("Saf", "PERSON")]}), ["Finder"], None, requests)
+    assert out["looks"] == 2 and out["inside_words"] == 0 and out["goal_changed"] == 0
+    assert out["kept"]["glued"] == {"PERSON": 6}      # Saf inside 「Safari」, three times a look, left whole
+
+
+def test_a_task_is_read_back_from_the_audit_log_oldest_file_first(tmp_path):
+    """The log rotates at 64 MB into audit.1.jsonl, audit.2.jsonl …, the highest number the oldest."""
+    from macwork import privacycheck
+
+    def step(n, task="t1", kind="decide", questions=None):
+        return json.dumps({"ts": n, "kind": kind, "task": task, "state": {"n": n},
+                           "questions": questions if questions is not None else {"action": {"criteria": {}}}}) + "\n"
+    (tmp_path / "audit.2.jsonl").write_text(step(1) + step(2, task="t2"), encoding="utf-8")
+    cut_short = step(7)[:40] + "\n"                   # a line the log was writing when it was read
+    (tmp_path / "audit.1.jsonl").write_text(step(3, kind="answers") + step(4) + cut_short, encoding="utf-8")
+    (tmp_path / "audit.jsonl").write_text(step(5, questions={"floor": {}}) + step(6), encoding="utf-8")
+    got = [rec["state"]["n"] for rec in privacycheck.recorded(tmp_path / "audit.jsonl", "t1")]
+    assert got == [1, 4, 6]
