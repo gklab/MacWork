@@ -378,14 +378,28 @@ def cmd_skills(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_eval(cfg: Config, args: argparse.Namespace) -> int:
+    from .evals import report_from, run_suite
+
+    out = Path(args.out) if args.out else ROOT / "evals" / "reports"
+    if args.report_from:
+        # one report from the rows of runs already made: a run stopped half way and the rest of it, say
+        try:
+            report = report_from([Path(x) for x in args.report_from], out)
+        except (OSError, ValueError) as exc:
+            print(f"no report: {exc}", file=sys.stderr)
+            return 2
+        _print(report["summary"])
+        return 0
     from .engine import Engine
-    from .evals import run_suite
 
     suite = Path(args.suite) if args.suite else ROOT / "evals" / "unseen.yaml"
     report = run_suite(Engine(cfg), suite, [x for x in (args.only or "").split(",") if x] or None,
-                       Path(args.out) if args.out else ROOT / "evals" / "reports", progress=lambda m: print(m, file=sys.stderr),
-                       repeat=args.repeat)
+                       out, progress=lambda m: print(m, file=sys.stderr),
+                       repeat=args.repeat, same_draw=Path(args.same_draw) if args.same_draw else None)
     _print(report["summary"])
+    if report["summary"].get("interrupted"):
+        print(f"\ninterrupted: the report holds what ran ({', '.join(report.get('files') or [])})", file=sys.stderr)
+        return 130
     if args.compare:
         # a total on its own reads like progress whether or not anything moved; this says which tasks did
         from .evals import baseline_for, compare, format_compare
@@ -432,7 +446,7 @@ def cmd_compare(cfg: Config, args: argparse.Namespace) -> int:
         _print(c)
     else:
         print(format_compare(c))
-    return 0
+    return 2 if c.get("refused") else 0
 
 
 def _swift_env() -> dict[str, str]:
@@ -627,6 +641,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--compare", nargs="?", const="baseline",
                    help="say which tasks moved against an earlier report.json, and whether that is more than chance; "
                         "with no path, against the committed baseline for the suite (evals/baseline/)")
+    p.add_argument("--report-from", nargs="+", metavar="ROWS",
+                   help="build one report from the <stamp>.rows.jsonl files of runs already made (one suite, one commit); runs nothing")
+    p.add_argument("--same-draw", metavar="REPORT",
+                   help="a sampled suite takes exactly the apps this earlier report drew, so the two runs can be paired")
     p = sub.add_parser("profile", help="where a step's time goes and how many steps were wasted (reads the task store)")
     p.add_argument("-n", type=int, default=50, help="how many recent tasks to read")
     p.add_argument("--json", action="store_true")

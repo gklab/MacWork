@@ -181,3 +181,51 @@ def test_an_app_the_run_launched_is_asked_to_quit_before_it_is_forced(tmp_path, 
     forced: list[str] = []
     evals.sweep(Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([])), ({}, {42, 7}), forced)
     assert forced == ["x.stubborn"], "a forced quit is counted, by bundle id"
+
+
+class Harnessed:
+    """Enough of an engine for the harness to run one task on the Mac fake: `do` records that it ran."""
+
+    class Decider:
+        name, calls, cost_usd, last_ms = "jev", 0, 0.0, 1.0
+
+    def __init__(self, mac, tmp_path):
+        self.helper, self.cfg = mac, cfg(tmp_path, config={"engine": {"activate_wait_s": 0.05}})
+        self.decider, self.cache, self.models, self.tasks, self.ran = self.Decider(), {}, None, {}, []
+
+    def _host_bundles(self):
+        return set()
+
+    def _resolve_app(self, hint, running):
+        return next((a for a in running if a.get("bundle_id") == hint), None) if hint else None
+
+    def do(self, goal, *a, **k):
+        self.ran.append(goal)
+        return {"status": "done", "task_id": "t", "steps": ["a step"], "decider": {"calls": 1, "cost_usd": 0.0}}
+
+    def feedback(self, *a, **k): ...
+    def tidy(self, *a, **k): return {}
+
+
+def test_a_run_that_starts_with_what_an_earlier_task_left_is_not_counted(tmp_path, monkeypatch):
+    """Decided before the task runs, whatever it then does: the sweep closes what it can of what an earlier
+    task left, and a run that still starts with some of it is not a clean run. The task's own app is its own."""
+    monkeypatch.setattr(evals.time, "sleep", lambda s: None)
+    monkeypatch.setattr(evals, "_discard_prompt", lambda *a, **k: False)
+    suite = {"fresh": False}
+    task = {"id": "d-chip", "goal": "what chip does this Mac have?", "check": {"expect_status": ["done"]}}
+    note = {"pid": 1, "id": 11, "owner": "TextEdit", "layer": 0, "alpha": 1, "frame": [50, 50, 500, 400], "on_screen": True}
+
+    closable = Mac([DOC, ABOUT], [TEXTEDIT, SYSINFO], nodes={88: ABOUT_NODES})
+    eng = Harnessed(closable, tmp_path)
+    row = evals._run_task(eng, suite, task, 0, 1, lambda m: None, ({1: {10}}, {1}))
+    assert closable.pressed() == ["a2"] and eng.ran and row["status"] == "done" and not row.get("started_dirty")
+
+    stuck = Mac([DOC, ABOUT, note], [TEXTEDIT, SYSINFO], nodes={88: ABOUT_NODES[:1]})      # no close button
+    eng = Harnessed(stuck, tmp_path)
+    row = evals._run_task(eng, suite, task | {"check_app": "com.apple.TextEdit"}, 0, 1, lambda m: None, ({1: {10}}, {1}))
+    assert not eng.ran, "the task ran on a screen an earlier task had left"
+    assert row["status"] == "invalid" and not row["valid"] and row["started_dirty"] == ["com.apple.SystemProfiler"]
+    assert "started with what an earlier task left: com.apple.SystemProfiler" in row["why"]
+    assert any(w["id"] == 11 for w in stuck.windows), "a window of the app the task is checked in is that task's business"
+    assert evals._summary("s", "x", [row], 1)["runs_started_dirty"] == 1

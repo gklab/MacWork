@@ -127,7 +127,7 @@ def test_a_task_naming_an_app_this_mac_lacks_is_not_counted(tmp_path, monkeypatc
     monkeypatch.setattr(evals, "_launch", lambda engine, hint: None)
     monkeypatch.setattr(evals, "_locked", lambda engine: False)
     monkeypatch.setattr(evals, "_desktop", lambda engine: ({}, set()))
-    monkeypatch.setattr(evals, "sweep", lambda engine, before: [])
+    monkeypatch.setattr(evals, "sweep", lambda engine, before, forced=None: [])
     row = evals.run_suite(e, suite, out_dir=None)["rows"][0]
     assert row["status"] == "invalid" and "not installed" in row["why"]
 

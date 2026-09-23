@@ -33,9 +33,15 @@ message, and cannot be paired with anything now. A baseline that is in the repos
   `9777a7ba417c5e43` when its baseline was taken and hashes differently since the dated fixes above;
   `sampled.yaml` was `b5e3caf936dccecd` then and is `6265362290556c9a` now, and its baseline drew six apps of
   which two are installed here. Neither can be paired with a run on this Mac.
-- **A before and after is taken locally, on this Mac, with the same suite file.** Run the same `--only` tasks
-  before and after a change (`macwork eval --suite evals/v2.yaml --only a,b --repeat 3`), then
-  `macwork compare <before>.json <after>.json`.
+- **A before and after is taken locally, on this Mac.** Run the same `--only` tasks before and after a change
+  (`macwork eval --suite evals/v2.yaml --only a,b --repeat 3`), then `macwork compare <before>.json <after>.json`.
+  Since 2026-09-24 each row carries the hash of its task's own definition (`task_sha`), and `compare` pairs a
+  task only with a run of the same definition: a dated fix to one task leaves every other task pairable, and
+  a report older than that is paired by task id, with the suites' difference said. A sampled suite is drawn
+  again with `--same-draw <before>.json`, and `compare` refuses runs that share no task. Each run's rows are
+  kept in `<stamp>.rows.jsonl` as it goes: a run stopped with Ctrl-C still writes its report, marked
+  INTERRUPTED with the command for the rest, and `macwork eval --report-from <rows files>` makes one report
+  of a run and its rest (same suite, same commit).
 
 ## Replacing one
 

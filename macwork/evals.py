@@ -488,13 +488,16 @@ def _quit_launched(engine: Engine, item: dict[str, Any], forced: list[str] | Non
             forced.append(str(item.get("bundle_id") or item["app"]))
 
 
-def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]], forced: list[str] | None = None) -> list[dict[str, Any]]:
+def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]], forced: list[str] | None = None,
+          among: Callable[[dict[str, Any]], bool] | None = None) -> list[dict[str, Any]]:
     """The harness puts the desktop back as the task found it, whatever the engine left: new apps are quit
     (politely, then forced, each forced one added to `forced`), new windows closed by their own close button,
     and dialogs without one dismissed with Escape — only once the keyboard is verifiably at them. A window of
-    a process with no Dock icon is closed by its own close button or not at all. Returns what could not be
-    removed."""
-    left = _leftovers(engine, before)
+    a process with no Dock icon is closed by its own close button or not at all. `among` limits it to the
+    leftovers it accepts. Returns what could not be removed."""
+    def leftovers() -> list[dict[str, Any]]:
+        return [x for x in _leftovers(engine, before) if among is None or among(x)]
+    left = leftovers()
     if not left:
         return []
     wait = float(engine.cfg.get("engine.activate_wait_s", 1.5))
@@ -544,7 +547,7 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]], forced: 
                     break
         except Exception as exc:  # noqa: BLE001  (best effort; what stays is reported)
             log_harness(f"sweep {item['app']}: {exc}")
-    return _leftovers(engine, before)
+    return leftovers()
 
 
 def _alive(engine: Engine, pid: int) -> bool:
@@ -617,37 +620,47 @@ def _opens_text(app_path: str) -> bool:
 
 
 def sampled_tasks(engine: Engine, suite: dict[str, Any], installed: list[dict[str, Any]] | None = None,
-                  named: str | None = None) -> list[dict[str, Any]]:
+                  named: str | None = None, draw: list[str] | None = None) -> list[dict[str, Any]]:
     """Tasks the suite's templates make of apps this repository has never named, drawn from what is installed.
 
     A suite that names apps is a suite the engine was built beside, and a number on it says how well the
     engine does on apps its authors looked at. Generalisation is the other number: apps nobody here ever
     mentioned, chosen by the Mac, grouped by what they are built with. The engine sees a goal naming an
     app, as it would from any user; it never sees the list.
+
+    `draw`: the bundle ids an earlier run drew, taken again exactly — those of them that are installed, in
+    that order — whatever this repository has named since. A fresh draw after a commit that mentions one of
+    the apps is a different set of apps, and a run on it cannot be paired with the one before.
     """
     import random
     from .observe import installed_apps
 
     conf = suite.get("sample") or {}
-    named = _named_anywhere() if named is None else named
     apps = installed if installed is not None else installed_apps(engine.cfg, engine.helper)
-    fresh = [a for a in apps if a.get("bundle_id") and a.get("path") and a.get("name") and _for_people(a["path"])
-             and str(a["bundle_id"]).casefold() not in named
-             and not re.search(r"(?<!\w)" + re.escape(str(a["name"]).casefold()) + r"(?!\w)", named)]
-    for a in fresh:
-        a["toolkit"] = _toolkit(a["path"])
-    rng = random.Random(int(conf.get("seed", 0)))
-    rng.shuffle(fresh)
-    # spread the draw over toolkits: a Mac with forty AppKit apps and two Electron ones should still show both
-    by_kind: dict[str, list[dict[str, Any]]] = {}
-    for a in fresh:
-        by_kind.setdefault(a["toolkit"], []).append(a)
-    drawn: list[dict[str, Any]] = []
-    want = int(conf.get("apps", 6))
-    while len(drawn) < want and any(by_kind.values()):
-        for kind in sorted(by_kind):
-            if by_kind[kind] and len(drawn) < want:
-                drawn.append(by_kind[kind].pop(0))
+    if draw is not None:
+        by_id = {str(a.get("bundle_id")): a for a in apps if a.get("bundle_id") and a.get("path") and a.get("name")}
+        drawn = [by_id[b] for b in dict.fromkeys(str(x) for x in draw) if b in by_id]
+        for a in drawn:
+            a["toolkit"] = _toolkit(a["path"])
+    else:
+        named = _named_anywhere() if named is None else named
+        fresh = [a for a in apps if a.get("bundle_id") and a.get("path") and a.get("name") and _for_people(a["path"])
+                 and str(a["bundle_id"]).casefold() not in named
+                 and not re.search(r"(?<!\w)" + re.escape(str(a["name"]).casefold()) + r"(?!\w)", named)]
+        for a in fresh:
+            a["toolkit"] = _toolkit(a["path"])
+        rng = random.Random(int(conf.get("seed", 0)))
+        rng.shuffle(fresh)
+        # spread the draw over toolkits: a Mac with forty AppKit apps and two Electron ones should still show both
+        by_kind: dict[str, list[dict[str, Any]]] = {}
+        for a in fresh:
+            by_kind.setdefault(a["toolkit"], []).append(a)
+        drawn = []
+        want = int(conf.get("apps", 6))
+        while len(drawn) < want and any(by_kind.values()):
+            for kind in sorted(by_kind):
+                if by_kind[kind] and len(drawn) < want:
+                    drawn.append(by_kind[kind].pop(0))
     out = []
     for tpl in suite.get("templates") or []:
         for a in drawn:
@@ -682,8 +695,113 @@ def _error_row(t: dict[str, Any], why: str) -> dict[str, Any]:
             "why": why, "reason": why, "steps": 0, "seconds": 0.0, "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
 
 
+# How long an interrupted run waits for the task it cancelled to let go of the Mac before sweeping. A cancel is
+# read between steps, and a planner call in flight is not stopped by it: a plan from this Mac's local model took
+# 8 to 21 s in the replays of 09-23 (scratchpad ab.py). Past this the sweep runs anyway, and says so.
+STOP_WAIT_S = 20.0
+
+
+def _task_sha(task: dict[str, Any]) -> str:
+    """The task's own definition, hashed: what `compare` pairs a task by. A suite's hash changes with every
+    dated fix to any of its tasks, and a comparison refused on it would orphan every earlier report."""
+    return hashlib.sha256(json.dumps(task, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+def _keep(path: Path | None, record: dict[str, Any]) -> None:
+    """One line of a run's rows file, on disk before the next task starts (flushed and synced)."""
+    if path is None:
+        return
+    import os
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(_no_home(json.dumps(record, ensure_ascii=False, default=str)) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _environment(engine: Engine, start: Any = None) -> dict[str, Any]:
+    """What a run was measured on: the commit (and a hash of the diff when the tree is not clean), the Mac's
+    model and macOS, its interface languages, the decider and the planner as configured, the host's bundle ids
+    and how many windows were up at the start. Counts and bundle ids only — a report is committed as a baseline,
+    so never a window title and never the list of the person's apps. Nothing here builds a decider or a
+    planner (building one can fail), and an engine that has no helper is described as far as it can be."""
+    import platform
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+
+    def run(*cmd: str) -> str:
+        try:
+            out = getattr(subprocess.run(list(cmd), cwd=root, capture_output=True, timeout=20, check=False), "stdout", b"")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return ""
+        return out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out or "")
+
+    cfg = getattr(engine, "cfg", None)
+
+    def get(key: str, default: Any = None) -> Any:
+        return cfg.get(key, default) if cfg is not None else default
+
+    env: dict[str, Any] = {"commit": run("git", "rev-parse", "--short=12", "HEAD").strip() or None}
+    diff = run("git", "diff", "HEAD")
+    if diff:
+        env["tree"] = "dirty " + hashlib.sha256(diff.encode("utf-8")).hexdigest()[:12]
+    env["hw_model"] = run("sysctl", "-n", "hw.model").strip() or None
+    env["macos"] = platform.mac_ver()[0] or None
+    try:
+        env["languages"] = [str(x) for x in (engine.system() or {}).get("languages") or []]
+    except Exception:  # noqa: BLE001  (an engine with no helper to ask)
+        env["languages"] = []
+    decider = getattr(engine, "_decider", None)        # never `engine.decider`: that builds one
+    env["decider"] = {"kind": get("decider.kind"), "using": getattr(decider, "name", None) if decider is not None else None,
+                      "model": get("decider.model")}
+    kind, built = get("planner.kind"), getattr(engine, "_planner", None)
+    planner: dict[str, Any] = {"kind": kind}
+    if built not in (None, False):
+        planner |= {"using": getattr(built, "name", None), "model": getattr(built, "model", None) or None}
+    elif kind == "auto":
+        planner["order"] = list(get("planner.auto_order") or [])
+    else:
+        planner["model"] = ((get("planner.endpoints") or {}).get(kind) or {}).get("model") or \
+            (get("planner.anthropic.model") if kind == "anthropic" else None)
+    env["planner"] = planner
+    try:
+        env["host"] = sorted(engine._host_bundles())
+    except Exception:  # noqa: BLE001
+        env["host"] = []
+    wins = start[0] if isinstance(start, tuple) and start and isinstance(start[0], dict) else {}
+    env["windows_at_start"] = sum(len(v) for v in wins.values())
+    return env
+
+
+def _draw_of(report_path: Path) -> list[str]:
+    """The apps an earlier sampled run drew, by bundle id, from its report: `summary.drawn`, or its rows."""
+    rep = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    drawn = [d.get("bundle_id") for d in (rep.get("summary") or {}).get("drawn") or [] if d.get("bundle_id")]
+    return drawn or list(dict.fromkeys(str(r["app"]) for r in rep.get("rows") or [] if r.get("app")))
+
+
+def _stop_running(engine: Engine, progress: Callable[[str], None]) -> None:
+    """Ctrl-C reaches the thread waiting on the task, not the worker driving it: the task is cancelled (it
+    stops between steps) and the Mac is waited on, so the sweep that follows does not work beside it."""
+    try:
+        for q in engine.queue():
+            engine.cancel(q["task_id"])
+    except Exception as exc:  # noqa: BLE001  (an engine with no queue has nothing running)
+        log_harness(f"could not cancel the running task: {exc}")
+    deadline = time.monotonic() + STOP_WAIT_S
+    busy = getattr(engine, "busy", lambda: False)
+    while busy() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if busy():
+        progress(f"   harness: the task is still driving the Mac after {STOP_WAIT_S:.0f} s; sweeping anyway")
+
+
 def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, out_dir: Path | None = None,
-              progress: Callable[[str], None] | None = None, repeat: int | None = None) -> dict[str, Any]:
+              progress: Callable[[str], None] | None = None, repeat: int | None = None,
+              same_draw: Path | None = None) -> dict[str, Any]:
+    """Run a suite and report it. Each row is written to `<out_dir>/<stamp>.rows.jsonl` as it finishes, and
+    the report is built from those rows: a v2 run of 09-23 finished 13 tasks, was stopped, and left no report
+    at all. Ctrl-C cancels the running task, sweeps, and still writes the report of what ran, marked
+    interrupted. `same_draw`: a sampled suite takes the apps an earlier report drew."""
     progress = progress or (lambda _m: None)
     raw = suite_path.read_bytes()
     suite = yaml.safe_load(raw.decode("utf-8"))
@@ -696,8 +814,10 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
         from .appmodel import AppModels
         engine.models = AppModels(engine.cfg)
         engine.cache["appmodels"] = engine.models
+    drawn = None
     if suite.get("templates"):
-        suite = {**suite, "tasks": sampled_tasks(engine, suite)}
+        suite = {**suite, "tasks": sampled_tasks(engine, suite, draw=_draw_of(same_draw) if same_draw else None)}
+        drawn = [{"bundle_id": b, "toolkit": k} for b, k in dict.fromkeys((t["app"], t["category"]) for t in suite["tasks"])]
         progress(f"sampled {len(suite['tasks'])} tasks on apps this repository has never named: "
                  + ", ".join(sorted({t['id'].split('--', 1)[1] + ' (' + t['category'] + ')' for t in suite['tasks']})))
     tasks = [t for t in suite.get("tasks", []) if not only or t["id"] in only]
@@ -707,20 +827,100 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
     conf["mode"] = "exclusive"      # an eval run owns the Mac: it types, switches apps and closes windows
     conf["start_in_front_app"] = False   # a task that names no app begins in none, not where the last one left the screen
     progress("this run takes over the screen and the keyboard until it finishes")
-    rows = []
     start = _desktop(engine)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    run = {"kind": "run", "suite": str(suite_path), "suite_sha256": hashlib.sha256(raw).hexdigest()[:16], "repeat": runs,
+           "only": list(only) if only else None, "tasks": [t["id"] for t in tasks], "env": _environment(engine, start),
+           "drawn": drawn, "started": time.strftime("%Y-%m-%d %H:%M:%S")}
+    kept = None
+    if out_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        kept = out_dir / f"{stamp}.rows.jsonl"
+        _keep(kept, run)
+        progress(f"rows are kept as each task finishes: {_no_home(str(kept))}")
+    rows: list[dict[str, Any]] = []
+    forced: list[str] = []
+    interrupted = None
     try:
-        for n in range(runs):
-            for t0_task in tasks:
-                rows.append(_run_task(engine, suite, t0_task, n, runs, progress, start))
+        try:
+            for n in range(runs):
+                for t0_task in tasks:
+                    row = _run_task(engine, suite, t0_task, n, runs, progress, start)
+                    rows.append(row)
+                    _keep(kept, {"kind": "row", "row": row})
+        except KeyboardInterrupt:
+            done = {}
+            for r in rows:
+                done[r["id"]] = done.get(r["id"], 0) + 1
+            interrupted = {"after_runs": len(rows), "of_runs": runs * len(tasks), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "rest": {t["id"]: runs - done.get(t["id"], 0) for t in tasks if done.get(t["id"], 0) < runs}}
+            progress(f"INTERRUPTED after {len(rows)} of {runs * len(tasks)} runs: putting the desktop back, then reporting what ran")
     finally:
-        final = sweep(engine, start)       # whatever happens, the desktop goes back to how the run found it
+        final = sweep(engine, start, forced)       # whatever happens, the desktop goes back to how the run found it
         if final:
             progress("harness: LEFT OPEN after the run — close these by hand: "
                      + "; ".join(f"{x['app']} ({'launched by the run' if x.get('new_app') else str(x.get('windows')) + ' window(s)'})" for x in final))
-    report = _report(suite_path, raw, rows, runs, out_dir)
-    report["summary"]["left_after_run"] = [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in final]
-    return report
+    end = {"kind": "end", "interrupted": interrupted, "forced_quits": forced,
+           "left_after_run": [{k: v for k, v in x.items() if k in ("app", "bundle_id", "new_app", "windows")} for x in final]}
+    _keep(kept, end)
+    return _report(suite_path, raw, rows, runs, out_dir, stamp=stamp, run=run, end=end)
+
+
+def report_from(paths: list[Path], out_dir: Path | None) -> dict[str, Any]:
+    """One report from the rows files of one or more runs of one suite on one commit — a run stopped half way
+    and its rest run with `--only`, say. Rows of another suite version or another commit are refused: they
+    measured something else."""
+    runs_, rows, ends = [], [], []
+    for path in paths:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue            # a run killed while writing leaves at most its last line half written
+            if rec.get("kind") == "run":
+                runs_.append(rec)
+            elif rec.get("kind") == "row":
+                rows.append(rec["row"])
+            elif rec.get("kind") == "end":
+                ends.append(rec)
+    if not runs_:
+        raise ValueError("no run header in " + ", ".join(str(p) for p in paths))
+    first = runs_[0]
+    for other in runs_[1:]:
+        if other.get("suite_sha256") != first.get("suite_sha256"):
+            raise ValueError(f"rows of another version of the suite: {first.get('suite_sha256')} and {other.get('suite_sha256')}")
+        if (other.get("env") or {}).get("commit") != (first.get("env") or {}).get("commit"):
+            raise ValueError(f"rows of another commit: {(first.get('env') or {}).get('commit')} and {(other.get('env') or {}).get('commit')}")
+    run = {**first, "tasks": list(dict.fromkeys(t for r in runs_ for t in r.get("tasks") or [])),
+           "started": min(str(r.get("started") or "") for r in runs_), "merged": len(runs_)}
+    repeat = max(int(r.get("repeat") or 1) for r in runs_)
+    done: dict[str, int] = {}
+    for r in rows:
+        done[r["id"]] = done.get(r["id"], 0) + 1
+    rest = {t: repeat - done.get(t, 0) for t in run["tasks"] if done.get(t, 0) < repeat}
+    last = ends[-1] if len(ends) == len(runs_) else None      # a file with no end: that run was killed
+    end = {"kind": "end", "forced_quits": [b for e in ends for b in e.get("forced_quits") or []],
+           "left_after_run": (last or {}).get("left_after_run") or [],
+           "interrupted": None if not rest and last is not None else
+           {"after_runs": len(rows), "of_runs": repeat * len(run["tasks"]),
+            "at": ((last or {}).get("interrupted") or {}).get("at"), "rest": rest}}
+    return _report(Path(str(first.get("suite") or "suite")), None, rows, repeat, out_dir, run=run, end=end)
+
+
+def _earlier(engine: Engine, start: tuple[dict[int, set[int]], set[int]], t: dict[str, Any], forced: list[str]) -> list[str]:
+    """What an earlier task left and is still up: here now, not at the start of the suite, and of neither the
+    task's app nor the app its check reads (their state is the task's own business: setup and the pre-check).
+    The sweep closes what it can of exactly those; what stays is named by bundle id."""
+    names = {x for x in (t.get("app"), t.get("check_app")) if x}
+    running = engine.helper.call("apps.running")
+    mine = {(engine._resolve_app(x, running) or {}).get("pid") for x in names} - {None}
+
+    def theirs(item: dict[str, Any]) -> bool:
+        return item["pid"] not in mine and item.get("bundle_id") not in names
+
+    if not [x for x in _leftovers(engine, start) if theirs(x)]:
+        return []
+    return sorted({str(x.get("bundle_id") or x["app"]) for x in sweep(engine, start, forced, among=theirs)})
 
 
 def _forget(engine: Engine) -> None:
@@ -763,7 +963,9 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
     eval_dir = str(_sandbox(engine, task)) if suite.get("sandbox") else ""
     t = _sub(task, eval_dir)
     progress(f"[{t['id']}{f' #{n + 1}' if runs > 1 else ''}] {t['goal']}")
-    base = {"id": t["id"], "run": n + 1, "category": t.get("category", ""), "app": t.get("app") or "", "goal": t["goal"]}
+    base = {"id": t["id"], "run": n + 1, "category": t.get("category", ""), "app": t.get("app") or "", "goal": t["goal"],
+            "task_sha": _task_sha(task)}      # the definition as the suite gives it: what `compare` pairs by
+    forced: list[str] = []
     phase: dict[str, float] = {}                  # where the harness itself spends time (not counted in "seconds")
     mark = [time.monotonic()]
 
@@ -787,6 +989,17 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             return base | _error_row(t, "the screen is locked")
         lap("launch")
         cleanup(engine, t, "setup")
+        # What an earlier task left, still up after setup: decided before the task runs, whatever it then does.
+        # d-chip passed at 0 steps in 5 reports of 09-21 with an About window an earlier task had opened still
+        # up; the pre-check guards screen checks only, and a rule applied afterwards to 0-step passes would
+        # count a run or not by how it came out. The sweep closes what it can of exactly those windows; what
+        # stays makes the run not count.
+        left = _earlier(engine, start, t, forced) if start else []
+        if left:
+            progress(f"   INVALID started with what an earlier task left: {', '.join(left)} (not counted)")
+            return base | {"status": "invalid", "passed": False, "valid": False, "why": f"started with what an earlier task left: {', '.join(left)}",
+                           "started_dirty": left, "forced_quits": forced, "reason": "", "steps": 0, "seconds": 0.0,
+                           "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
         before = _desktop(engine)          # after setup: what the task itself must leave as it found it
         # a prompt above every window that was not there when the suite began — an earlier task's doing, and
         # this run is not a clean one; what the person had up before the suite (a launcher, an input method's
@@ -819,6 +1032,9 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                 res = engine.resume(res["task_id"], progress=lambda m: progress(f"   → {m}"))
             if continues:
                 base["continued"] = continues
+        except KeyboardInterrupt:
+            _stop_running(engine, progress)      # the worker drives on until it is told: tell it, and wait
+            raise
         except Exception as exc:  # noqa: BLE001  (one broken task must not stop the suite)
             res = {"status": "error", "reason": str(exc)[:200], "steps": [], "decider": {"calls": 0, "cost_usd": 0.0}}
         seconds = round(time.monotonic() - t0, 1)
@@ -862,11 +1078,12 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
         tidy = engine.tidy(res["task_id"]) if res.get("task_id") else {}
         lap("tidy")
         left_by_engine = [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in _leftovers(engine, before)]
-        stuck = sweep(engine, before)      # the next task starts from the same desktop, and so does the user
+        stuck = sweep(engine, before, forced)      # the next task starts from the same desktop, and so does the user
         if harness_pid and suite.get("quit_launched", True):   # what the harness itself opened, it closes
             engine.helper.call("apps.quit", pid=harness_pid, timeout_ms=3000, timeout=15)
         lap("sweep")
         row = base | {"status": res.get("status"), "passed": ok, "valid": True, "why": why, "reason": res.get("reason", ""),
+                      "task_id": res.get("task_id"),
                       "cause": res.get("cause"),      # why it ended, for a program (budget, screen_locked, …)
                       "invariants_broken": (res.get("outputs") or {}).get("invariants_broken") or [],   # the engine's own bugs, as facts
                       # what a task that stopped to ask was asking about: the held action and the floor's reasons
@@ -883,7 +1100,9 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                       "answered_anyway": bool((res.get("outputs") or {}).get("unfinished_but_answered")),
                       "harness_s": phase, "left_by_engine": left_by_engine,
                       "on_screen_before": [d["title"] or d["app"] for d in above],   # a prompt from an earlier task, still up: not a clean run
-                      "left_after_sweep": [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in stuck]}
+                      "left_after_sweep": [{k: v for k, v in x.items() if k in ("app", "new_app", "windows")} for x in stuck],
+                      "forced_quits": forced,                                  # bundle ids the sweep had to force
+                      "planner": res.get("planner"), "timing": res.get("timing")}
         if elsewhere:        # says nothing either way: not counted, and reported apart (stopped_by_the_floor)
             row |= {"status": "not_reached", "ended": res.get("status"), "passed": False, "valid": False, "why": elsewhere}
         progress(f"   {'NOT REACHED' if elsewhere else 'PASS' if ok else 'FAIL'} {row['status']} {row['steps']} steps {seconds}s ({why if not elsewhere else elsewhere})"
@@ -905,7 +1124,8 @@ def _rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"passed": k, "runs": n, "rate": round(k / n, 3) if n else 0.0, "ci95": [round(lo, 3), round(hi, 3)]}
 
 
-def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int, out_dir: Path | None) -> dict[str, Any]:
+def _summary(suite: str, sha: str | None, rows: list[dict[str, Any]], runs: int) -> dict[str, Any]:
+    """The numbers of a report, from its rows alone — so a report rebuilt from a rows file says the same."""
     valid = [r for r in rows if r.get("valid", True)]
     by_task: dict[str, list[dict[str, Any]]] = {}
     for r in valid:
@@ -932,55 +1152,100 @@ def _report(suite_path: Path, raw: bytes, rows: list[dict[str, Any]], runs: int,
     # overwrite `runs` with the valid count, so the headline subtracted the invalid rows from a number
     # they were already out of: a ×3 run with six invalid rows read "17/12 runs". And a task whose every
     # run was invalid is not a task this run says anything about, so `tasks` is the ones it does.
-    summary = {"suite": str(suite_path), "suite_sha256": hashlib.sha256(raw).hexdigest()[:16], "repeat": runs,
-               "tasks": len(by_task), "tasks_listed": len({r["id"] for r in rows}), "runs": len(rows), "valid": len(valid),
-               "invalid": sum(r["status"] == "invalid" for r in rows), "errors": sum(r["status"] == "error" for r in rows),
-               "passed": rate["passed"], "rate": rate["rate"],
-               "passed_tasks": sum(per_task), "ci95": [round(lo, 3), round(hi, 3)], "ci95_over": "tasks",
-               "pass_all": sum(all(r["passed"] for r in rs) for rs in by_task.values()),   # pass^N: passed every time
-               "success_rate": round(sum(r["passed"] for r in valid) / (len(valid) or 1), 3),
-               "median_seconds": secs[len(secs) // 2] if secs else 0, "p90_seconds": secs[int(len(secs) * 0.9)] if secs else 0,
-               "total_cost_usd": round(sum(r["cost_usd"] for r in rows), 5), "decider_calls": sum(r["decider_calls"] for r in rows),
-               "categories": {c: _rate(rs) for c, rs in sorted(cats.items())},
-               "tasks_leaving_things_behind": sum(bool(r.get("left_by_engine")) for r in valid),
-               "runs_with_a_prompt_already_up": sum(bool(r.get("on_screen_before")) for r in valid),
-               "passed_by_answering_anyway": sum(bool(r.get("answered_anyway")) and r["passed"] for r in valid),
-               "runs_with_broken_invariants": sum(bool(r.get("invariants_broken")) for r in valid),
-               "stopped_by_the_floor": {"runs": len(held), "by_category": dict(sorted(because.items())),
-                                        "not_reached": sum(r.get("status") == "not_reached" for r in rows)},
-               "at": time.strftime("%Y-%m-%d %H:%M")}
+    return {"suite": suite, "suite_sha256": sha, "repeat": runs,
+            "tasks": len(by_task), "tasks_listed": len({r["id"] for r in rows}), "runs": len(rows), "valid": len(valid),
+            "invalid": sum(r["status"] == "invalid" for r in rows), "errors": sum(r["status"] == "error" for r in rows),
+            "passed": rate["passed"], "rate": rate["rate"],
+            "passed_tasks": sum(per_task), "ci95": [round(lo, 3), round(hi, 3)], "ci95_over": "tasks",
+            "pass_all": sum(all(r["passed"] for r in rs) for rs in by_task.values()),   # pass^N: passed every time
+            "success_rate": round(sum(r["passed"] for r in valid) / (len(valid) or 1), 3),
+            "median_seconds": secs[len(secs) // 2] if secs else 0, "p90_seconds": secs[int(len(secs) * 0.9)] if secs else 0,
+            "total_cost_usd": round(sum(r["cost_usd"] for r in rows), 5), "decider_calls": sum(r["decider_calls"] for r in rows),
+            "categories": {c: _rate(rs) for c, rs in sorted(cats.items())},
+            "tasks_leaving_things_behind": sum(bool(r.get("left_by_engine")) for r in valid),
+            "runs_with_a_prompt_already_up": sum(bool(r.get("on_screen_before")) for r in valid),
+            "runs_started_dirty": sum(bool(r.get("started_dirty")) for r in rows),
+            "passed_by_answering_anyway": sum(bool(r.get("answered_anyway")) and r["passed"] for r in valid),
+            "runs_with_broken_invariants": sum(bool(r.get("invariants_broken")) for r in valid),
+            "stopped_by_the_floor": {"runs": len(held), "by_category": dict(sorted(because.items())),
+                                     "not_reached": sum(r.get("status") == "not_reached" for r in rows)},
+            "forced_quits": sum(len(r.get("forced_quits") or []) for r in rows),
+            "at": time.strftime("%Y-%m-%d %H:%M")}
+
+
+def _write(report: dict[str, Any], out_dir: Path, stamp: str) -> list[str]:
+    """<stamp>.json and <stamp>.md beside the run's <stamp>.rows.jsonl."""
+    s = report["summary"]
+    valid = [r for r in report["rows"] if r.get("valid", True)]
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    for r in valid:
+        by_task.setdefault(r["id"], []).append(r)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # A report is meant to be committed (evals/baseline/), and a trace names the files a task opened —
+    # under this user's home directory, by their user name. The redactor turns that into `~` for anything
+    # sent; a report was written raw.
+    (out_dir / f"{stamp}.json").write_text(_no_home(json.dumps(report, ensure_ascii=False, indent=1)), encoding="utf-8")
+    md = [f"# {Path(s['suite']).name} — {s['at']} (sha256 {s['suite_sha256']}, ×{s['repeat']})", ""]
+    stop = s.get("interrupted")
+    if stop:
+        rest: dict[int, list[str]] = {}
+        for tid, n in (stop.get("rest") or {}).items():
+            rest.setdefault(n, []).append(tid)
+        md += [f"**INTERRUPTED** at {stop.get('at')}, after {stop['after_runs']} of {stop['of_runs']} runs. The rest: "
+               + "; ".join(f"`macwork eval --suite {s['suite']} --only {','.join(ids)} --repeat {n}`" for n, ids in sorted(rest.items()))
+               + f", then `macwork eval --report-from {stamp}.rows.jsonl <the rest's rows file>`.", ""]
+    env = s.get("env") or {}
+    if env:
+        md += ["Measured on " + ", ".join(x for x in (
+            f"commit {env.get('commit')}" + (f" ({env['tree']})" if env.get("tree") else ""),
+            " ".join(str(x) for x in (env.get("hw_model"), f"macOS {env['macos']}" if env.get("macos") else None) if x),
+            "languages " + "/".join(env.get("languages") or []) if env.get("languages") else "",
+            f"decider {(env.get('decider') or {}).get('using') or (env.get('decider') or {}).get('kind')}",
+            f"planner {(env.get('planner') or {}).get('using') or (env.get('planner') or {}).get('kind')}"
+            + (f" ({(env.get('planner') or {}).get('model')})" if (env.get("planner") or {}).get("model") else "")) if x) + ".", ""]
+    md += [f"**{s['passed_tasks']}/{s['tasks']} tasks passed (95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%}, over tasks — "
+           f"repeats of one task are not independent trials)**; {s['passed']}/{s['valid']} runs ({s['rate']:.0%}); "
+           f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
+           f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors"
+           + (f" ({s['tasks_listed'] - s['tasks']} of {s['tasks_listed']} tasks never counted)" if s['tasks_listed'] > s['tasks'] else "")
+           + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else "")
+           + (f"; **{s['runs_with_broken_invariants']} run(s) with a broken engine invariant**" if s.get("runs_with_broken_invariants") else "")
+           + (f"; **{s['runs_started_dirty']} run(s) started with what an earlier task left**" if s.get("runs_started_dirty") else "")
+           + (f"; **{s['forced_quits']} app(s) the sweep had to force-quit**" if s.get("forced_quits") else ""), ""]
+    floor = s["stopped_by_the_floor"]
+    if floor["runs"]:
+        md += [f"Stopped by the floor: {floor['runs']} run(s) — " + ", ".join(f"{k} {v}" for k, v in floor["by_category"].items())
+               + (f"; **{floor['not_reached']} not reached**: the floor held something other than what the task must not do, "
+                  "so the run says nothing either way and is not counted" if floor["not_reached"] else ""), ""]
+    md += ["| category | passed | rate | 95% CI |", "|---|---|---|---|"]
+    md += [f"| {c} | {v['passed']}/{v['runs']} | {v['rate']:.0%} | {v['ci95'][0]:.0%}–{v['ci95'][1]:.0%} |" for c, v in s["categories"].items()]
+    md += ["", "| task | runs | results | median s | note (last failure) |", "|---|---|---|---|---|"]
+    for tid, rs in by_task.items():
+        fails = [r for r in rs if not r["passed"]]
+        med = sorted(r["seconds"] for r in rs)[len(rs) // 2]
+        md.append(f"| {tid} | {sum(r['passed'] for r in rs)}/{len(rs)} | {' '.join('✅' if r['passed'] else '❌' for r in rs)} | {med} | "
+                  f"{(fails[-1]['why'] if fails else '')[:90].replace('|', '/')} |")
+    (out_dir / f"{stamp}.md").write_text(_no_home("\n".join(md) + "\n"), encoding="utf-8")
+    return [str(out_dir / f"{stamp}.json"), str(out_dir / f"{stamp}.md")]
+
+
+def _report(suite_path: Path, raw: bytes | None, rows: list[dict[str, Any]], runs: int, out_dir: Path | None,
+            stamp: str | None = None, run: dict[str, Any] | None = None, end: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The report of a run: `_summary` of its rows, what the run's header (`run`: env, draw) and ending
+    (`end`: interrupted, forced quits, what the final sweep left) add, written by `_write` when `out_dir`."""
+    run, end = run or {}, end or {}
+    sha = hashlib.sha256(raw).hexdigest()[:16] if raw is not None else run.get("suite_sha256")
+    summary = _summary(str(suite_path), sha, rows, runs)
+    summary["forced_quits"] += len(end.get("forced_quits") or [])
+    summary["left_after_run"] = list(end.get("left_after_run") or [])
+    for key in ("env", "drawn"):
+        if run.get(key) is not None:
+            summary[key] = run[key]
+    if end.get("interrupted"):
+        summary["interrupted"] = end["interrupted"]
     report = {"summary": summary, "rows": rows}
     if out_dir:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        # A report is meant to be committed (evals/baseline/), and a trace names the files a task opened —
-        # under this user's home directory, by their user name. The redactor turns that into `~` for anything
-        # sent; a report was written raw.
-        (out_dir / f"{stamp}.json").write_text(_no_home(json.dumps(report, ensure_ascii=False, indent=1)), encoding="utf-8")
-        s = summary
-        md = [f"# {suite_path.name} — {s['at']} (sha256 {s['suite_sha256']}, ×{runs})", "",
-              f"**{s['passed_tasks']}/{s['tasks']} tasks passed (95% CI {s['ci95'][0]:.0%}–{s['ci95'][1]:.0%}, over tasks — "
-              f"repeats of one task are not independent trials)**; {s['passed']}/{s['valid']} runs ({s['rate']:.0%}); "
-              f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
-              f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors"
-              + (f" ({s['tasks_listed'] - s['tasks']} of {s['tasks_listed']} tasks never counted)" if s['tasks_listed'] > s['tasks'] else "")
-              + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else "")
-              + (f"; **{s['runs_with_broken_invariants']} run(s) with a broken engine invariant**" if s.get("runs_with_broken_invariants") else ""), ""]
-        floor = s["stopped_by_the_floor"]
-        if floor["runs"]:
-            md += [f"Stopped by the floor: {floor['runs']} run(s) — " + ", ".join(f"{k} {v}" for k, v in floor["by_category"].items())
-                   + (f"; **{floor['not_reached']} not reached**: the floor held something other than what the task must not do, "
-                      "so the run says nothing either way and is not counted" if floor["not_reached"] else ""), ""]
-        md += ["| category | passed | rate | 95% CI |", "|---|---|---|---|"]
-        md += [f"| {c} | {v['passed']}/{v['runs']} | {v['rate']:.0%} | {v['ci95'][0]:.0%}–{v['ci95'][1]:.0%} |" for c, v in s["categories"].items()]
-        md += ["", "| task | runs | results | median s | note (last failure) |", "|---|---|---|---|---|"]
-        for tid, rs in by_task.items():
-            fails = [r for r in rs if not r["passed"]]
-            med = sorted(r["seconds"] for r in rs)[len(rs) // 2]
-            md.append(f"| {tid} | {sum(r['passed'] for r in rs)}/{len(rs)} | {' '.join('✅' if r['passed'] else '❌' for r in rs)} | {med} | "
-                      f"{(fails[-1]['why'] if fails else '')[:90].replace('|', '/')} |")
-        (out_dir / f"{stamp}.md").write_text(_no_home("\n".join(md) + "\n"), encoding="utf-8")
-        report["files"] = [str(out_dir / f"{stamp}.json"), str(out_dir / f"{stamp}.md")]
+        report["files"] = _write(report, out_dir, stamp or time.strftime("%Y%m%d-%H%M%S"))
     return report
 
 
@@ -1010,6 +1275,21 @@ def _outcomes(report: dict[str, Any]) -> dict[str, list[bool]]:
     return out
 
 
+def _definitions(report: dict[str, Any]) -> dict[str, set[str | None]]:
+    """Per task, the hashes of its definition its runs carry (None: a report older than the hash)."""
+    out: dict[str, set[str | None]] = {}
+    for r in report.get("rows") or []:
+        if r.get("valid", True) and r.get("status") not in ("error", "invalid"):
+            out.setdefault(r["id"], set()).add(r.get("task_sha"))
+    return out
+
+
+def _draw(report: dict[str, Any]) -> list[str]:
+    s = report.get("summary") or {}
+    return [str(d.get("bundle_id")) for d in s.get("drawn") or []] or \
+        list(dict.fromkeys(str(r.get("app")) for r in report.get("rows") or [] if "--" in str(r.get("id")) and r.get("app")))
+
+
 def _categories(report: dict[str, Any]) -> dict[str, str]:
     return {r["id"]: r.get("category") or "-" for r in report.get("rows") or []}
 
@@ -1026,25 +1306,53 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     flipping one way and three the other, and the totals cannot tell them apart. So this pairs the tasks by
     id, names what moved in each direction, and tests the ones that moved.
 
-    It also refuses to compare quietly across things that make a comparison meaningless: a different suite,
-    or a different decider answering.
+    A task is paired by what it is: by id, where both runs carry the hash of its definition and the hashes
+    agree. Each dated fix changes the hash of a whole suite, so a comparison refused on that would leave every
+    earlier report with nothing to be held against; a task whose own definition changed is two questions, and
+    is left out and named. A report older than the per-task hash pairs by id, with the suites' difference said.
+    Nothing is compared when no task can be paired — two draws of a sampled suite that share no app, said with
+    both draws — and a different decider, planner, language, Mac, or a run that was interrupted, is said.
     """
     b_sum, a_sum = before.get("summary") or {}, after.get("summary") or {}
     b_runs, a_runs = _outcomes(before), _outcomes(after)
-    shared = sorted(set(b_runs) & set(a_runs))
+    b_def, a_def = _definitions(before), _definitions(after)
+    common = sorted(set(b_runs) & set(a_runs))
+    redefined = [t for t in common if None not in b_def[t] | a_def[t] and b_def[t] != a_def[t]]
+    by_id = [t for t in common if None in b_def[t] | a_def[t]]
+    shared = [t for t in common if t not in redefined]
 
     warnings: list[str] = []
-    if b_sum.get("suite_sha256") and b_sum["suite_sha256"] != a_sum.get("suite_sha256"):
-        warnings.append(f"different suites ({b_sum['suite_sha256']} vs {a_sum.get('suite_sha256')}): "
-                        "the tasks themselves changed, so this compares two different questions")
+    if redefined:
+        warnings.append(f"{len(redefined)} task(s) were defined differently in the two runs and are not paired: {redefined[:6]}")
+    if by_id and b_sum.get("suite_sha256") and b_sum["suite_sha256"] != a_sum.get("suite_sha256"):
+        warnings.append(f"different suites ({b_sum['suite_sha256']} vs {a_sum.get('suite_sha256')}): {len(by_id)} task(s) are paired "
+                        "by id alone, since a report without per-task hashes does not say what each task was — one that "
+                        "changed would be two different questions")
     deciders = lambda rep: sorted({r.get("decider") for r in rep.get("rows") or [] if r.get("decider")})  # noqa: E731
     if deciders(before) != deciders(after):
         warnings.append(f"different deciders ({deciders(before)} vs {deciders(after)}): this measures the model, not the change")
+    b_env, a_env = b_sum.get("env") or {}, a_sum.get("env") or {}
+    for key, what in (("languages", "interface languages"), ("planner", "planner"), ("decider", "decider configuration"),
+                      ("hw_model", "Mac"), ("macos", "macOS")):
+        if key in b_env and key in a_env and b_env[key] != a_env[key]:
+            warnings.append(f"a different {what} ({b_env[key]} vs {a_env[key]}): the runs were not measured on the same thing")
+    for name, s in (("before", b_sum), ("after", a_sum)):
+        if s.get("interrupted"):
+            warnings.append(f"the {name} run was interrupted after {s['interrupted'].get('after_runs')} of "
+                            f"{s['interrupted'].get('of_runs')} runs: its tasks are compared on the runs it has")
     only_before = sorted(set(b_runs) - set(a_runs))
     only_after = sorted(set(a_runs) - set(b_runs))
     if only_before or only_after:
         warnings.append(f"{len(only_before) + len(only_after)} task(s) are in only one of the runs and are left out: "
                         f"{(only_before + only_after)[:6]}")
+    if not shared:
+        draws = (f" (drawn before: {', '.join(_draw(before)) or 'nothing recorded'}; after: {', '.join(_draw(after)) or 'nothing recorded'})"
+                 if _draw(before) or _draw(after) else "")
+        return {"refused": True, "tasks": 0, "before": {"passed": 0, "of": 0, "ci95": [0.0, 0.0]},
+                "after": {"passed": 0, "of": 0, "ci95": [0.0, 0.0]}, "fixed": [], "broke": [], "p_mcnemar": 1.0,
+                "verdict": "not compared: no task is in both runs defined the same way" + draws,
+                "by_category": {}, "worse_in": [], "rate_moved": [], "warnings": warnings,
+                "repeats": {"before": b_sum.get("repeat", 1), "after": a_sum.get("repeat", 1)}}
 
     fixed, broke, changed_rate = [], [], []
     for tid in shared:
@@ -1106,6 +1414,8 @@ def compare_files(before_path: Path, after_path: Path) -> dict[str, Any]:
 
 
 def format_compare(c: dict[str, Any]) -> str:
+    if c.get("refused"):
+        return "\n".join([c["verdict"]] + [f"  ! {w}" for w in c["warnings"]])
     lines = [f"{c['before']['passed']}/{c['tasks']} → {c['after']['passed']}/{c['tasks']} tasks",
              f"  before 95% CI {c['before']['ci95'][0]:.0%}–{c['before']['ci95'][1]:.0%}"
              f"   after 95% CI {c['after']['ci95'][0]:.0%}–{c['after']['ci95'][1]:.0%}",
