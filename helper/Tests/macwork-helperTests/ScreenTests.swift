@@ -101,4 +101,39 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(entry(window(pid: 42, id: 501), onScreen: [501])?["on_screen"] as? Bool, true)
         XCTAssertEqual(entry(window(pid: 42, id: 501))?["input_method"] as? Bool, false)
     }
+
+    // MARK: - which window a capture takes
+
+    private let main = WindowCandidate(pid: 42, id: 501, layer: 0, frame: CGRect(x: 100, y: 100, width: 800, height: 600))
+    private let about = WindowCandidate(pid: 42, id: 502, layer: 8, frame: CGRect(x: 300, y: 200, width: 300, height: 200))
+    private let strip = WindowCandidate(pid: 42, id: 503, layer: 0, frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+    private let other = WindowCandidate(pid: 43, id: 777, layer: 0, frame: CGRect(x: 0, y: 0, width: 1600, height: 1000))
+
+    func testAWindowAskedForByNumberIsThatWindowAtAnyLayer() {
+        let all = [other, main, about, strip]
+        XCTAssertEqual(pickWindow(all, pid: 42, windowID: 502, near: main.frame), 2,
+                       "the panel asked for, although the main window is nearer the frame and the panel is not at layer 0")
+        XCTAssertEqual(pickWindow(all, pid: 42, windowID: 503, near: nil), 3, "however small")
+        XCTAssertNil(pickWindow(all, pid: 42, windowID: 999, near: main.frame),
+                     "a number that is not on screen is no window, not the nearest one instead")
+    }
+
+    func testAnotherProcesssWindowIsNeverPicked() {
+        let all = [other, main, about]
+        XCTAssertNil(pickWindow(all, pid: 42, windowID: 777, near: nil), "its number, but not this app's window")
+        XCTAssertEqual(pickWindow(all, pid: 42, windowID: nil, near: nil), 1,
+                       "the largest window on screen belongs to another app: this app's own largest is taken")
+        XCTAssertNil(pickWindow([other], pid: 42, windowID: nil, near: other.frame))
+    }
+
+    func testWithoutANumberTheNearestOrdinaryWindowIsPicked() {
+        let second = WindowCandidate(pid: 42, id: 504, layer: 0, frame: CGRect(x: 1000, y: 100, width: 900, height: 700))
+        let all = [other, second, about, main, strip]
+        XCTAssertEqual(pickWindow(all, pid: 42, windowID: nil, near: CGRect(x: 102, y: 98, width: 800, height: 600)), 3,
+                       "the window at layer 0 nearest the Accessibility frame")
+        XCTAssertEqual(pickWindow(all, pid: 42, windowID: nil, near: about.frame), 3,
+                       "a panel above layer 0 is never the answer without its number, even where it is nearest")
+        XCTAssertEqual(pickWindow(all, pid: 42, windowID: nil, near: nil), 1, "without a frame: the largest")
+        XCTAssertNil(pickWindow([strip, about], pid: 42, windowID: nil, near: nil), "nothing at layer 0 over 40 pt wide")
+    }
 }

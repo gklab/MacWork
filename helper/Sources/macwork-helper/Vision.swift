@@ -91,15 +91,42 @@ func screenIndex(forWindow frame: CGRect, screens: [CGRect]) -> Int? {
     return best
 }
 
-/// The on-screen window of ``pid`` closest to ``near`` (the AX frame), or its largest one.
-private func captureWindow(pid: pid_t, near: CGRect?, maxWidth: CGFloat? = nil) throws -> (CGImage, CGRect) {
+/// A window ScreenCaptureKit could capture, as much of it as choosing one needs.
+struct WindowCandidate {
+    let pid: pid_t
+    let id: Int
+    let layer: Int
+    let frame: CGRect
+}
+
+/// Which of ``candidates`` to capture for ``pid``.
+///
+/// With ``windowID``: exactly the window of that number, and only if ``pid`` owns it — at any level. A panel
+/// an app puts in a window of its own, with no Accessibility entry, is never the window nearest the frame
+/// Accessibility gives, and above layer 0 it is not even a candidate for the rule below: the verifier found
+/// such a panel could never be captured. Without: the app's window at the normal level (layer 0) nearest
+/// ``near`` — its Accessibility frame — else its largest; either way over 40 pt wide.
+func pickWindow(_ candidates: [WindowCandidate], pid: pid_t, windowID: Int?, near: CGRect?) -> Int? {
+    if let windowID { return candidates.firstIndex { $0.id == windowID && $0.pid == pid } }
+    let wins = candidates.indices.filter { candidates[$0].pid == pid && candidates[$0].layer == 0 && candidates[$0].frame.width > 40 }
+    func d(_ a: CGRect, _ b: CGRect) -> CGFloat { abs(a.minX - b.minX) + abs(a.minY - b.minY) + abs(a.width - b.width) + abs(a.height - b.height) }
+    func area(_ i: Int) -> CGFloat { candidates[i].frame.width * candidates[i].frame.height }
+    return near.flatMap { f in wins.min(by: { d(candidates[$0].frame, f) < d(candidates[$1].frame, f) }) }
+        ?? wins.max(by: { area($0) < area($1) })
+}
+
+/// The on-screen window of ``pid`` numbered ``windowID``, or the one closest to ``near`` (the AX frame), or its
+/// largest one.
+private func captureWindow(pid: pid_t, near: CGRect?, windowID: Int? = nil, maxWidth: CGFloat? = nil) throws -> (CGImage, CGRect) {
     try runAsync(timeout: 8) {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        let wins = content.windows.filter { $0.owningApplication?.processID == pid && $0.windowLayer == 0 && $0.frame.width > 40 }
-        func d(_ a: CGRect, _ b: CGRect) -> CGFloat { abs(a.minX - b.minX) + abs(a.minY - b.minY) + abs(a.width - b.width) + abs(a.height - b.height) }
-        let pick = near.flatMap { f in wins.min(by: { d($0.frame, f) < d($1.frame, f) }) }
-            ?? wins.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
-        guard let win = pick else { throw RPCError("no_window", "no on-screen window for pid \(pid)") }
+        let candidates = content.windows.map {
+            WindowCandidate(pid: $0.owningApplication?.processID ?? -1, id: Int($0.windowID), layer: $0.windowLayer, frame: $0.frame)
+        }
+        guard let i = pickWindow(candidates, pid: pid, windowID: windowID, near: near) else {
+            throw RPCError("no_window", windowID.map { "no on-screen window \($0) of pid \(pid)" } ?? "no on-screen window for pid \(pid)")
+        }
+        let win = content.windows[i]
         // the screen the window's centre is on: "the first screen it touches" gets a window straddling a
         // Retina and a non-Retina display captured at the wrong scale, and every OCR box lands off by a factor
         let screens = NSScreen.screens
@@ -124,11 +151,14 @@ private func savePNG(_ img: CGImage, _ path: String) throws {
     guard CGImageDestinationFinalize(dest) else { throw RPCError("io", "cannot write \(path)") }
 }
 
-/// screen.ocr {pid, near?: [x,y,w,h], languages?, fast?, min_conf?} -> {frame, boxes: [{text, conf, frame}], ms}
+/// Which window a caller names by its number (the window server's `id`), if it names one.
+private func windowIDParam(_ p: Params) -> Int? { (p["window_id"] as? NSNumber)?.intValue }
+
+/// screen.ocr {pid, near?: [x,y,w,h], window_id?, languages?, fast?, min_conf?} -> {frame, boxes: [{text, conf, frame}], ms}
 func screenOCR(_ p: Params) throws -> Any {
     guard let pidNum = p["pid"] as? Int else { throw RPCError("bad_params", "pid required") }
     let t0 = Date()
-    let (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"))
+    let (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"), windowID: windowIDParam(p))
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = (p["fast"] as? Bool ?? false) ? .fast : .accurate
     req.recognitionLanguages = (p["languages"] as? [String]).flatMap { $0.isEmpty ? nil : $0 } ?? ocrLanguages()
@@ -159,7 +189,7 @@ func screenOCR(_ p: Params) throws -> Any {
             "ms": Int(Date().timeIntervalSince(t0) * 1000)]
 }
 
-/// screen.capture {pid, near?, crop?: [x,y,w,h] in screen points, path} -> {path, frame}. For local describers only.
+/// screen.capture {pid, near?, window_id?, crop?: [x,y,w,h] in screen points, path} -> {path, frame}. For local describers only.
 /// What a window looks like, coarsely: an n×n grid of brightness, one byte a cell.
 ///
 /// A person who presses a key looks at the screen to see whether anything happened. For a window that
@@ -185,14 +215,15 @@ func glanceGrid(_ img: CGImage, n: Int) -> [UInt8] {
 func screenGlance(_ p: Params) throws -> Any {
     guard let pidNum = p["pid"] as? Int else { throw RPCError("bad_params", "pid required") }
     let n = max(4, min(p["grid"] as? Int ?? 32, 64))
-    let (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"), maxWidth: CGFloat(n * 8))
+    let (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"), windowID: windowIDParam(p),
+                                         maxWidth: CGFloat(n * 8))
     return ["grid": n, "cells": Data(glanceGrid(img, n: n)).base64EncodedString(),
             "frame": [safeInt(frame.minX), safeInt(frame.minY), safeInt(frame.width), safeInt(frame.height)]]
 }
 
 func screenCapture(_ p: Params) throws -> Any {
     guard let pidNum = p["pid"] as? Int, let path = p["path"] as? String else { throw RPCError("bad_params", "pid and path required") }
-    var (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"))
+    var (img, frame) = try captureWindow(pid: pid_t(pidNum), near: frameParam(p, "near"), windowID: windowIDParam(p))
     if let crop = frameParam(p, "crop") {
         let sx = CGFloat(img.width) / frame.width, sy = CGFloat(img.height) / frame.height
         let r = CGRect(x: (crop.minX - frame.minX) * sx, y: (crop.minY - frame.minY) * sy, width: crop.width * sx, height: crop.height * sy)
