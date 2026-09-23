@@ -1633,6 +1633,10 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
     A scheme is an app saying "you can ask me to do this without touching my windows" — it is in the bundle's
     own Info.plist, so nothing here knows any app. The link itself is text, so it comes from the caller or the
     planner like any other text, and it is judged by the safety floor with the link in it.
+
+    Each one names the app that declares it. The file channel works through the system and was charged to no
+    app, so "open a 「ssh:」 link with 终端" was offered from the terminal running this engine: a link that
+    runs a command in the host, where nothing else of the host's may be done.
     """
     models = ctx.cache.get("appmodels")
     if not ctx.app or models is None:
@@ -1642,7 +1646,7 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
     for scheme in (model.get("url_schemes") or [])[: int(ctx.cfg.get("observe.schemes.limit", 8))]:
         obs.affordances.append(Affordance(
             f"h{len(obs.affordances)}", "file", "open", f"open a 「{scheme}:」 link with {name}",
-            {"path": "", "scheme": scheme},
+            {"path": "", "scheme": scheme, "bundle_id": ctx.app.get("bundle_id")},
             slots={"url": Slot("text", f"the whole link, starting with {scheme}:")}, context=name))
 
 

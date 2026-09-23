@@ -28,8 +28,12 @@ log = logging.getLogger(__name__)
 
 class PolicyMixin:
     def _host_bundles(self) -> set[str]:
-        """The apps this engine runs under (the terminal or client that started it), found by walking up the
-        process tree once: typing there would type into the caller itself."""
+        """The apps this engine runs under (the terminal or client that started it): typing there would type
+        into the caller itself. Found by walking up the process tree once, and from the bundle the process was
+        started from, `__CFBundleIdentifier`: LaunchServices sets it for every process an app starts, children
+        inherit it (this Mac's shells say com.apple.Terminal), and it is still there when the terminal is not
+        among the ancestors any more — a process reparented to launchd walks up to nothing. Said once in the
+        log, so a run can be told which apps it would not touch."""
         if "host.bundles" not in self.cache:
             import os
             import subprocess
@@ -50,8 +54,19 @@ class PolicyMixin:
                 running = self.helper.call("apps.running")
             except Exception:  # noqa: BLE001
                 running = []
-            self.cache["host.bundles"] = {a["bundle_id"] for a in running if a.get("pid") in chain and a.get("bundle_id")}
+            found = {a["bundle_id"] for a in running if a.get("pid") in chain and a.get("bundle_id")}
+            started_from = os.environ.get("__CFBundleIdentifier", "").strip()
+            if started_from:
+                found.add(started_from)
+            self.cache["host.bundles"] = found
+            log.info("the engine runs under %s: never driven", ", ".join(sorted(found)) or "no app it can name")
         return self.cache["host.bundles"]
+
+    def _host_app(self, app: dict[str, Any] | None) -> bool:
+        """Is this the app the engine runs under, with the policy saying never to touch that (deny.host_app)?"""
+        deny = self.cfg.policy.get("deny", {}) or {}
+        bundle = (app or {}).get("bundle_id")
+        return bool(bundle) and bool(deny.get("host_app", True)) and bundle in self._host_bundles()
 
     def _denied(self, a: Affordance, app: dict[str, Any] | None) -> bool:
         deny = self.cfg.policy.get("deny", {}) or {}
@@ -59,6 +74,13 @@ class PolicyMixin:
         # Which app this action touches: the one it names, else — for a channel that drives the UI — the one
         # in front. A channel that works through the system touches neither unless it names one.
         from .act import THROUGH_THE_SYSTEM
+        if app is None and a.channel not in THROUGH_THE_SYSTEM and not (a.target.get("bundle_id") or a.target.get("pid")):
+            # No app is being worked in, and this drives whatever is in front — which, when a task begins in
+            # no app because the one in front runs this engine, is the engine's own terminal. The host rule
+            # below charges such an action to the working app, and with none it charges it to nobody: measured
+            # offline with the host in front, the thirteen physical keys went from none offered to all of them,
+            # and so did the planner's typing. An action that names its own app or process is judged by that.
+            return True
         bundle = a.target.get("bundle_id") or (None if a.channel in THROUGH_THE_SYSTEM else (app or {}).get("bundle_id"))
         if bundle and bundle in (deny.get("bundle_ids") or []):
             return True

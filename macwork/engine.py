@@ -196,7 +196,15 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
     def gate(self) -> Gate:
         return Gate(self.decider, self.audit)
 
-    def _resolve_app(self, hint: str | dict[str, Any] | None, running: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _resolve_app(self, hint: str | dict[str, Any] | None, running: list[dict[str, Any]],
+                     front: bool = True) -> dict[str, Any] | None:
+        """The app `hint` names, running now; with no hint, the app in front (`front`), else none.
+
+        Never the app this engine runs under (deny.host_app): a task that named no app began wherever the
+        screen was, and in this Mac's audit 17 tasks took their first look in 终端 (Terminal), the app these
+        runs are started from, 3 of them on 09-23 — its window offered as options and its text sent in looks
+        and plans. With no app named and the host in front, the answer is no app; the apps provider offers
+        what the goal names from there."""
         if isinstance(hint, dict) and hint.get("pid"):
             if any(a.get("pid") == hint["pid"] for a in running):
                 return hint
@@ -218,7 +226,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             return next((a for a in background if h in _names(a)), None) or \
                 next((a for a in background if any(h in n for n in _names(a) if n)), None)
             return None  # not running: the engine opens an app the caller named; otherwise the apps provider offers it
-        return (self.helper.call("apps.frontmost") or {}).get("app")
+        if not front:
+            return None
+        app = (self.helper.call("apps.frontmost") or {}).get("app")
+        return None if self._host_app(app) else app
 
     def _installed_named(self, hint: str) -> dict[str, Any] | None:
         h = _norm_name(hint)
@@ -233,9 +244,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             got = self._scopes[key] = TaskScope()
         return got
 
-    def _ctx(self, goal: str, inputs: dict[str, Any], app: Any, key: str) -> Ctx:
+    def _ctx(self, goal: str, inputs: dict[str, Any], app: Any, key: str, front: bool = True) -> Ctx:
         running = self.helper.call("apps.running")
-        return Ctx(self.cfg, self.helper, goal=goal, inputs=inputs, app=self._resolve_app(app, running), running=running,
+        return Ctx(self.cfg, self.helper, goal=goal, inputs=inputs, app=self._resolve_app(app, running, front=front), running=running,
                    cache=self.cache, redactor=self.redactor(key),   # gate is attached only where a decision is needed
                    hands=self.take_hands, task=key, scope=self.scope(key))
 

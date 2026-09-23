@@ -670,6 +670,7 @@ def run_suite(engine: Engine, suite_path: Path, only: list[str] | None = None, o
     conf = engine.cfg.docs["config"].setdefault("engine", {})
     conf["tidy"] = "defer"          # check the result first, then let the engine tidy
     conf["mode"] = "exclusive"      # an eval run owns the Mac: it types, switches apps and closes windows
+    conf["start_in_front_app"] = False   # a task that names no app begins in none, not where the last one left the screen
     progress("this run takes over the screen and the keyboard until it finishes")
     rows = []
     start = _desktop(engine)

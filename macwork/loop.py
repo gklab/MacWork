@@ -280,10 +280,19 @@ class LoopMixin:
         return progress is None or float(progress) >= float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
 
     def _step_context(self, task: Task) -> Ctx:
-        ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id)
+        # Where a task that names no app begins: in the app in front (engine.start_in_front_app), or in none.
+        # For the first look only — once it has done something, a look follows the app it works in, and after
+        # an action that says nothing about where it went (a key), the app in front. An eval run begins in
+        # none: 13 of the 29 v2 tasks name no app, and each began wherever the task before it left the screen.
+        first = not task.steps and not task.target and not task.app
+        front = not first or bool(self.cfg.get("engine.start_in_front_app", True))
+        ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id, front=front)
         ctx.gate = self.gate
         self._note_opened(task, ctx.running)
-        if ctx.app is None and isinstance(task.app, str) and task.app and not task.pace.launched and task.held is None:
+        host = ctx.app is not None and self._host_app(ctx.app)
+        if host:                                       # e.g. an open that landed in the terminal running the engine
+            ctx.app = None
+        if ctx.app is None and not host and isinstance(task.app, str) and task.app and not task.pace.launched and task.held is None:
             task.pace.launched = True                  # the caller said where to work: open it (once), as a recorded step
             inst = self._installed_named(task.app)
             if inst:
