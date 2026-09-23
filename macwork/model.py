@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -36,6 +37,49 @@ def steady(label: str) -> str:
     """The label without its momentary state — the inverse of `with_state`, for labels that arrive as strings
     (a recorded step, a stored routine). An `Affordance` knows its own: `a.name()`."""
     return _STATE.sub("", label or "").strip()
+
+
+def word_kind(ch: str) -> str:
+    """What kind of writing one character is, for "does a word go on here": a letter of a script without
+    capitals ("uncased": Chinese, Japanese, Korean, Arabic, Hebrew, Thai…), a letter of one with them
+    ("cased"), a digit, a combining mark, or "" — a space, punctuation, an underscore — where a word ends."""
+    if ch.isalpha():
+        return "uncased" if ch.lower() == ch.upper() else "cased"
+    if ch.isdigit():
+        return "digit"
+    return "mark" if len(ch) == 1 and unicodedata.category(ch).startswith("M") else ""
+
+
+def joined(a: str, b: str) -> bool:
+    """Does the word that `a` is in go on into `b`? It does into a combining mark, which belongs to the
+    letter before it; after a mark it goes on into whatever a word is made of; otherwise only where both
+    are the same kind. So a change of script ends a word ("Safari" in "Safari浏览器"), and so does a space
+    after an accent that was written as a mark of its own."""
+    ka, kb = word_kind(a), word_kind(b)
+    return kb == "mark" or (kb != "" and ka in (kb, "mark"))
+
+
+def clip(text: str, n: int) -> str:
+    """At most `n` characters, cut where a word ends, with "…" where anything was cut.
+
+    Cut anywhere else, the piece that is left reads like a word of its own: a 'look into' summary cut each
+    label at 40 characters, 「… — a Service of Saf」 was tagged a person, and 「Saf」 then went out as a
+    pseudonym inside 「Safari」. So the cut steps back to where a word ends, by at most half of `n`: in a
+    script written without spaces a whole run of letters is one word, and stepping back drops all of it
+    (「在词典里查 serendipity，把它的…」 became 「在词典里查 serendipity，…」). A word longer than that is
+    cut where the room ends.
+    """
+    if len(text) <= n:
+        return text
+    if n < 2:
+        return "…"[:max(n, 0)]
+    k = n - 1
+    floor = max(k - n // 2, 1)
+    while k > floor and joined(text[k - 1], text[k]):
+        k -= 1
+    if joined(text[k - 1], text[k]):         # still inside a word: one longer than the room to step back
+        k = n - 1
+    return text[:k].rstrip() + "…"
 
 
 @dataclass

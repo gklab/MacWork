@@ -78,8 +78,15 @@ class FakeHelper:
             return {"screen_locked": self.locked}
         if method == "system.locale":
             return {"locale": "en_US", "languages": ["en-US"], "ocr_languages": ["en-US"], "region": "US"}
+        if method == "system.identity":      # a fake Mac has no serial number to hide
+            return {}
         if method == "screen.windows":
-            return list(getattr(self, "screen", []))
+            # as a helper that knows `pid` answers: this Space unless asked for every window, one process when
+            # asked for one, and each window with whatever a test gave it (`ordinary`, `input_method`, `title`)
+            wins = list(getattr(self, "screen", []))
+            if p.get("pid") is not None:
+                wins = [w for w in wins if w.get("pid") == p["pid"]]
+            return wins if p.get("all") else [w for w in wins if w.get("on_screen", True)]
         if method == "screen.ocr":           # a screen with nothing drawn on it beyond what the tree says
             return {"boxes": [], "frame": p.get("near") or [0, 0, 800, 600], "ms": 1}
         if method == "ping":
@@ -324,6 +331,21 @@ def test_menu_items_keep_their_own_shortcut_as_a_key_combo(tmp_path):
     combos = {a.label: a.target.get("combo") for a in obs.affordances}
     assert combos["menu File ▸ New Document (⌘N)"] == "cmd+n" and combos["menu File ▸ Export ▸ PDF (⇧⌘P)"] == "cmd+shift+p"
     assert combos["menu File ▸ Delete Document"] is None
+
+
+def test_the_fake_mac_answers_the_way_a_newer_helper_does():
+    """The fake Mac most tests run on answers the way a helper that knows `pid` does: the windows of one process
+    when asked for one, this Space unless asked for every window, each window with the fields a test gave it —
+    and it has no serial number to hide."""
+    class Screen(FakeHelper):
+        screen = [{"pid": 42, "id": 1, "layer": 0, "ordinary": True, "title": "Untitled"},
+                  {"pid": 7, "id": 2, "layer": 0},
+                  {"pid": 42, "id": 3, "layer": 0, "on_screen": False}]
+    h = Screen()
+    assert [w["id"] for w in h.call("screen.windows", pid=42)] == [1]
+    assert [w["id"] for w in h.call("screen.windows", pid=42, all=True)] == [1, 3]
+    assert [w["id"] for w in h.call("screen.windows")] == [1, 2]
+    assert h.call("screen.windows", pid=42)[0] == Screen.screen[0] and h.call("system.identity") == {}
 
 
 # ----------------------------------------------------------------- goal-level protocol

@@ -20,7 +20,7 @@ import pytest
 from macwork.config import Config
 from macwork.engine import Engine
 from macwork.model import Affordance, Observation
-from macwork.observe import named_combo
+from macwork.observe import Ctx, canonical_combo, menu, named_combo
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg
 
 MENU = [
@@ -50,6 +50,38 @@ def test_a_combo_no_menu_item_has_is_left_alone():
 
 def test_nothing_is_named_when_the_menu_was_not_read():
     assert named_combo(Observation(app=None, window=None, affordances=[]), "cmd+s") is None
+
+
+# --------------------------------------------------------------------------- one key, however it is written
+
+@pytest.mark.parametrize("said, key", [
+    ("cmd + shift + g", "cmd+shift+g"), ("command+n", "cmd+n"), ("⌘O", "cmd+o"), ("⇧⌘G", "cmd+shift+g"),
+    ("shift+cmd+g", "cmd+shift+g"), ("⌥⌘N", "cmd+alt+n"), ("ctrl+option+command+fn+k", "cmd+ctrl+alt+fn+k"),
+    ("Return", "return"), ("the return key", "return"), ("press the escape key", "escape"), ("enter", "return"),
+    ("⌫", "delete"), ("⌘⌫", "cmd+delete"), ("⌘↘", "cmd+end"), ("F20", "f20"),
+    ("fn+delete", "fn+delete"),                     # fn is never dropped: fn+delete is another key than delete
+    ("cmd++", None), ("cmd+", None), ("cmd+shift", None), ("f21", None),      # nothing the helper could split
+    ("a", None),                                    # a character alone is typing, not a key
+    ("menu item 「General」", None), ("rm -rf /", None), ("Command-N", None),
+])
+def test_key_strings_are_read_the_way_the_keyboard_reads_them(said, key):
+    assert canonical_combo(said) == key
+
+
+def test_a_key_written_in_another_order_names_the_same_menu_item(tmp_path):
+    """The menu shows ⇧⌘P and stores cmd+shift+p; a planner writes shift+cmd+p. It is one key."""
+    obs = Observation(app=None, window=None, affordances=[])
+    menu(Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 42, "name": "TextEdit"}), obs)
+    assert named_combo(obs, "shift+cmd+p") == named_combo(obs, "⇧⌘P") == "File ▸ Export ▸ PDF"
+    assert named_combo(obs, "cmd+alt+p") is None
+
+
+def test_a_menu_item_knows_its_place_and_keeps_its_label(tmp_path):
+    obs = Observation(app=None, window=None, affordances=[])
+    menu(Ctx(cfg(tmp_path), FakeHelper(), app={"pid": 42, "name": "TextEdit"}), obs)
+    pdf = next(a for a in obs.affordances if a.target.get("title") == "PDF")
+    assert pdf.target["menu_path"] == ["File", "Export", "PDF"] and pdf.target["path"] == "File ▸ Export ▸ PDF"
+    assert pdf.label == "menu File ▸ Export ▸ PDF (⇧⌘P)"
 
 
 # --------------------------------------------------------------------------- what it buys

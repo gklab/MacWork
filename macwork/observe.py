@@ -17,6 +17,7 @@ import threading
 import time
 import zlib
 from dataclasses import dataclass, field
+from functools import lru_cache
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Callable
@@ -219,6 +220,59 @@ def _combo(cmd: dict[str, Any] | None) -> str | None:
     return "+".join(mods + [ch.lower()]) if mods else None
 
 
+# Keys as they get written: modifiers by name or by the glyph the Mac's menus show (⌘ ⌃ ⌥ ⇧), named keys by
+# name, alias or glyph (↩ ⎋ ⌫ …), each read as the name input.key takes. macOS numbers F-keys up to F20; the
+# helper's own key table stops at F12.
+_COMBO_ORDER = ("cmd", "ctrl", "alt", "shift", "fn")
+_MOD_WORDS = {"cmd": "cmd", "command": "cmd", "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "option": "alt",
+              "opt": "alt", "shift": "shift", "fn": "fn"}
+_MOD_GLYPHS = {"⌘": "cmd", "⌃": "ctrl", "⌥": "alt", "⇧": "shift"}
+_KEY_ALIASES = {"enter": "return", "esc": "escape", "backspace": "delete", "↩": "return", "⎋": "escape", "⇥": "tab",
+                "⌫": "delete", "⌦": "forwarddelete", "←": "left", "→": "right", "↑": "up", "↓": "down",
+                "↖": "home", "↘": "end", "⇞": "pageup", "⇟": "pagedown"}
+_NAMED_KEYS = frozenset({"return", "escape", "tab", "space", "delete", "forwarddelete", "up", "down", "left", "right",
+                         "home", "end", "pageup", "pagedown"} | {f"f{i}" for i in range(1, 21)})
+_LABEL_WORDS = frozenset({"press", "the", "key"})      # our own option wording ("press the return key"), said back
+
+
+def canonical_combo(said: Any) -> str | None:
+    """A key as the keyboard reads it — `cmd+shift+g` for "⇧⌘G", "shift+cmd+g", "Cmd + Shift + G" alike — or
+    None where it is not one.
+
+    Modifiers come in `_combo`'s order (cmd, ctrl, alt, shift, then fn, which is never dropped: fn+delete is
+    another key than delete). The key is one printable character or a named physical key. A named key alone
+    is a key; a character alone is typing, not a key; and what the helper could not split into modifiers
+    and a key — "cmd++", "menu item 「General」" — is None, not a guess.
+    """
+    return _canonical(str(said or ""))
+
+
+@lru_cache(maxsize=4096)
+def _canonical(said: str) -> str | None:
+    # named_combo reads every menu item's combo again for each key it is asked about, and the same few hundred
+    # strings come back on every look: the 13 physical keys over 400 menu items took 6.2 ms a look read afresh,
+    # 0.5 ms remembered (0.4 ms when combos were compared as written)
+    words = [w for w in re.sub(r"\s*\+\s*", "+", said.strip().lower()).split() if w not in _LABEL_WORDS]
+    if len(words) != 1:
+        return None
+    *mods, key = words[0].split("+")
+    held: set[str] = set()
+    for m in mods:
+        if m in _MOD_WORDS:
+            held.add(_MOD_WORDS[m])
+        elif m and all(g in _MOD_GLYPHS for g in m):
+            held.update(_MOD_GLYPHS[g] for g in m)
+        else:
+            return None
+    while key[:1] in _MOD_GLYPHS:                      # "⇧⌘g": the menus' own way of writing it
+        held.add(_MOD_GLYPHS[key[0]])
+        key = key[1:]
+    key = _KEY_ALIASES.get(key, key)
+    if key not in _NAMED_KEYS and not (held and len(key) == 1 and key.isprintable() and not key.isspace()):
+        return None
+    return "+".join([m for m in _COMBO_ORDER if m in held] + [key])
+
+
 def _tree(nodes: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
     by_ref = {n["ref"]: n for n in nodes}
     kids: dict[str, list[str]] = {}
@@ -274,9 +328,13 @@ def menu(ctx: Ctx, obs: Observation) -> None:
                 elif include_disabled or n.get("enabled", True):
                     checked = f" {n['mark']}" if n.get("mark") else ""
                     ident = n.get("ident") or ""
+                    # where it sits: `path` as the menus spell it (what a key is named by, see named_combo),
+                    # `menu_path` as the titles from the top menu down
+                    place = path + [title]
                     obs.affordances.append(Affordance(f"m{len(obs.affordances)}", "menu", "press",
-                                                      f"menu {' ▸ '.join(path + [title])}{checked}{_shortcut(n.get('cmd'))}",
-                                                      {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd")), "title": title},
+                                                      f"menu {' ▸ '.join(place)}{checked}{_shortcut(n.get('cmd'))}",
+                                                      {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd")), "title": title,
+                                                       "path": " ▸ ".join(place), "menu_path": place},
                                                       context=' ▸ '.join(path[:1]),
                                                       key=_identity(ident, n.get("role"), n.get("subrole"), title)))
                     if n.get("mark"):
@@ -1462,10 +1520,15 @@ def named_combo(obs: Observation, combo: str) -> str | None:
     publishes the key equivalent of every menu item, and the menu provider has already read them.
 
     Never a filter: an app may implement a key with no menu item behind it, and that key still works.
+
+    Both sides are read as the keyboard reads them (`canonical_combo`). Compared as written, the planner's
+    `shift+cmd+p` named nothing where the menu's own ⇧⌘P is stored as `cmd+shift+p`.
     """
-    want = combo.replace(" ", "").lower()
+    want = canonical_combo(combo)
+    if want is None:
+        return None
     for a in obs.affordances:
-        if a.channel == "menu" and str(a.target.get("combo", "")).replace(" ", "").lower() == want:
+        if a.channel == "menu" and a.target.get("combo") and canonical_combo(a.target["combo"]) == want:
             return str(a.target.get("path") or a.label)
     return None
 
