@@ -139,7 +139,7 @@ class RedactionError(RuntimeError):
 
 class Redactor:
     def __init__(self, cfg: Config, entities: Entities | None = None, protect: Callable[[], Any] | None = None,
-                 detect: Detect | None = None) -> None:
+                 detect: Detect | None = None, identity: Callable[[], list[str]] | None = None) -> None:
         r = cfg.privacy.get("redact", {}) or {}
         self.detect = detect
         self.detect_kinds = set(r.get("detect") or [])
@@ -171,6 +171,14 @@ class Redactor:
         for name in r.get("names") or []:        # names the user always wants hidden, whatever the tagger thinks
             self._token("PERSON", str(name))
             self._anywhere.add(str(name))
+        try:
+            mine = [str(v) for v in (identity() if identity else []) if v]   # this Mac's serial number and hardware UUID
+        except Exception:  # noqa: BLE001  (nothing to add; what the tagger and the patterns find still stands)
+            mine = []
+        self._mine = sorted(mine, key=len, reverse=True)
+        for value in mine:
+            self._token("DEVICE", value)
+            self._anywhere.add(value)
 
     def _token(self, kind: str, value: str) -> str:
         if value not in self.table:
@@ -416,6 +424,11 @@ class Redactor:
             return "[withheld]"
         for rx, to in self.replace:
             s = rx.sub(to, s)
+        # This Mac's own identifiers go whole, before the patterns: a hardware UUID whose middle groups are
+        # digits reads as a card number to them (「4A1B2C3D-1111-2222-3333-4444ABCDEF12」), and the rest of it
+        # would go out in the clear around the card's pseudonym.
+        for value in self._mine:
+            s = s.replace(value, self.table[value])
         for kind, rx in self.patterns:
             s = rx.sub(lambda m, k=kind: m.group(0) if m.group(0) in self.keep else self._token(k, m.group(0)), s)
         return self._swap(s, {} if tally is None else tally)
