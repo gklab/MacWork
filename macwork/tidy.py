@@ -11,12 +11,9 @@ from .decider import DeciderError, choice, noul
 from .helper import HelperError
 from .model import Task
 from .observe import arrange, observe
+from .onscreen import same_place
 
 log = logging.getLogger(__name__)
-
-
-def _near(a: list[int] | None, b: list[int] | None, slack: int = 3) -> bool:
-    return bool(a and b) and all(abs(x - y) <= slack for x, y in zip(a, b))
 
 
 class TidyMixin:
@@ -104,10 +101,10 @@ class TidyMixin:
                 except HelperError:
                     snaps[pid] = []
             nodes = snaps[pid]
-            el = next((n for n in nodes if n.get("role") == "AXWindow" and _near(n.get("frame"), w.get("frame"))), None)
+            el = next((n for n in nodes if n.get("role") == "AXWindow" and same_place(n.get("frame"), w.get("frame"))), None)
             sheet_of = None
             if el is None:   # a sheet: its own system window, but a child of a window in Accessibility
-                el = next((n for n in nodes if n.get("role") == "AXSheet" and _near(n.get("frame"), w.get("frame"))), None)
+                el = next((n for n in nodes if n.get("role") == "AXSheet" and same_place(n.get("frame"), w.get("frame"))), None)
                 sheet_of = el and next((n for n in nodes if n["ref"] == el.get("parent")), None)
             if el is None:
                 continue

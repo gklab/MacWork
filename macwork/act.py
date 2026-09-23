@@ -17,6 +17,7 @@ from typing import Any, Callable
 from .helper import HelperError
 from .model import Affordance
 from .observe import Ctx
+from .onscreen import same_place
 
 
 @dataclass
@@ -640,9 +641,4 @@ def _window_moved(ctx: Ctx, was: list[float]) -> bool:
         wins = ctx.helper.call("screen.windows", timeout=5) or []
     except HelperError:
         return False              # cannot tell: not a reason to refuse
-    tol = 3
-    for w in wins:
-        f = w.get("frame")
-        if w.get("pid") == ctx.app["pid"] and f and all(abs(float(a) - float(b)) <= tol for a, b in zip(f, was)):
-            return False
-    return True
+    return not any(w.get("pid") == ctx.app["pid"] and same_place(w.get("frame"), was) for w in wins)
