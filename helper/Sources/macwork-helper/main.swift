@@ -9,7 +9,7 @@ import Carbon.HIToolbox
 ///   macwork-helper --stdio              serve stdin/stdout (development: inherits the terminal's permissions)
 ///   macwork-helper --socket <path>      serve a 0600 Unix socket (installed .app, launched by the engine)
 
-let version = "0.1.0"
+let version = "0.2.0"
 let dispatcher = Dispatcher()
 
 /// Whether the session is at the lock screen / login window (nothing can be operated then).
