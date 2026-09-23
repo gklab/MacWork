@@ -186,6 +186,7 @@ final class InputMethodTests: XCTestCase {
     }
 
     // MARK: - which processes are an input method's
+
     func testInputMethodProcessesAreFoundByBundleAndByBeingInsideIt() {
         let bundle = "/Library/Input Methods/Example.app"
         let running = [
@@ -209,6 +210,8 @@ final class InputMethodTests: XCTestCase {
         XCTAssertEqual(found, [870, 806, 807])
         XCTAssertEqual(inputMethodPids(bundleIds: [], bundlePaths: [], running: running), [], "no input method, no process")
     }
+
+    // MARK: - what is still being composed
 
     func testAMarkedRangeIsCountedInUTF16Units() {
         // an NSTextView composing "lo" after "😀hel" says {5, 2}: the emoji is two units, not one character

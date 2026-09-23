@@ -228,7 +228,7 @@ final class Unresponsive {
             }
             marks[pid] = Mark(at: now(), wait: Self.firstWait, el: el, attr: attr)
             ended[pid] = nil
-            say("pid \(pid) did not answer \(attr): it is asked again in \(Self.firstWait) s")
+            say("pid \(pid) did not answer \(attr) in time: believed silent, asked again in \(Self.firstWait) s")
         } else if marks[pid] != nil {
             if Self.answered(err) {
                 endLocked(pid, by: "answer", attr)
@@ -249,7 +249,7 @@ final class Unresponsive {
         lock.lock()
         defer { lock.unlock() }
         if Self.answered(err) {
-            if marks[pid] != nil { endLocked(pid, by: "reask", m.attr) }
+            endLocked(pid, by: "reask", m.attr, asked: 1)
             return false
         }
         if err == .invalidUIElement && !isRunning(pid) {
@@ -261,17 +261,18 @@ final class Unresponsive {
         again.questions += 1
         if err == .cannotComplete {
             again.wait = isLaunching(pid) ? Self.firstWait : min(again.wait * 2, Self.longestWait)
-            say("pid \(pid) did not answer \(m.attr) again (\(again.questions) asked): it is asked again in \(again.wait) s")
+            say("pid \(pid) did not answer \(m.attr) again, asked again \(again.questions) times: next in \(again.wait) s")
         }
         marks[pid] = again
         return true
     }
 
-    private func endLocked(_ pid: pid_t, by: String, _ attr: String) {
+    /// `asked`: the question that was just answered, when it was one asked again.
+    private func endLocked(_ pid: pid_t, by: String, _ attr: String, asked: Int = 0) {
         guard let m = marks.removeValue(forKey: pid) else { return }
-        let t = now()
-        ended[pid] = Ended(at: t, wait: m.wait, questions: m.questions, by: by)
-        say("pid \(pid) answered \(attr) (\(by)) after \(m.questions) asked again")
+        let questions = m.questions + asked
+        ended[pid] = Ended(at: now(), wait: m.wait, questions: questions, by: by)
+        say("pid \(pid) answered \(attr) (\(by)) after being asked again \(questions) times")
     }
 
     private func dropLocked(_ pid: pid_t) {
@@ -282,7 +283,8 @@ final class Unresponsive {
 
     /// {pid: {age_ms, wait_s, questions, cleared_by}}: every app marked now (cleared_by null, age since its last
     /// timeout) and how each app's last mark ended ('answer': another call was answered; 'reask': the question
-    /// asked again was; age since then). An app that has exited is left out.
+    /// asked again was; age since then). `questions` counts the times the question was asked again, answered or
+    /// not. An app that has exited is left out.
     func report() -> [String: Any] {
         lock.lock()
         defer { lock.unlock() }

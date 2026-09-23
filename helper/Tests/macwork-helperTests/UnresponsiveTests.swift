@@ -51,6 +51,7 @@ final class UnresponsiveTests: XCTestCase {
         XCTAssertFalse(u.skip(7))
         XCTAssertEqual(mac.asked.count, 1, "an app that answered is not asked again")
         XCTAssertEqual(entry(u, 7)?["cleared_by"] as? String, "reask", "ping says what ended the mark")
+        XCTAssertEqual(entry(u, 7)?["questions"] as? Int, 1, "and how many times it was asked again, the answered one too")
         XCTAssertEqual(mac.lines.count, 2, "one line for the mark and one for its end: \(mac.lines)")
     }
 
