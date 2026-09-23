@@ -12,6 +12,9 @@ private let batchAttrs: [String] = [
     "AXMenuItemCmdChar", "AXMenuItemCmdModifiers", kAXRoleDescriptionAttribute, "AXMenuItemMarkChar",
     kAXURLAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
     kAXDocumentAttribute,
+    // 22, 23: which button Return and Escape press in a window or a sheet, as AppKit declares it. In the same
+    // one round trip per node as the rest: no call of its own whose timeout could mark the app.
+    kAXDefaultButtonAttribute, kAXCancelButtonAttribute,
 ].map { $0 as String }
 
 final class AXStore {
@@ -337,9 +340,11 @@ func axActionDescription(_ el: AXUIElement, _ action: String) -> String? {
     return (s?.isEmpty ?? true) ? nil : s
 }
 
-/// One node as a plain dictionary (children not included).
+/// One node as a plain dictionary (children not included), and, for a window or a sheet, the buttons it names
+/// as its default and cancel buttons.
 private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, settableRoles: Set<String> = [],
-                      byCapability: Bool = false, knownActions: Set<String> = []) -> (node: [String: Any], children: [AXUIElement], frame: CGRect?) {
+                      byCapability: Bool = false, knownActions: Set<String> = [])
+    -> (node: [String: Any], children: [AXUIElement], frame: CGRect?, buttons: [(key: String, element: AXUIElement)]) {
     var raw: CFArray?
     AXUIElementCopyMultipleAttributeValues(el, batchAttrs as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw)
     let vals = (raw as? [CFTypeRef]) ?? []
@@ -412,7 +417,27 @@ private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, sett
             if !described.isEmpty { node["action_desc"] = described }
         }
     }
-    return (node, children, frame)
+    var buttons: [(key: String, element: AXUIElement)] = []
+    if let role = node["role"] as? String, role == kAXWindowRole as String || role == kAXSheetRole as String {
+        for (i, key) in [(22, "default_button"), (23, "cancel_button")] {
+            if let v = at(i), CFGetTypeID(v) == AXUIElementGetTypeID() { buttons.append((key, v as! AXUIElement)) }
+        }
+    }
+    return (node, children, frame, buttons)
+}
+
+/// Which walked node each wanted element is. `wanted` holds (the node that names it, the key it is named under,
+/// the element); `among` the walked elements in node order. Found by CFHash, then CFEqual: a reference that comes
+/// back from an attribute is its own object, equal to the walked one, not identical. An element the walk never
+/// reached is left out.
+func refsOf(wanted: [(node: Int, key: String, element: AXUIElement)], among: [AXUIElement]) -> [(node: Int, key: String, index: Int)] {
+    guard !wanted.isEmpty else { return [] }
+    var byHash: [CFHashCode: [Int]] = [:]
+    for (i, el) in among.enumerated() { byHash[CFHash(el), default: []].append(i) }
+    return wanted.compactMap { w in
+        guard let i = byHash[CFHash(w.element)]?.first(where: { CFEqual(among[$0], w.element) }) else { return nil }
+        return (w.node, w.key, i)
+    }
 }
 
 // MARK: - snapshot
@@ -485,6 +510,9 @@ func axSnapshot(_ p: Params) throws -> Any {
     var nodes: [[String: Any]] = []
     var truncated = false
     var visited: [CFHashCode: [AXUIElement]] = [:]   // AX trees can contain cycles (an app listing itself as a child)
+    // each node's element, and the buttons windows and sheets name: named by their refs once the walk is done
+    var walked: [AXUIElement] = []
+    var buttons: [(node: Int, key: String, element: AXUIElement)] = []
     func firstVisit(_ el: AXUIElement) -> Bool {
         let h = CFHash(el)
         if let seen = visited[h], seen.contains(where: { CFEqual($0, el) }) { return false }
@@ -515,6 +543,8 @@ func axSnapshot(_ p: Params) throws -> Any {
         node["depth"] = item.depth
         if let parent = item.parent { node["parent"] = parent }
         nodes.append(node)
+        walked.append(item.el)
+        for b in d.buttons { buttons.append((nodes.count - 1, b.key, b.element)) }
         guard item.depth < maxDepth else { continue }
         var clip = item.clip
         if clip == nil, let f = d.frame, f.width > 0, f.height > 0, (node["role"] as? String) == (kAXWindowRole as String) { clip = f }
@@ -522,6 +552,9 @@ func axSnapshot(_ p: Params) throws -> Any {
         if d.children.count > maxChildren { node["more_children"] = d.children.count - maxChildren; nodes[nodes.count - 1] = node }
         for child in kids.reversed() { stack.append((child, ref, item.depth + 1, clip, free)) }
     }
+    // Which button Return and Escape press, as the window or sheet declares it: default_button and cancel_button
+    // hold that button's ref. One the walk never reached (cut by a budget, or not asked for) is left out.
+    for hit in refsOf(wanted: buttons, among: walked) { nodes[hit.node][hit.key] = nodes[hit.index]["ref"] }
     var out: [String: Any] = ["gen": gen, "pid": Int(pid), "nodes": nodes, "truncated": truncated,
                               "ms": Int(Date().timeIntervalSince(started) * 1000)]
     // an app that answers but has not finished launching may have no window yet: not "it has none"

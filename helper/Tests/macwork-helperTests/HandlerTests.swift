@@ -141,6 +141,23 @@ final class HandlerTests: XCTestCase {
                                               "paths": ["/nowhere/at/all/\(counter())"]]))
     }
 
+    // MARK: - the buttons a window names
+
+    func testAButtonAWindowNamesIsFoundByItsRef() {
+        // A window's default button comes back as an element reference of its own, never the very object the
+        // walk holds: it is found as an equal element. Application elements stand in for buttons here, being
+        // the one kind of element made without Accessibility.
+        let walked = [AXUIElementCreateApplication(1), AXUIElementCreateApplication(2), AXUIElementCreateApplication(3)]
+        let hits = refsOf(wanted: [(node: 0, key: "default_button", element: AXUIElementCreateApplication(2)),
+                                   (node: 0, key: "cancel_button", element: AXUIElementCreateApplication(9))],
+                          among: walked)
+        XCTAssertEqual(hits.count, 1, "a button the walk never reached is left out: \(hits)")
+        XCTAssertEqual(hits.first?.node, 0)
+        XCTAssertEqual(hits.first?.key, "default_button")
+        XCTAssertEqual(hits.first?.index, 1, "the walked node that is that button")
+        XCTAssertTrue(refsOf(wanted: [], among: walked).isEmpty)
+    }
+
     // MARK: - runAsync
 
     func testAnAsyncCallThatFinishesComesBack() throws {
