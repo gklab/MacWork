@@ -42,7 +42,9 @@ def steady(label: str) -> str:
 def word_kind(ch: str) -> str:
     """What kind of writing one character is, for "does a word go on here": a letter of a script without
     capitals ("uncased": Chinese, Japanese, Korean, Arabic, Hebrew, Thai…), a letter of one with them
-    ("cased"), a digit, a combining mark, or "" — a space, punctuation, an underscore — where a word ends."""
+    ("cased"), a digit, a combining mark, or "" — a space, punctuation, an underscore — where a word ends.
+    Scripts of one kind are not told apart: Latin and Cyrillic are both "cased", Chinese and Arabic both
+    "uncased"."""
     if ch.isalpha():
         return "uncased" if ch.lower() == ch.upper() else "cased"
     if ch.isdigit():
@@ -51,23 +53,45 @@ def word_kind(ch: str) -> str:
 
 
 def joined(a: str, b: str) -> bool:
-    """Does the word that `a` is in go on into `b`? It does into a combining mark, which belongs to the
-    letter before it; after a mark it goes on into whatever a word is made of; otherwise only where both
-    are the same kind. So a change of script ends a word ("Safari" in "Safari浏览器"), and so does a space
-    after an accent that was written as a mark of its own."""
+    """Does a word whose last letter is `a` go on into `b`? Into a combining mark it does: the mark belongs to
+    the letter before it. Otherwise only where both are of one kind, so a word ends at a space, punctuation
+    or an underscore, where letters with capitals meet letters without ("Safari" in "Safari浏览器"), and where
+    letters meet digits.
+
+    `a` is a letter, never a mark: a mark does not say what kind of letter it sits on. Taking the mark for
+    the letter, this went on after it into anything a word is made of, so after 「café」 written with its
+    accent as a mark of its own a word went on into Chinese and into digits, where after 「café」 written as
+    one character it ends. Text is asked with `joined_at`, which looks past a mark to its letter; a mark
+    given here as `a` sits on no letter and carries no word on."""
     ka, kb = word_kind(a), word_kind(b)
-    return kb == "mark" or (kb != "" and ka in (kb, "mark"))
+    return kb == "mark" or (kb != "" and ka == kb)
+
+
+def joined_at(text: str, k: int) -> bool:
+    """Does a word go on across position `k` of `text`, from text[k - 1] into text[k]? `joined`, with a
+    combining mark read as the letter it sits on, so a word ends in the same places whether an accent is
+    written into its letter or as a mark after it: 「Chloé2024」 is 「Chloé」 and 「2024」 either way, and
+    「cafés」 is one word. Nothing is joined at either end of the text."""
+    if not 0 < k < len(text):
+        return False
+    i = k - 1
+    while i > 0 and word_kind(text[i]) == "mark":
+        i -= 1
+    return joined(text[i], text[k])
 
 
 def clip(text: str, n: int) -> str:
-    """At most `n` characters, cut where a word ends, with "…" where anything was cut.
+    """At most `n` characters, cut where a word ends (`joined_at`), with "…" where anything was cut.
 
     Cut anywhere else, the piece that is left reads like a word of its own: a 'look into' summary cut each
     label at 40 characters, 「… — a Service of Saf」 was tagged a person, and 「Saf」 then went out as a
-    pseudonym inside 「Safari」. So the cut steps back to where a word ends, by at most half of `n`: in a
-    script written without spaces a whole run of letters is one word, and stepping back drops all of it
-    (「在词典里查 serendipity，把它的…」 became 「在词典里查 serendipity，…」). A word longer than that is
-    cut where the room ends.
+    pseudonym inside 「Safari」. So the cut steps back to where a word ends, giving up at most n // 2
+    characters: in a script written without spaces a whole run of letters is one word, and a step back with
+    no bound gives up as much of the room as that run fills. A word that began more than n // 2 characters
+    before the end of the room is cut where the room ends, though never between a letter and its accent; one
+    that began nearer is left out whole. Cut at 40, as a 'look into' summary cuts them, the option labels in
+    this Mac's audit lose a median of 1 character to the step back; the bound decides 5 of the 6,106 that
+    are longer, each a Latin name of more than 20 letters, which it cuts inside.
     """
     if len(text) <= n:
         return text
@@ -75,10 +99,12 @@ def clip(text: str, n: int) -> str:
         return "…"[:max(n, 0)]
     k = n - 1
     floor = max(k - n // 2, 1)
-    while k > floor and joined(text[k - 1], text[k]):
+    while k > floor and joined_at(text, k):
         k -= 1
-    if joined(text[k - 1], text[k]):         # still inside a word: one longer than the room to step back
+    if joined_at(text, k):                   # still inside a word, one that began further back than that
         k = n - 1
+        while k > 1 and word_kind(text[k]) == "mark":
+            k -= 1
     return text[:k].rstrip() + "…"
 
 

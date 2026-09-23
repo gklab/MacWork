@@ -31,8 +31,11 @@ def ordinary(w: dict[str, Any]) -> bool:
 def input_method_panel(w: dict[str, Any]) -> bool:
     """A window an input method floats over the app — its candidates, what is being composed — which is no
     prompt, no dialog and nothing a task answers or closes. The helper marks every window of an enabled input
-    source (`input_method`); only those above the ordinary level are panels. The same process's window at the
-    ordinary level is its settings, a window like any other, and is never skipped."""
+    source (`input_method`); those above the normal window level, layer 0, are panels. The same process's
+    window at layer 0 is its settings, a window like any other, and is never skipped. Layer 0 is not where
+    `ordinary` draws its line: a newer helper calls ordinary every layer from 0 up to the main menu's, 24, so
+    an input method's window at layers 1 to 23, a floating or a modal panel of its own, is both ordinary and
+    a panel here."""
     return bool(w.get("input_method")) and _layer(w) > 0
 
 
