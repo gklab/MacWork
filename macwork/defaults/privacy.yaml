@@ -17,9 +17,14 @@ redact:
   detect: [PHONE, ADDRESS]
   patterns:                            # name -> regex; matches become ⟦NAME_n⟧, stable within a task
     EMAIL: '[\w.+-]+@[\w-]+(?:\.[\w-]+)+'
-    PHONE: '(?<![\d])(?:\+?\d{1,3}[ -]?)?1[3-9]\d{9}(?![\d])|(?<![\d])\(?\d{3}\)?[ -]\d{3,4}[ -]\d{4}(?![\d])'
-    IDNUM: '(?<![\dA-Za-z])\d{17}[\dXx](?![\dA-Za-z])'
-    CARD: '(?<![\d])(?:\d{4}[ -]?){3}\d{1,7}(?![\d])'
+    # The digits after a decimal point are the rest of a number, not a phone, ID or card number: 6,401
+    # pseudonyms in 79 tasks were such digits — ruler marks 「20.⟦CARD_1⟧」, steppers 「0.⟦CARD_1⟧」 — and the
+    # decider was shown a pseudonym where the number was. A point only, not a comma: none of the 6,401
+    # followed one, and after a comma the digits are the next field of a CSV row (「1,13812345678」), which
+    # the system's detector does not find either.
+    PHONE: '(?<![\d])(?<!\d\.)(?:\+?\d{1,3}[ -]?)?1[3-9]\d{9}(?![\d])|(?<![\d])(?<!\d\.)\(?\d{3}\)?[ -]\d{3,4}[ -]\d{4}(?![\d])'
+    IDNUM: '(?<![\dA-Za-z])(?<!\d\.)\d{17}[\dXx](?![\dA-Za-z])'
+    CARD: '(?<![\d])(?<!\d\.)(?:\d{4}[ -]?){3}\d{1,7}(?![\d])'
     # not glued to a letter: a version number written V8.1.3.8 was pseudonymised as an address, and a task
     # asked for it answered ⟦IP_1⟧ — twice out of three, on an app the engine had never seen
     IP: '(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])'

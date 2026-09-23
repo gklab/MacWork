@@ -127,6 +127,29 @@ def test_a_version_number_glued_to_a_letter_is_not_an_address(tmp_path):
     assert "⟦IP_1⟧" in r.text("connected to 10.0.0.7 on port 22")
 
 
+# --- numbers that are not phone, card or ID numbers ----------------------------------------------------
+
+def test_the_digits_after_a_decimal_point_are_not_a_card_or_phone_number(tmp_path):
+    """A ruler mark read 「20.⟦CARD_1⟧」 and a stepper 「0.⟦CARD_1⟧」: 6,401 times in 79 tasks the decider was
+    shown a pseudonym where a number was."""
+    r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
+    for number in ("20.31746031746032", "0.27000121772289", "12.13812345678"):
+        assert r.text(f"value {number}") == f"value {number}", number
+    assert "4111 1111 1111 1111" not in r.text("Card ending in 4111 1111 1111 1111")
+    assert "13812345678" not in r.text("call 13812345678")
+
+
+def test_a_csv_row_after_a_number_still_hides_its_phone_and_card(tmp_path):
+    """After a comma the digits are the next field of a row, not the rest of a number — and the system's
+    detector finds none of these, so the patterns are all there is."""
+    r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
+    for row, kind in (("1,13812345678", "PHONE"), ("3,4111111111111111", "CARD"), ("1,11010519491231002X", "IDNUM"),
+                      ("12,5500-0000-0000-0004", "CARD")):
+        field = row.split(",", 1)[1]
+        sent = r.text(row)
+        assert field not in sent and f"⟦{kind}_" in sent, sent
+
+
 # --- what was left in place ---------------------------------------------------------------------------
 
 def test_what_was_left_in_place_is_counted_by_kind(tmp_path):
