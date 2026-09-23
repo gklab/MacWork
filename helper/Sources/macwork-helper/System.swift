@@ -700,29 +700,120 @@ func appsOpeners(_ p: Params) throws -> Any {
 
 // MARK: - windows on screen
 
-/// Every window on screen, front to back, with its owner and layer (no titles: those need Screen Recording).
-/// Lets the engine notice what covers an app — a permission prompt or an alert from another process.
+/// Whether a window level is one an app's own windows live at: from the normal level up to, not including, the
+/// main menu's — normal, floating, modal panel, utility — as the Mac numbers them. The menu bar, status items
+/// and open menus sit at that level and above. Layer 0 alone left out an app's own floating and modal panels,
+/// and any layer at all would count its status item's window as one of its windows.
+func ordinaryLevel(_ layer: Int) -> Bool {
+    Int(CGWindowLevelForKey(.normalWindow)) <= layer && layer < Int(CGWindowLevelForKey(.mainMenuWindow))
+}
+
+/// One window of the window server's list as the engine gets it, or nil when it is not wanted: without its
+/// owner or its bounds, or another process's when `pidFilter` names one. `onScreen` holds the windows on this
+/// Space when the list was of every window, nil when it was of the on-screen ones only.
+func windowEntry(_ w: [String: Any], onScreen: Set<Int>?, regular: (Int) -> Bool, pidFilter: Int?,
+                 imPids: Set<Int>) -> [String: Any]? {
+    guard let pid = w[kCGWindowOwnerPID as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Any] else { return nil }
+    if let only = pidFilter, pid != only { return nil }
+    let frame = ["X", "Y", "Width", "Height"].map { safeInt((b[$0] as? Double) ?? Double((b[$0] as? Int) ?? 0)) }
+    let number = w[kCGWindowNumber as String] as? Int ?? 0
+    let layer = w[kCGWindowLayer as String] as? Int ?? 0
+    var e: [String: Any] = ["pid": pid, "id": number, "owner": w[kCGWindowOwnerName as String] as? String ?? "",
+                            "layer": layer, "frame": frame, "regular": regular(pid),
+                            "alpha": w[kCGWindowAlpha as String] as? Double ?? 1,
+                            "on_screen": onScreen.map { $0.contains(number) } ?? true,
+                            "ordinary": ordinaryLevel(layer), "input_method": imPids.contains(pid)]
+    // a title only for the one app asked about: it is that app's to show, and the list of everything on
+    // screen stays without anyone's document names
+    if pidFilter != nil, let title = w[kCGWindowName as String] as? String, !title.isEmpty { e["title"] = title }
+    return e
+}
+
+/// A running process, as much of it as says whether it belongs to an input method.
+struct RunningProcess {
+    let pid: Int
+    let bundleId: String?
+    let bundlePath: String?
+    let executablePath: String?
+}
+
+/// The processes of the input methods whose bundles are given: a process whose bundle identifier is one of
+/// them, or whose bundle or executable lies inside one of those bundles — its services and helpers carry
+/// identifiers of their own. Paths are compared with a trailing "/", so ".../Example.app2" is not inside
+/// ".../Example.app".
+func inputMethodPids(bundleIds: Set<String>, bundlePaths: [String], running: [RunningProcess]) -> Set<Int> {
+    let roots = bundlePaths.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+    func inside(_ path: String?) -> Bool {
+        guard let path else { return false }
+        return roots.contains { (path + "/").hasPrefix($0) }
+    }
+    var out = Set<Int>()
+    for r in running {
+        if let id = r.bundleId, bundleIds.contains(id) { out.insert(r.pid) }
+        else if inside(r.bundlePath) || inside(r.executablePath) { out.insert(r.pid) }
+    }
+    return out
+}
+
+private func tisString(_ s: TISInputSource, _ key: CFString) -> String? {
+    guard let p = TISGetInputSourceProperty(s, key) else { return nil }
+    return Unmanaged<AnyObject>.fromOpaque(p).takeUnretainedValue() as? String
+}
+
+/// The processes of this Mac's enabled keyboard input methods, asked of Text Input Sources and LaunchServices:
+/// no input method is known by name. Keyboard layouts have no process of their own, and palettes (the
+/// Character Viewer, press-and-hold accents) are another category, opened on purpose. Measured at 1.3 ms a
+/// call; on this Mac it finds the input method (by its bundle identifier) and its services process (inside
+/// the bundle), and nothing else.
+func inputMethodPids() -> Set<Int> {
+    let filter = [kTISPropertyInputSourceCategory as String: kTISCategoryKeyboardInputSource as String] as CFDictionary
+    let sources = (TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource]) ?? []   // enabled only
+    var ids = Set<String>()
+    for s in sources where tisString(s, kTISPropertyInputSourceType) != (kTISTypeKeyboardLayout as String) {
+        if let id = tisString(s, kTISPropertyBundleID) { ids.insert(id) }
+    }
+    guard !ids.isEmpty else { return [] }
+    let apps = NSWorkspace.shared.runningApplications
+    var paths = ids.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.standardizedFileURL.path }
+    for a in apps {
+        if let id = a.bundleIdentifier, ids.contains(id), let u = a.bundleURL { paths.append(u.standardizedFileURL.path) }
+    }
+    let running = apps.map { RunningProcess(pid: Int($0.processIdentifier), bundleId: $0.bundleIdentifier,
+                                            bundlePath: $0.bundleURL?.standardizedFileURL.path,
+                                            executablePath: $0.executableURL?.standardizedFileURL.path) }
+    return inputMethodPids(bundleIds: ids, bundlePaths: paths, running: running)
+}
+
+/// Every window on screen, front to back, with its owner and layer. Lets the engine notice what covers an app — a
+/// permission prompt or an alert from another process — and find an app's windows without asking the app,
+/// which a launching or busy app does not answer.
 /// Every window, or only the ones on screen. "On screen" means this Space: a window the task opened and then
 /// switched away from is not gone, and tracking it as gone loses it for good.
+///
+/// - `pid`: only that process's windows, each with its `title` where the window server has one. Titles are given
+///   only for the one app asked about; reading them needs Screen Recording, which reading a window by sight
+///   already needs.
+/// - `ordinary`: a level an app's own windows live at (see `ordinaryLevel`).
+/// - `input_method`: the window belongs to an enabled keyboard input method — its candidates, its status, its
+///   settings — which is nobody's prompt.
 func screenWindows(_ p: Params) throws -> Any {
     let all = p["all"] as? Bool ?? false
+    let only = p["pid"] as? Int
     let options: CGWindowListOption = all ? [.optionAll, .excludeDesktopElements] : [.optionOnScreenOnly, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return [Any]()
     }
-    let onScreen: Set<Int> = all
+    let onScreen: Set<Int>? = all
         ? Set(((CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [])
             .compactMap { $0[kCGWindowNumber as String] as? Int })
-        : []
-    return list.compactMap { w -> [String: Any]? in
-        guard let pid = w[kCGWindowOwnerPID as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Any] else { return nil }
-        let frame = ["X", "Y", "Width", "Height"].map { safeInt((b[$0] as? Double) ?? Double((b[$0] as? Int) ?? 0)) }
-        let app = NSRunningApplication(processIdentifier: pid_t(pid))
-        let number = w[kCGWindowNumber as String] as? Int ?? 0
-        return ["pid": pid, "id": number,
-                "owner": w[kCGWindowOwnerName as String] as? String ?? "", "layer": w[kCGWindowLayer as String] as? Int ?? 0,
-                "frame": frame, "regular": app?.activationPolicy == .regular,
-                "alpha": w[kCGWindowAlpha as String] as? Double ?? 1,
-                "on_screen": all ? onScreen.contains(number) : true]
+        : nil
+    let imPids = inputMethodPids()
+    var regular: [Int: Bool] = [:]
+    func isRegular(_ pid: Int) -> Bool {
+        if let known = regular[pid] { return known }
+        let r = NSRunningApplication(processIdentifier: pid_t(pid))?.activationPolicy == .regular
+        regular[pid] = r
+        return r
     }
+    return list.compactMap { windowEntry($0, onScreen: onScreen, regular: isRegular, pidFilter: only, imPids: imPids) }
 }
