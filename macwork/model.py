@@ -215,8 +215,8 @@ class Change:
         return not (self.text_changed or self.window_changed or self.app_changed or self.picture_changed)
 
     def describe(self, limit: int = 200) -> str:
-        def cut(x: str, n: int = 48) -> str:
-            return x if len(x) <= n else x[: n - 1] + "…"
+        def cut(x: str, n: int = 48) -> str:   # never inside a word: see `clip`
+            return clip(x, n)
         parts: list[str] = []
         if self.app_changed:
             parts.append(f"now in {self.app_after}")
@@ -234,7 +234,7 @@ class Change:
             amount = f"{share:.0f}%" if share >= 1 else "under 1%"
             return f"the picture in the window changed ({amount} of it, {self.picture_where}); no text on screen did"
         out = ", ".join(parts) or NOTHING_CHANGED
-        return out if len(out) <= limit else out[: limit - 1] + "…"
+        return clip(out, limit)
 
     def as_dict(self) -> dict[str, Any]:
         return {"app_before": self.app_before, "app_after": self.app_after, "window_before": self.window_before,

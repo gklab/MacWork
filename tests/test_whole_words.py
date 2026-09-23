@@ -16,6 +16,7 @@ where it is glued into a longer word the way names are — the privacy guards be
 import json
 
 from macwork.config import Config
+from macwork.model import Change
 from macwork.privacy import Audit, Gate, Redactor
 
 
@@ -147,3 +148,17 @@ def test_what_was_left_in_place_is_on_the_audit_log(tmp_path):
     decide = next(x for x in sent if x["kind"] == "decide")
     assert decide["state"]["app"] == "Safari"
     assert decide["kept"] == {"glued": {"PERSON": 1}, "in_a_name": {}, "replaced_glued": {}}
+
+
+# --------------------------------------------------------------------------- the engine's own cuts
+
+def test_what_a_step_changed_is_never_told_with_a_word_cut_in_two():
+    """The history tells the decider what each step changed, each piece cut to fit, and 13 of the 24 cuts found
+    whole again in the step requests of 09-20..23 fell inside a word (「SERENDIPITY Definition & Mean…」). A piece
+    cut inside a word reads like a word of its own: from the 'look into' summaries, also cut by length, the
+    redactor learned 「Saf」 out of 「Safari」."""
+    change = Change(window_before="Downloads", window_after="The Unarchiver finished extracting",
+                    appeared=["The Unarchiver finished extracting the Selection of files"])
+    assert change.describe() == ("window 「Downloads」 → 「The Unarchiver finished…」, "
+                                 "appeared: The Unarchiver finished extracting the…")
+    assert change.describe(60) == "window 「Downloads」 → 「The Unarchiver finished…」, appeared:…"
