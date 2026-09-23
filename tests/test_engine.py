@@ -1136,6 +1136,54 @@ def test_windows_the_task_left_in_running_apps_are_closed_unless_needed(tmp_path
     assert res2["outputs"]["left_open"] == [{"window": "Finder: Caches", "why": "still needed for the goal"}]
 
 
+class DocklessWindows(FakeHelper):
+    """Two processes with no Dock icon put a window on screen during a task: one the task started, one that
+    was running before it (a long-running agent). Each window's own close button closes it."""
+
+    def __init__(self, started_wall):
+        super().__init__()
+        self.screen = [{"pid": 42, "id": 1, "layer": 0, "alpha": 1, "frame": [0, 0, 800, 600]}]
+        self.everyone = [{"pid": 501, "name": "System Information", "bundle_id": "com.apple.SystemProfiler",
+                          "regular": False, "launched": started_wall + 2},
+                         {"pid": 502, "name": "Old Agent", "bundle_id": "com.example.agent", "regular": False,
+                          "launched": started_wall - 3600}]
+
+    def show(self):
+        self.screen = self.screen + [
+            {"pid": 501, "id": 70, "layer": 0, "alpha": 1, "frame": [300, 200, 560, 420], "regular": False},
+            {"pid": 502, "id": 71, "layer": 0, "alpha": 1, "frame": [100, 100, 400, 300], "regular": False}]
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "apps.running" and p.get("all"):
+            return super().call(method, timeout, **p) + self.everyone
+        if method == "ax.snapshot" and p.get("pid") in (501, 502) and p.get("scope") == "windows":
+            w = next(x for x in self.screen if x["pid"] == p["pid"])
+            return {"nodes": [{"ref": f"w{p['pid']}", "role": "AXWindow", "title": "About", "frame": w["frame"]},
+                              {"ref": f"w{p['pid']}.close", "role": "AXButton", "subrole": "AXCloseButton", "parent": f"w{p['pid']}"}]}
+        if method == "ax.perform" and str(p.get("ref", "")).endswith(".close"):
+            self.calls.append((method, p))
+            pid = int(p["ref"][1:].split(".")[0])
+            self.screen = [w for w in self.screen if w["pid"] != pid]
+            return {"ok": True}
+        return super().call(method, timeout, **p)
+
+
+def test_tidy_closes_a_window_a_process_with_no_dock_icon_opened_for_the_task(tmp_path):
+    """About This Mac belongs to a process with no Dock icon. Tidy looked only at the Dock apps, so the window
+    the task opened stayed, serial number and all, for the next task to read."""
+    import time
+    h = DocklessWindows(time.time())
+    eng = Engine(cfg(tmp_path, config={"engine": {"close_wait_s": 0}}), helper=h, decider=Tidier([]))
+    task = eng._new_task("what chip does this Mac have?", {}, None)
+    eng._note_opened(task, h.call("apps.running"))       # the desktop as the task found it
+    h.show()
+    task.status = "done"
+    res = eng.tidy(task.id)
+    assert [p["ref"] for p in h.did("ax.perform")] == ["w501.close"], h.did("ax.perform")
+    assert res["closed"] == ["System Information: About"]
+    assert any(w["pid"] == 502 for w in h.screen), "a window of an agent that was running before the task is not its doing"
+
+
 def test_a_field_falls_back_to_setting_its_value_when_the_app_cannot_come_forward(tmp_path, monkeypatch):
     import macwork.act as act
     monkeypatch.setattr(act.subprocess, "run", lambda *a, **k: None)

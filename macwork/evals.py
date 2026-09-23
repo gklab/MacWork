@@ -48,6 +48,7 @@ from .appmodel import _info_plist
 from .decider import choice
 from .engine import Engine
 from .observe import Ctx, observe
+from .onscreen import input_method_panel
 
 
 def _text_of(engine: Engine, app: Any) -> tuple[str, str, str]:
@@ -247,51 +248,84 @@ def cleanup(engine: Engine, task: dict[str, Any], key: str = "cleanup") -> None:
             continue
 
 
-def _real_windows(engine: Engine) -> dict[int, set[int]]:
-    """Windows a person would call windows, by owner: on screen, at the ordinary level.
+def _counted(engine: Engine) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
+    """The windows the harness counts, each with its owner and what it is (a window, or a dialog above every
+    window), and every process the Mac lists, by pid. The window server and the list of processes are read
+    once each.
 
     The window server lists every window object a process owns — toolbars, tooltips, popovers, unrealised
     panels at [0, 0, 100, 30] — and a task that took no step at all was reported as leaving four TextEdit
     "windows" behind, which the sweep then could not find as anything Accessibility calls a window. What
     tidy closes and what the sweep matches are Accessibility windows; this counts the same things.
+
+    Who owns a window is asked of every process, not only the ones with a Dock icon. About This Mac is a
+    window of such a process (系统信息, regular false): it was in the snapshot, `_leftovers` walked the Dock
+    apps only, and it stayed up for 25.6 hours while 1,608 looks in 184 later tasks read its text, the serial
+    number with it. Such a process keeps windows no person sees, too — 自动填充 and loginwindow hold off-screen
+    windows at the ordinary level on this Mac — so its windows count only while they are on screen.
     """
     try:
         wins = engine.helper.call("screen.windows", all=True) or []   # every Space: a window left on another one is still left
     except Exception:  # noqa: BLE001  (a helper hiccup is not a leftover)
-        return {}
-    out: dict[int, set[int]] = {}
+        return [], {}
+    try:
+        owners = {int(a["pid"]): a for a in engine.helper.call("apps.running", all=True) or [] if a.get("pid") is not None}
+    except Exception:  # noqa: BLE001
+        owners = {}
+    host = engine._host_bundles()
+    out: list[dict[str, Any]] = []
     for w in wins:
         f = w.get("frame") or [0, 0, 0, 0]
-        if w.get("id") is None or not w.get("alpha", 1):
+        # alpha 0: a launcher's hidden panel is not on screen. An input method's candidates are no prompt
+        # and no window of anyone's: 13 of the 14 tasks of the v2 run of 09-23 03:29 were reported as
+        # starting under a 搜狗输入法 panel "above every window", and the final sweep pressed Escape at it.
+        if w.get("id") is None or w.get("pid") is None or not w.get("alpha", 1) or input_method_panel(w):
             continue
+        pid = int(w["pid"])
+        owner = owners.get(pid)
+        if owner is not None and owner.get("bundle_id") in host:
+            continue
+        regular = bool(owner.get("regular", True)) if owner is not None else bool(w.get("regular"))
+        on_screen = w.get("on_screen", True) is not False          # a helper that does not say is one that lists this Space
+        layer = int(w.get("layer") or 0)
         # the ordinary level, visible, and big enough to be a window rather than a toolbar strip or a
         # tooltip: an afternoon of runs left a Mac full of windows on other Spaces that a sweep of the
         # current one called clean
-        if w.get("layer", 0) == 0 and f[2] > 100 and f[3] > 60:
-            out.setdefault(int(w["pid"]), set()).add(int(w["id"]))
-        # …and a dialog *above* the ordinary level: a permission prompt an app the run launched made the
-        # system put up. It belongs to no app the sweep quits, it stays through everything that follows,
-        # and one of them sat over a whole suite — every task pressed Escape at it and ended blocked.
-        # Big enough to be a dialog, not a menu bar item or a banner.
-        elif w.get("layer", 0) > 0 and f[2] >= 200 and f[3] >= 100:
-            out.setdefault(int(w["pid"]), set()).add(int(w["id"]))
+        if layer == 0 and f[2] > 100 and f[3] > 60 and (regular or on_screen):
+            kind = "window"
+        # …and above the ordinary level, on screen and big enough to be a dialog, not a menu bar item or a
+        # banner. An app's own floating panel is that app's, and goes with its windows, closed by its own
+        # close button. Anything else is a prompt: a permission request an app the run launched made the
+        # system put up, which belongs to no app the sweep quits and stays through everything that follows —
+        # one of them sat over a whole suite, and every task pressed Escape at it and ended blocked.
+        elif layer > 0 and f[2] >= 200 and f[3] >= 100 and on_screen:
+            kind = "window" if regular else "dialog"
+        else:
+            continue
+        out.append({"pid": pid, "id": int(w["id"]), "kind": kind, "regular": regular,
+                    "app": str((owner or {}).get("name") or w.get("owner") or "?"), "bundle_id": (owner or {}).get("bundle_id"),
+                    "title": str(w.get("title") or "")[:80]})
+    return out, owners
+
+
+def _real_windows(engine: Engine) -> dict[int, set[int]]:
+    """Windows a person would call windows, by owner (see `_counted`)."""
+    out: dict[int, set[int]] = {}
+    for w in _counted(engine)[0]:
+        out.setdefault(w["pid"], set()).add(w["id"])
     return out
+
+
+def _dialogs(counted: list[dict[str, Any]], before: dict[int, set[int]]) -> list[dict[str, Any]]:
+    return [{"app": w["app"], "pid": w["pid"], "bundle_id": w["bundle_id"], "new_app": False, "windows": 1, "ids": [w["id"]],
+             "dialog": True, "title": w["title"]}
+            for w in counted if w["kind"] == "dialog" and w["id"] not in before.get(w["pid"], set())]
 
 
 def _dialogs_above(engine: Engine, before: dict[int, set[int]]) -> list[dict[str, Any]]:
-    """Windows above the ordinary level that were not there before, by owner — what no task can get past."""
-    try:
-        wins = engine.helper.call("screen.windows", all=True) or []
-    except Exception:  # noqa: BLE001
-        return []
-    out = []
-    for w in wins:
-        f = w.get("frame") or [0, 0, 0, 0]
-        if w.get("layer", 0) > 0 and f[2] >= 200 and f[3] >= 100 and w.get("id") is not None and w.get("alpha", 1) \
-                and int(w["id"]) not in before.get(int(w["pid"]), set()):      # alpha 0: a launcher's hidden panel is not on screen
-            out.append({"app": w.get("owner") or "?", "pid": int(w["pid"]), "new_app": False, "windows": 1,
-                        "ids": [int(w["id"])], "dialog": True, "title": str(w.get("title") or "")[:80]})
-    return out
+    """Prompts above every window that were not there before, by owner — what no task can get past: on screen,
+    no input method's, not the host's, and owned by no app with a Dock icon."""
+    return _dialogs(_counted(engine)[0], before)
 
 
 def _desktop(engine: Engine) -> tuple[dict[int, set[int]], set[int]]:
@@ -300,22 +334,30 @@ def _desktop(engine: Engine) -> tuple[dict[int, set[int]], set[int]]:
 
 
 def _leftovers(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[dict[str, Any]]:
+    """What is here now that was not at `before`: apps with a Dock icon that were not running (`new_app`),
+    windows any process put up (`dockless` when that process has no Dock icon), and prompts above every
+    window (`dialog`). Every item names its bundle id where the process has one."""
     wins0, pids0 = before
-    wins1, _ = _desktop(engine)
+    counted, owners = _counted(engine)
     host = engine._host_bundles()
+    by_pid: dict[int, list[dict[str, Any]]] = {}
+    for w in counted:
+        by_pid.setdefault(w["pid"], []).append(w)
+    pids = [pid for pid, a in owners.items() if a.get("regular", True) or pid in by_pid] + [p for p in by_pid if p not in owners]
     out = []
-    for a in engine.helper.call("apps.running"):
+    for pid in pids:
+        a, mine = owners.get(pid) or {}, by_pid.get(pid, [])
         if a.get("bundle_id") in host:
             continue
-        if a["pid"] not in pids0:
-            out.append({"app": a["name"], "pid": a["pid"], "new_app": True, "windows": len(wins1.get(a["pid"], set()))})
-        else:
-            extra = wins1.get(a["pid"], set()) - wins0.get(a["pid"], set())
-            if extra:
-                out.append({"app": a["name"], "pid": a["pid"], "new_app": False, "windows": len(extra), "ids": sorted(extra)})
-    seen = {x["pid"] for x in out}
-    out += [d for d in _dialogs_above(engine, wins0) if d["pid"] not in seen]   # the system's own prompts: no app of the list owns them
-    return out
+        regular = bool(a.get("regular", True)) if a else mine[0]["regular"]
+        item = {"app": str(a.get("name") or (mine[0]["app"] if mine else "?")), "pid": pid, "bundle_id": a.get("bundle_id")}
+        if regular and pid not in pids0:
+            out.append(item | {"new_app": True, "windows": len(mine)})
+            continue
+        extra = sorted({w["id"] for w in mine if w["kind"] == "window"} - wins0.get(pid, set()))
+        if extra:
+            out.append(item | {"new_app": False, "windows": len(extra), "ids": extra} | ({} if regular else {"dockless": True}))
+    return out + _dialogs(counted, wins0)       # the system's own prompts: no app of the list owns them
 
 
 def _discard_prompt(engine: Engine, pid: int) -> bool:
@@ -366,40 +408,78 @@ def _discard_prompt(engine: Engine, pid: int) -> bool:
     return True
 
 
-def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[dict[str, Any]]:
+def _keyboard_at(engine: Engine, pid: int, wait: float) -> bool:
+    """Is the keyboard at this process? It is asked to the front, then watched for up to `wait` seconds: the
+    front app is that process, or the element with keyboard focus belongs to it. A prompt a background agent
+    puts up is never the front *app*, but it does take the focus. Nothing is opened through LaunchServices to
+    get it there, which is right for a system agent."""
+    try:
+        engine.helper.call("apps.activate", pid=pid)
+    except Exception:  # noqa: BLE001
+        pass
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            front = ((engine.helper.call("apps.frontmost") or {}).get("app") or {}).get("pid")
+            focused = (engine.helper.call("ax.focused", value=False) or {}).get("pid")
+        except Exception:  # noqa: BLE001  (cannot tell: then it is not known to be there)
+            front = focused = None
+        if pid in (front, focused):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def _quit_launched(engine: Engine, item: dict[str, Any], forced: list[str] | None) -> None:
+    """An app the run launched: asked to quit, its save questions answered "discard" (the sandbox's documents
+    are the suite's), and forced only when it is still there after that.
+
+    It went through the engine's own `_quit`, which refuses a process it cannot check by bundle id, and the
+    sweep had none to give it: every app left for the sweep was forced without ever being asked (3 of 3 in
+    the logs of 09-23). `_quit` also backs out of a save question, which is the one `_discard_prompt` needs."""
+    pid = item["pid"]
+    wait_ms = int(engine.cfg.get("engine.quit_wait_ms", 3000))
+    for _ in range(4):     # each unsaved document asks separately
+        got = engine.helper.call("apps.quit", pid=pid, timeout_ms=wait_ms, timeout=15) or {}
+        if got.get("terminated") or not _alive(engine, pid) or not _discard_prompt(engine, pid):
+            break
+    if _alive(engine, pid):
+        # it was not running when the run began, it was asked politely, and it is still here: an app of the
+        # harness's own making does not get to stay on the person's Mac
+        engine.helper.call("apps.quit", pid=pid, force=True, timeout_ms=3000, timeout=15)
+        log_harness(f"sweep: {item['app']} would not quit and was forced")
+        if forced is not None:
+            forced.append(str(item.get("bundle_id") or item["app"]))
+
+
+def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]], forced: list[str] | None = None) -> list[dict[str, Any]]:
     """The harness puts the desktop back as the task found it, whatever the engine left: new apps are quit
-    (politely), new windows closed by their own close button, dialogs without one dismissed with Escape (only
-    once their app is verifiably in front). Returns what could not be removed."""
-    from .model import Task
+    (politely, then forced, each forced one added to `forced`), new windows closed by their own close button,
+    and dialogs without one dismissed with Escape — only once the keyboard is verifiably at them. A window of
+    a process with no Dock icon is closed by its own close button or not at all. Returns what could not be
+    removed."""
     left = _leftovers(engine, before)
     if not left:
         return []
-    task = Task(goal="put the desktop back as it was")
-    engine.tasks[task.id] = task
+    wait = float(engine.cfg.get("engine.activate_wait_s", 1.5))
     for item in left:
         try:
             if item["new_app"]:
-                for _ in range(4):     # each unsaved document asks separately
-                    engine._quit(task, {"pid": item["pid"], "name": item["app"]})
-                    if not _alive(engine, item["pid"]) or not _discard_prompt(engine, item["pid"]):
-                        break
-                if _alive(engine, item["pid"]):
-                    # it was not running when the run began, it was asked politely, and it is still here:
-                    # an app of the harness's own making does not get to stay on the person's Mac
-                    engine.helper.call("apps.quit", pid=item["pid"], force=True, timeout_ms=3000, timeout=15)
-                    log_harness(f"sweep: {item['app']} would not quit and was forced")
+                _quit_launched(engine, item, forced)
                 continue
             if item.get("dialog"):
                 # A prompt above every window, owned by the system on behalf of an app the run launched. The
                 # harness never answers it — Allow is a decision that is the person's — it steps back from it:
-                # Escape is the one key every such prompt takes as "not now".
-                log_harness(f"a dialog above every window is on screen: 「{item.get('title') or item['app']}」 — pressing Escape")
-                try:
-                    engine.helper.call("apps.activate", pid=item["pid"])
-                except Exception:  # noqa: BLE001
-                    pass
-                engine.helper.call("input.key", combo="escape")
-                time.sleep(0.5)
+                # Escape is the one key every such prompt takes as "not now". A key goes wherever the keyboard
+                # is, so it is pressed only once the keyboard is there: pressed blind, at the end of a suite it
+                # would land in whatever the person had in front, the terminal running this included.
+                if _keyboard_at(engine, item["pid"], wait):
+                    log_harness(f"a dialog above every window is on screen: 「{item.get('title') or item['app']}」 — pressing Escape")
+                    engine.helper.call("input.key", combo="escape")
+                    time.sleep(0.5)
+                else:
+                    log_harness(f"not pressing Escape: the keyboard is not at 「{item.get('title') or item['app']}」")
                 continue
             nodes = engine.helper.call("ax.snapshot", pid=item["pid"], scope="windows", max_depth=1, max_nodes=400).get("nodes", [])
             screen = {int(w["id"]): w for w in engine.helper.call("screen.windows") if w.get("pid") == item["pid"]}
@@ -411,16 +491,20 @@ def sweep(engine: Engine, before: tuple[dict[int, set[int]], set[int]]) -> list[
                 if close:
                     engine.helper.call("ax.perform", ref=close["ref"], action="AXPress")
                     time.sleep(0.5)
-                    _discard_prompt(engine, item["pid"])   # "save this?" — in a sandbox, no
+                    if not item.get("dockless"):
+                        _discard_prompt(engine, item["pid"])   # "save this?" — in a sandbox, no
                     continue
-                try:
-                    _bring_forward(Ctx(engine.cfg, engine.helper, running=engine.helper.call("apps.running")), item["pid"])
+                if item.get("dockless"):
+                    # A system agent's window. Its own close button is a fact about it; a button the decider
+                    # picks (`_discard_prompt` has no floor) or a key sent to it is not: reported instead.
+                    continue
+                if _keyboard_at(engine, item["pid"], wait):
                     engine.helper.call("input.key", combo="escape")
                     time.sleep(0.4)
-                except NotInFront:
-                    pass
+                else:
+                    log_harness(f"not pressing Escape: the keyboard is not at 「{item['app']}」")
             # whichever way a window was asked to go, the app may have answered with a question of its own
-            for _ in range(len(item.get("ids", [])) + 1):
+            for _ in range(0 if item.get("dockless") else len(item.get("ids", [])) + 1):
                 if not _discard_prompt(engine, item["pid"]):
                     break
         except Exception as exc:  # noqa: BLE001  (best effort; what stays is reported)
@@ -618,8 +702,10 @@ def _forget(engine: Engine) -> None:
     scopes = getattr(engine, "_scopes", None)
     if isinstance(scopes, dict):
         scopes.clear()          # each task's live working state: pictures, windows seen, screens read by sight
+    # `ambient` too: "this window changes by itself" is a judgement about a window a task saw, and one carried
+    # into the next task made its events count for nothing there, against `fresh: true`.
     for key in ("floor.verdicts", "floor.harmless", "vision.ocr", "vision.canvas",
-                "menu.snap", "menubar.owners", "learn.safe", "services.all"):
+                "menu.snap", "menubar.owners", "learn.safe", "services.all", "ambient"):
         got = engine.cache.get(key)
         if isinstance(got, (dict, set)):
             got.clear()

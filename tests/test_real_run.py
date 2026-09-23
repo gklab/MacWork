@@ -97,8 +97,6 @@ def test_an_app_the_run_launched_that_will_not_quit_is_forced(tmp_path, monkeypa
     h = Stubborn()
     eng = Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([]))
     monkeypatch.setattr(evals, "_discard_prompt", lambda engine, pid: False)
-    monkeypatch.setattr(eng, "still_the_app", lambda app: True)
-    monkeypatch.setattr(eng, "_back_out", lambda task, app, what: None)
     left = evals.sweep(eng, ({}, {42, 7}))          # 99 was not running when the run began
     assert not left and any(p.get("force") for m, p in h.calls if m == "apps.quit")
 
