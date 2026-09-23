@@ -31,4 +31,14 @@ final class InputMethodTests: XCTestCase {
         XCTAssertEqual(found, [870, 806, 807])
         XCTAssertEqual(inputMethodPids(bundleIds: [], bundlePaths: [], running: running), [], "no input method, no process")
     }
+
+    func testAMarkedRangeIsCountedInUTF16Units() {
+        // an NSTextView composing "lo" after "😀hel" says {5, 2}: the emoji is two units, not one character
+        XCTAssertEqual(markedSubstring("😀hello", location: 5, length: 2), "lo")
+        XCTAssertEqual(markedSubstring("😀hello", location: 0, length: 2), "😀")
+        XCTAssertEqual(markedSubstring("😀hello", location: 7, length: 0), "", "nothing composing at the end")
+        XCTAssertNil(markedSubstring("😀hello", location: 6, length: 2), "a range past the end is no text")
+        XCTAssertNil(markedSubstring("hello", location: -1, length: 2))
+        XCTAssertNil(markedSubstring("hello", location: 2, length: -1))
+    }
 }

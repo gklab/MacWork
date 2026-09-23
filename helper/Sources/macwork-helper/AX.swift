@@ -595,6 +595,8 @@ func axFocused(_ p: Params) throws -> Any {
     if !(p["value"] as? Bool ?? true) {
         node["value"] = nil
         node["selected_text"] = nil
+    } else if p["marked"] as? Bool == true, let m = markedText(el) {
+        node["marked"] = m           // part of what the element holds: withheld with the value
     }
     node["ref"] = store.addTransient(el)
     var out: [String: Any] = ["focused": node, "pid": Int(pid), "secure_input": secure]
@@ -718,16 +720,54 @@ func axWait(_ p: Params) throws -> Any {
     return ["events": events, "timed_out": box.fired.isEmpty, "settled": settledQuiet, "ms": Int(Date().timeIntervalSince(box.t0) * 1000)]
 }
 
-/// Read one attribute (to verify an action, e.g. that a text field now holds what was typed).
+/// Read one attribute (to verify an action, e.g. that a text field now holds what was typed). With `marked` and
+/// AXValue, also what an input method is still composing in it (see `markedText`).
 func axGet(_ p: Params) throws -> Any {
     guard let ref = p["ref"] as? String else { throw RPCError("bad_params", "ref required") }
     let attr = p["attribute"] as? String ?? (kAXValueAttribute as String)
     let el = try store.get(ref)
-    guard let v = axAttr(el, attr) else { return ["value": NSNull()] }
-    if CFGetTypeID(v) == CFBooleanGetTypeID() { return ["value": CFBooleanGetValue((v as! CFBoolean))] }
-    if let n = v as? NSNumber { return ["value": n] }
-    if let s = v as? String { return ["value": s] }
-    return ["value": "\(v)"]
+    var out: [String: Any] = ["value": NSNull()]
+    if let v = axAttr(el, attr) {
+        if CFGetTypeID(v) == CFBooleanGetTypeID() { out["value"] = CFBooleanGetValue((v as! CFBoolean)) }
+        else if let n = v as? NSNumber { out["value"] = n }
+        else if let s = v as? String { out["value"] = s }
+        else { out["value"] = "\(v)" }
+    }
+    if p["marked"] as? Bool == true, attr == kAXValueAttribute as String, let m = markedText(el) { out["marked"] = m }
+    return out
+}
+
+/// What an input method is still composing in this element: its text, "" when nothing is, nil when the element
+/// does not say.
+///
+/// AXValue holds the composition too ('news.htm'l' and 'keep.tx't' were values with the input method's syllable
+/// separator in them), so a read-back of the value passed 24 of 26 tails left composing. An AppKit text view
+/// says what is marked (AXTextInputMarkedRange, checked in-process: {5, 2} for "lo" in "😀hello", length 0 once
+/// committed); the focused cell of an edited single-line field does not, and nothing is said for it. The text is read for the
+/// range, or cut from the value in UTF-16 units. WebKit's marker range is not read: whether it is empty while
+/// nothing is composing was never checked, and none of the recorded tails was in WebKit.
+func markedText(_ el: AXUIElement) -> String? {
+    guard let v = axAttr(el, "AXTextInputMarkedRange"), CFGetTypeID(v) == AXValueGetTypeID() else { return nil }
+    var range = CFRange()
+    guard AXValueGetValue(v as! AXValue, .cfRange, &range) else { return nil }
+    guard range.length > 0 else { return "" }
+    if let param = AXValueCreate(.cfRange, &range) {
+        var s: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString, param, &s) == .success,
+           let text = s as? String, !text.isEmpty {
+            return text
+        }
+    }
+    guard let value = axAttr(el, kAXValueAttribute) as? String else { return nil }
+    return markedSubstring(value, location: range.location, length: range.length)
+}
+
+/// `length` UTF-16 units of `text` from `location`, the way Accessibility and AppKit count a range, or nil when
+/// the range does not lie inside the text.
+func markedSubstring(_ text: String, location: Int, length: Int) -> String? {
+    let units = Array(text.utf16)
+    guard location >= 0, length >= 0, location <= units.count, length <= units.count - location else { return nil }
+    return String(decoding: units[location..<location + length], as: UTF16.self)
 }
 
 
