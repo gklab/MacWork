@@ -115,3 +115,24 @@ def test_an_answer_with_no_choice_does_not_release_the_action(tmp_path):
     a = Affordance("m", "menu", "press", "menu Ablage ▸ Löschen", {}, context="Ablage")
     gated = eng._floor("t", ctx, a, "w")
     assert gated, "an unanswerable classification released the action"
+
+
+# --------------------------------------------------------------------------- a provider whose command timed out
+
+def test_a_provider_that_times_out_does_not_break_the_look(tmp_path, monkeypatch):
+    """The shortcuts and files providers run a command with a 10 s timeout, and observe() catches a timeout with
+    the helper's errors. Its handler read `.code`, which only a helper error has, so a `shortcuts list` that
+    timed out made the look itself raise AttributeError instead of noting the one provider that had nothing."""
+    import subprocess
+
+    from macwork.observe import Ctx, observe
+    from tests.test_engine import FakeHelper, cfg
+
+    def stuck(args, *a, **k):
+        raise subprocess.TimeoutExpired(args, k.get("timeout") or 10)
+    monkeypatch.setattr(subprocess, "run", stuck)
+    helper = FakeHelper()
+    c = cfg(tmp_path, config={"observe": {"providers": ["shortcuts", "menu"]}})
+    obs = observe(Ctx(c, helper, app=helper.call("apps.frontmost")["app"]))
+    assert "timed out" in obs.notes["shortcuts_error"]
+    assert obs.notes["menu_n"] > 0, "the providers after it were not asked"
