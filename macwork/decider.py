@@ -199,9 +199,26 @@ class ChainDecider:
         # it — so two failures can arrive together. Dropping the head with a bare pop(0) could then drop
         # two for one failure and empty the list, which wedges the engine for the rest of the session.
         self._lock = threading.Lock()
+        self._last_ms = 0.0
 
-    def __getattr__(self, attr: str) -> Any:      # name, calls, cost_usd, last_ms, warm…: whoever is in front
+    def __getattr__(self, attr: str) -> Any:      # name, calibrated, warm…: whoever is in front
         return getattr(self.deciders[0], attr)
+
+    # What has been asked and spent is every member's, summed. Read off whoever was in front, the counts went
+    # backwards at a switch — 400 calls became 1 — and everything that subtracts a count taken earlier (the
+    # run's decision ceiling, its ledger) read a negative number and never tripped.
+    @property
+    def calls(self) -> int:
+        return sum(int(getattr(d, "calls", 0) or 0) for d in self._preferred)
+
+    @property
+    def cost_usd(self) -> float:
+        return sum(float(getattr(d, "cost_usd", 0.0) or 0.0) for d in self._preferred)
+
+    @property
+    def last_ms(self) -> float:
+        """How long the decision just made took, from the member that made it."""
+        return self._last_ms
 
     def begin_task(self) -> None:
         """A new task starts with the decider asked for. A switch holds for the task it happened in — the
@@ -218,7 +235,9 @@ class ChainDecider:
         while True:
             head = self.deciders[0]
             try:
-                return head.decide(state, questions)
+                out = head.decide(state, questions)
+                self._last_ms = float(getattr(head, "last_ms", 0.0) or 0.0)
+                return out
             except DeciderError as exc:
                 if not retried and len(self.deciders) > 1:
                     retried = True        # a request lost to the network is asked once more before anyone is demoted

@@ -21,7 +21,6 @@ from .appmodel import signature
 from .contract import DEFERRED, kept, kept_by_change, promise
 from .invariants import check_look, check_step
 from .decider import DeciderError, choice, noul
-from .planner import Planning
 from .privacy import RedactionError
 from .act import Outcome
 from . import sight
@@ -280,10 +279,19 @@ class LoopMixin:
         return progress is None or float(progress) >= float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
 
     def _step_context(self, task: Task) -> Ctx:
-        ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id)
+        # Where a task that names no app begins: in the app in front (engine.start_in_front_app), or in none.
+        # For the first look only — once it has done something, a look follows the app it works in, and after
+        # an action that says nothing about where it went (a key), the app in front. An eval run begins in
+        # none: 13 of the 29 v2 tasks name no app, and each began wherever the task before it left the screen.
+        first = not task.steps and not task.target and not task.app
+        front = not first or bool(self.cfg.get("engine.start_in_front_app", True))
+        ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id, front=front)
         ctx.gate = self.gate
         self._note_opened(task, ctx.running)
-        if ctx.app is None and isinstance(task.app, str) and task.app and not task.pace.launched and task.held is None:
+        host = ctx.app is not None and self._host_app(ctx.app)
+        if host:                                       # e.g. an open that landed in the terminal running the engine
+            ctx.app = None
+        if ctx.app is None and not host and isinstance(task.app, str) and task.app and not task.pace.launched and task.held is None:
             task.pace.launched = True                  # the caller said where to work: open it (once), as a recorded step
             inst = self._installed_named(task.app)
             if inst:
@@ -297,6 +305,7 @@ class LoopMixin:
     # ------------------------------------------------------------------ look
     def _look(self, task: Task, ctx: Ctx) -> Look | dict[str, Any]:
         e = self.cfg.section("engine")
+        ctx.scope.looks += 1                      # how many looks this step took (see _step_record)
         t_obs = time.monotonic()
         locked = bool(self.helper.call("session.state").get("screen_locked"))
         obs = observe(ctx)
@@ -742,8 +751,7 @@ class LoopMixin:
         if not self.spend_allowance(task, "done_opinions"):
             return ""
         try:
-            agrees, why = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).judge_done(
-                task.goal, self._brief(task, look.ctx, look.obs, look.affs, acting=False))
+            agrees, why = self._planning(task).judge_done(task.goal, self._brief(task, look.ctx, look.obs, look.affs, acting=False))
         except Exception as exc:  # noqa: BLE001  (an opinion that could not be had is no opinion; it never fails the task)
             log.info("second opinion on done: %s", exc)
             return ""
@@ -923,6 +931,7 @@ class LoopMixin:
         self.cache.pop("floor.last_category", None)
         self._floor(task.id, ctx, chosen, obs.window if obs else None, ask=False)
         self.spend(task, chosen)      # a confirmation covers this run of it, not the next one
+        self.last_timing = {}         # a channel that raises sets none: the last step's act and wait are not this one's
         out, events = self._execute(ctx, chosen, params)
         promised = promise(chosen, params)
         held, why = kept(ctx, chosen, params, out, events)   # the promises checked now; the rest at the next look
@@ -950,6 +959,7 @@ class LoopMixin:
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
+        self._step_record(task, obs, chosen, out.ok, {**(decision.get("timing") or {}), **getattr(self, "last_timing", {})})
         check_step(task, task.steps[-1], had_look=look is not None)
         task.prev = {"sig": sig, "label": chosen.label, "handle": chosen.handle(), "ok": out.ok, "events": events, "app": ctx.app,
                      "screen": obs.screen_text if obs else None, "window": obs.window if obs else None,
@@ -977,6 +987,56 @@ class LoopMixin:
         if out.final:
             return self._finish(task, "done" if out.ok else "failed", out.error or "")
         return None
+
+    # ------------------------------------------------------------------ where the time went
+    def _step_record(self, task: Task, obs: Observation | None, chosen: Affordance, ok: bool, timing: dict[str, Any]) -> None:
+        """One audit record per step, numbers and enums only: which step, how many looks it took, its wall time
+        since the last record (or the run's start), each stage's ms from the step's own timing, each provider
+        of the deciding look that took 5 ms or more, and what the planner and the decider were asked meanwhile.
+
+        `macwork profile` read the stage timings of the task store, which keeps a task 30 minutes after it ends
+        (engine.tasks_ttl_s): the store it read had no tasks left, and planner and provider time had never been
+        recorded anywhere. The audit keeps them, rotated, and each report row keeps its task's totals."""
+        providers = [str(x) for x in self.cfg.get("observe.providers") or []]
+        notes = obs.notes if obs is not None else {}
+        rec: dict[str, Any] = {"n": len(task.steps) - 1, "channel": chosen.channel, "verb": chosen.verb, "ok": bool(ok),
+                               "observe_ms": int(timing.get("observe") or 0), "decide_ms": int(timing.get("decide") or 0),
+                               "decide_net_ms": int(timing.get("decide_net") or 0), "act_ms": int(timing.get("act") or 0),
+                               "wait_ms": int(timing.get("wait") or 0),
+                               "providers": {name: int(notes[f"{name}_ms"]) for name in providers
+                                             if isinstance(notes.get(f"{name}_ms"), (int, float)) and notes[f"{name}_ms"] >= 5}}
+        self._clock_out(task, rec)
+
+    def _clock_out(self, task: Task, rec: dict[str, Any]) -> None:
+        """Close the stretch of time since the last record: add what is known of it (looks, wall, the planner's
+        and the decider's share), write it, keep the task's totals, and start the next stretch."""
+        scope = self.scope(task.id)
+        if scope.last_step_at is None:            # not inside a run: nothing was clocked
+            return
+        now = time.monotonic()
+        use = task.planner_use or {}
+        calls = int(getattr(self._decider, "calls", 0) or 0) if self._decider is not None else 0
+        rec = {"task": task.id, "observe_ms": 0, "decide_ms": 0, "decide_net_ms": 0, "act_ms": 0, "wait_ms": 0, **rec,
+               "looks": scope.looks, "wall_ms": round((now - scope.last_step_at) * 1000),
+               "planner_ms": int(use.get("ms", 0)) - scope.planner_mark[1],
+               "planner_calls": int(use.get("calls", 0)) - scope.planner_mark[0],
+               "decisions": calls - scope.decisions_mark}
+        self.audit.record("step", **rec)
+        totals = task.timing
+        totals["steps"] = int(totals.get("steps", 0)) + ("end" not in rec)
+        for key in ("looks", "wall_ms", "observe_ms", "decide_ms", "decide_net_ms", "act_ms", "wait_ms", "planner_ms",
+                    "planner_calls", "decisions"):
+            totals[key] = int(totals.get(key, 0)) + int(rec.get(key) or 0)
+        scope.looks, scope.last_step_at = 0, now
+        scope.planner_mark, scope.decisions_mark = (int(use.get("calls", 0)), int(use.get("ms", 0))), calls
+
+    def _start_clock(self, task: Task) -> None:
+        """A run starts its own clock: the caller's pause between runs is not step time."""
+        scope = self.scope(task.id)
+        use = task.planner_use or {}
+        scope.looks, scope.last_step_at = 0, time.monotonic()
+        scope.planner_mark = (int(use.get("calls", 0)), int(use.get("ms", 0)))
+        scope.decisions_mark = int(getattr(self._decider, "calls", 0) or 0) if self._decider is not None else 0
 
     # ------------------------------------------------------------------ facts
     def _evidence(self, obs: Observation) -> dict[str, Any]:

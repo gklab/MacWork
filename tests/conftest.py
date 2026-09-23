@@ -31,6 +31,14 @@ def _no_real_task_store(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _not_started_from_an_app(monkeypatch):
+    """The engine takes the app a process was started from (`__CFBundleIdentifier`, set by LaunchServices and
+    inherited) for its host, and never drives it. A test run inherits whatever terminal or editor started it,
+    and a test that works in TextEdit would pass or fail depending on which app that was."""
+    monkeypatch.delenv("__CFBundleIdentifier", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_processes(monkeypatch):
     calls = []
 

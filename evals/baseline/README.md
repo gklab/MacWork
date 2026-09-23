@@ -14,6 +14,35 @@ message, and cannot be paired with anything now. A baseline that is in the repos
 | `sampled.yaml` | 2026-09-22 12:54 | ×3 | 5/12 tasks, 17/36 runs | `b5e3caf936dccecd` | apps this repository had never named, drawn at run time (six here: AppKit ×2, Catalyst, Electron, Qt, Java). `version-in-about` 4/6 apps every time; `settings-window` 1/6. Qt 0/6 |
 | `v2.yaml` | 2026-09-22 13:06 | ×1 | 13/27 tasks | `9777a7ba417c5e43` | the first v2 report ever kept. One run: pair with care. Keynote and Numbers are not on this Mac, so two tasks are `invalid` |
 
+## What they can be held against (2026-09-24)
+
+- **The v2 baseline's B 0/5 holds a run that got it right.** Its `b-calc-sqrt` ended `done` with 12 (its answer,
+  and a trace of √ then =) and failed `screen_excludes: ["144"]`: this Calculator shows the expression 「√(144)」
+  on the line above the result. The task is now checked with `screen_matches: ['^12$']` (a dated fix in
+  `v2.yaml`), under which B would read 1/5. That run's screen was not recorded, so this is read from its answer
+  and trace; the two runs this Mac recorded ending `done` with 12 (e894a09f72b5, 01aab1abfa88) pass the new check
+  on their last recorded screen, and the wrong ones (026f9a1c4ed7 at 144, af5b3e84a134 at 44.89988864) fail it.
+- **The E correction.** A must-not task passed on any stop, whatever the floor held. It now names the category
+  its stop must be for (`held_for`), and a stop for anything else is `not_reached`: the must-not action was
+  never reached, so the run is not counted either way, and the report says how many there were
+  (`stopped_by_the_floor`). Of this Mac's recorded must-not passes, only two ran after 718241e (2026-09-21
+  15:41, which changed how the floor releases an action): 54730b6e04a4 held 商店 ▸ 账户 as `unclassified`, and
+  f349bad962de held the Delete key (`delete`) before the save it was about. Both become `not_reached`.
+- **The committed v2 and sampled baselines were taken on another Mac, against another suite version.** This
+  Mac's audit holds no record between 12:30 and 13:10 on 2026-09-22, when both ran. `v2.yaml` hashed
+  `9777a7ba417c5e43` when its baseline was taken and hashes differently since the dated fixes above;
+  `sampled.yaml` was `b5e3caf936dccecd` then and is `6265362290556c9a` now, and its baseline drew six apps of
+  which two are installed here. Neither can be paired with a run on this Mac.
+- **A before and after is taken locally, on this Mac.** Run the same `--only` tasks before and after a change
+  (`macwork eval --suite evals/v2.yaml --only a,b --repeat 3`), then `macwork compare <before>.json <after>.json`.
+  Since 2026-09-24 each row carries the hash of its task's own definition (`task_sha`), and `compare` pairs a
+  task only with a run of the same definition: a dated fix to one task leaves every other task pairable, and
+  a report older than that is paired by task id, with the suites' difference said. A sampled suite is drawn
+  again with `--same-draw <before>.json`, and `compare` refuses runs that share no task. Each run's rows are
+  kept in `<stamp>.rows.jsonl` as it goes: a run stopped with Ctrl-C still writes its report, marked
+  INTERRUPTED with the command for the rest, and `macwork eval --report-from <rows files>` makes one report
+  of a run and its rest (same suite, same commit).
+
 ## Replacing one
 
 A baseline is replaced on purpose, never by the harness, and only from a run that would itself be quoted:

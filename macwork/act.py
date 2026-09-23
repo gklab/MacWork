@@ -70,6 +70,14 @@ class NotInFront(RuntimeError):
     pass
 
 
+def _no_app(what: str) -> Outcome:
+    """Input that goes to the front app, with no app being worked in: it would go to whatever is in front, and
+    when a task begins in no app because the app in front is the one running this engine, that is the
+    engine's own terminal. Offered or not, it is refused here too — a held action reaches the channel without
+    a look."""
+    return Outcome(False, error=f"no app is being worked in: {what} would go to whatever is in front", wait=False)
+
+
 def _bring_forward(ctx: Ctx, pid: int) -> None:
     """Keystrokes go to whatever app is frontmost, so before typing the target MUST be in front — verified, not
     assumed. Accessibility activation first, LaunchServices second; if neither works, nothing is typed.
@@ -350,8 +358,9 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
 
 @channel("keys")
 def keys_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
-    if ctx.app:
-        _bring_forward(ctx, ctx.app["pid"])
+    if not ctx.app:
+        return _no_app("a key")
+    _bring_forward(ctx, ctx.app["pid"])
     if a.verb in ("type", "type_submit"):
         _type(ctx, str(params.get("text", "")))
         if a.verb == "type_submit":
@@ -373,8 +382,9 @@ def hold_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     What a hold did usually cannot be read back: the view draws itself and says nothing to Accessibility.
     That is reported (`unseen`), so an unchanged screen is not taken as "it did nothing".
     """
-    if ctx.app:
-        _bring_forward(ctx, ctx.app["pid"])
+    if not ctx.app:
+        return _no_app("a key")
+    _bring_forward(ctx, ctx.app["pid"])
     t = a.target
     ms = int(t.get("ms", 0))
     try:
@@ -446,9 +456,10 @@ def service_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
                    target={"pid": front["pid"], "name": front.get("name"), "bundle_id": front.get("bundle_id")} if front.get("pid") else None)
 
 
-@channel("clipboard")
+@channel("clipboard", front=False)
 def clipboard_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
-    """Put text on the clipboard. The pasteboard counts its changes, so whether the write took is a fact."""
+    """Put text on the clipboard. The pasteboard counts its changes, so whether the write took is a fact. It
+    never touches the app in front, so it is not charged to it."""
     try:
         before = (ctx.helper.call("clipboard.read", timeout=5) or {}).get("change_count")
     except HelperError:
@@ -595,8 +606,9 @@ def pointer_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     here can be verified by reading a value back, and the window moving invalidates every coordinate.
     """
     t = a.target
-    if ctx.app:
-        _bring_forward(ctx, ctx.app["pid"])
+    if not ctx.app:
+        return _no_app("a click")
+    _bring_forward(ctx, ctx.app["pid"])
     if a.verb == "drag":            # from one element to another (a planner suggestion, resolved on the live screen)
         ctx.helper.call("input.drag", x1=float(t["x1"]), y1=float(t["y1"]), x2=float(t["x2"]), y2=float(t["y2"]))
         return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))

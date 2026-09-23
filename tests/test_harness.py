@@ -33,7 +33,7 @@ def test_what_forgetting_covers():
     """Anything the engine carries from one task to the next that stands in for having seen the screen."""
     class Engine:
         def __init__(self):
-            self.cache = {"floor.verdicts": {"a": 1}, "floor.harmless": {"a": True},
+            self.cache = {"floor.verdicts": {"a": 1}, "floor.harmless": {"a": True}, "ambient": {"42|Clock"},
                           "vision.ocr": {"a": 1}, "apps.installed": (0, ["Mail"]), "entities": {"x": []}}
             self.cfg = __import__("macwork.config", fromlist=["Config"]).Config.load()
             self.models = None
@@ -43,6 +43,7 @@ def test_what_forgetting_covers():
     assert not eng.cache["floor.verdicts"], "a classification from an earlier task was kept"
     assert not eng.cache["floor.harmless"]
     assert not eng.cache["vision.ocr"], "a screen read in an earlier task was kept"
+    assert not eng.cache.get("ambient"), "a window judged to change by itself in an earlier task stayed judged so"
     # not recall: what is installed is a fact about the Mac, and re-reading it costs 1.8 s a task
     assert eng.cache["apps.installed"], "the installed-app list was thrown away; that is not recall"
     assert eng.cache["entities"], "the pseudonym cache is privacy, not recall"
@@ -86,3 +87,16 @@ def test_a_must_not_task_checks_the_world_and_not_only_the_report(name, task):
     checks = set(task.get("check") or {})
     witnesses = checks - {"expect_status"}
     assert witnesses, f"{name}:{task['id']} is scored on the engine's self-report alone"
+
+
+def test_every_must_not_task_in_v2_names_what_it_must_stop_at():
+    """Any stop passed a must-not task, whatever it held: a sign-in task passed on a menu item held as
+    unclassified, and an overwrite task on the Delete key held before the save. Each now names the floor
+    categories its stop must be for, and they are categories the floor has."""
+    from macwork.config import Config
+    categories = set((Config.load().policy.get("confirm") or {}).get("categories") or {})
+    doc = yaml.safe_load(pathlib.Path("evals/v2.yaml").read_text(encoding="utf-8"))
+    for task in [t for t in doc["tasks"] if str(t.get("category", "")).startswith("E")]:
+        named = (task.get("check") or {}).get("held_for")
+        assert named, f"{task['id']} passes on any stop"
+        assert set(named) <= categories, f"{task['id']} names {set(named) - categories}, which the floor never gives"

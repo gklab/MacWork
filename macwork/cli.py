@@ -89,11 +89,13 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
         except Exception:                           # noqa: BLE001  (a diagnostic line must not fail the doctor)
             route = None
     if route is not None:
-        # what a step costs before the engine does anything at all; see JevDecider.route_ms
-        from .profile import profile
+        # what a step costs before the engine does anything at all; see JevDecider.route_ms. The store keeps
+        # tasks 30 minutes, and an empty one made this line say nothing: the audit keeps every step.
+        from .profile import audit_files, profile, profile_audit
         from .store import Store
-        step = sum(v["median_ms"] for k, v in profile(Store(cfg).path)["stages"].items()
-                   if k in ("observe", "decide", "act", "wait"))
+        stages = profile(Store(cfg).path)["stages"] or \
+            profile_audit(audit_files(expand(cfg.get("audit.path")), int(cfg.get("audit.keep", 3))))["stages"]
+        step = sum(v["median_ms"] for k, v in stages.items() if k in ("observe", "decide", "act", "wait"))
         share = f" — about {route / step:.0%} of a {step:.0f} ms step on this Mac" if step else ""
         print(f"\n→ one round trip to the decider takes {route:.0f} ms from this network{share}.", file=sys.stderr)
         if route > 250:
@@ -378,14 +380,28 @@ def cmd_skills(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_eval(cfg: Config, args: argparse.Namespace) -> int:
+    from .evals import report_from, run_suite
+
+    out = Path(args.out) if args.out else ROOT / "evals" / "reports"
+    if args.report_from:
+        # one report from the rows of runs already made: a run stopped half way and the rest of it, say
+        try:
+            report = report_from([Path(x) for x in args.report_from], out)
+        except (OSError, ValueError) as exc:
+            print(f"no report: {exc}", file=sys.stderr)
+            return 2
+        _print(report["summary"])
+        return 0
     from .engine import Engine
-    from .evals import run_suite
 
     suite = Path(args.suite) if args.suite else ROOT / "evals" / "unseen.yaml"
     report = run_suite(Engine(cfg), suite, [x for x in (args.only or "").split(",") if x] or None,
-                       Path(args.out) if args.out else ROOT / "evals" / "reports", progress=lambda m: print(m, file=sys.stderr),
-                       repeat=args.repeat)
+                       out, progress=lambda m: print(m, file=sys.stderr),
+                       repeat=args.repeat, same_draw=Path(args.same_draw) if args.same_draw else None)
     _print(report["summary"])
+    if report["summary"].get("interrupted"):
+        print(f"\ninterrupted: the report holds what ran ({', '.join(report.get('files') or [])})", file=sys.stderr)
+        return 130
     if args.compare:
         # a total on its own reads like progress whether or not anything moved; this says which tasks did
         from .evals import baseline_for, compare, format_compare
@@ -401,15 +417,23 @@ def cmd_eval(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_profile(cfg: Config, args: argparse.Namespace) -> int:
-    """Where the time goes, from the tasks this Mac has actually run. Reads the store; drives nothing."""
-    from .profile import format_profile, profile
-    from .store import Store
-
-    got = profile(Store(cfg).path, args.n)
-    if args.json:
-        _print(got)
-    else:
-        print(format_profile(got))
+    """Where the time goes, from the tasks this Mac has actually run: the audit's step records by default,
+    only one eval run's tasks with --report (and that report's own rows once the audit has rotated), or the
+    task store's older view with --store. Drives nothing."""
+    from .profile import audit_files, format_profile, format_timing, profile, profile_audit, profile_report
+    if args.store:
+        from .store import Store
+        got = profile(Store(cfg).path, args.n)
+        _print(got if args.json else format_profile(got), as_json=args.json)
+        return 0
+    report, ids = None, None
+    if args.report:
+        report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+        ids = {str(r["task_id"]) for r in report.get("rows") or [] if r.get("task_id")}
+    got = profile_audit(audit_files(expand(cfg.get("audit.path")), int(cfg.get("audit.keep", 3))), ids)
+    if not got["steps"] and report is not None:
+        got = profile_report(report)          # the audit has rotated past this run: its rows keep the totals
+    _print(got if args.json else format_timing(got), as_json=args.json)
     return 0
 
 
@@ -432,7 +456,7 @@ def cmd_compare(cfg: Config, args: argparse.Namespace) -> int:
         _print(c)
     else:
         print(format_compare(c))
-    return 0
+    return 2 if c.get("refused") else 0
 
 
 def _swift_env() -> dict[str, str]:
@@ -627,8 +651,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--compare", nargs="?", const="baseline",
                    help="say which tasks moved against an earlier report.json, and whether that is more than chance; "
                         "with no path, against the committed baseline for the suite (evals/baseline/)")
-    p = sub.add_parser("profile", help="where a step's time goes and how many steps were wasted (reads the task store)")
-    p.add_argument("-n", type=int, default=50, help="how many recent tasks to read")
+    p.add_argument("--report-from", nargs="+", metavar="ROWS",
+                   help="build one report from the <stamp>.rows.jsonl files of runs already made (one suite, one commit); runs nothing")
+    p.add_argument("--same-draw", metavar="REPORT",
+                   help="a sampled suite takes exactly the apps this earlier report drew, so the two runs can be paired")
+    p = sub.add_parser("profile", help="where a task's time goes: each stage's share, the planner's, the slowest providers (reads the audit)")
+    p.add_argument("--report", metavar="REPORT", help="only this eval run's tasks (from its report.json; its rows once the audit has rotated)")
+    p.add_argument("--store", action="store_true", help="the task store's view: stage timings and wasted steps of tasks still kept")
+    p.add_argument("-n", type=int, default=50, help="with --store: how many recent tasks to read")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("compare", help="compare two eval reports (runs nothing); one report is compared with the committed baseline")
     p.add_argument("before")

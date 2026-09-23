@@ -1633,6 +1633,10 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
     A scheme is an app saying "you can ask me to do this without touching my windows" — it is in the bundle's
     own Info.plist, so nothing here knows any app. The link itself is text, so it comes from the caller or the
     planner like any other text, and it is judged by the safety floor with the link in it.
+
+    Each one names the app that declares it. The file channel works through the system and was charged to no
+    app, so "open a 「ssh:」 link with 终端" was offered from the terminal running this engine: a link that
+    runs a command in the host, where nothing else of the host's may be done.
     """
     models = ctx.cache.get("appmodels")
     if not ctx.app or models is None:
@@ -1642,7 +1646,7 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
     for scheme in (model.get("url_schemes") or [])[: int(ctx.cfg.get("observe.schemes.limit", 8))]:
         obs.affordances.append(Affordance(
             f"h{len(obs.affordances)}", "file", "open", f"open a 「{scheme}:」 link with {name}",
-            {"path": "", "scheme": scheme},
+            {"path": "", "scheme": scheme, "bundle_id": ctx.app.get("bundle_id")},
             slots={"url": Slot("text", f"the whole link, starting with {scheme}:")}, context=name))
 
 
@@ -2045,9 +2049,10 @@ def observe(ctx: Ctx) -> Observation:
             fn(ctx, obs)
         except (HelperError, OSError, subprocess.SubprocessError) as exc:
             # an older helper answers a method it does not have with `no_method`; that is not the provider
-            # failing, and the way out is a rebuild, not a bug report
+            # failing, and the way out is a rebuild, not a bug report. Only the helper's errors carry a code: a
+            # command that timed out (`shortcuts list`, mdfind) made this line raise, and the look with it.
             obs.notes[f"{name}_error"] = ("the helper is older than this engine and does not know " + exc.message.split()[-1]
-                                          + ": rebuild it with `macwork helper install`") if exc.code == "no_method" else str(exc)[:200]
+                                          + ": rebuild it with `macwork helper install`") if getattr(exc, "code", None) == "no_method" else str(exc)[:200]
             log.info("provider %s failed: %s", name, exc)
         obs.notes[f"{name}_n"] = len(obs.affordances) - n0
         obs.notes[f"{name}_ms"] = round((time.monotonic() - t) * 1000)
