@@ -121,6 +121,8 @@ def test_with_the_host_in_front_and_no_app_nothing_is_offered_that_types_or_pres
     held = get_channel("hold")(ctx, Affordance("h1", "hold", "hold", "hold w", {"keys": ["w"], "ms": 100}), {})
     assert not out.ok and not held.ok and "no app is being worked in" in (out.error or "")
     assert not eng.helper.did("input.key") and not eng.helper.did("input.hold"), "a key was sent to whatever is in front"
+    click = get_channel("pointer")(ctx, Affordance("p1", "pointer", "click", "click at a point", {"x": 40.0, "y": 60.0}), {})
+    assert not click.ok and not eng.helper.did("input.click"), "a click went to whatever is in front"
 
 
 class WithTerminal(FakeHelper):
