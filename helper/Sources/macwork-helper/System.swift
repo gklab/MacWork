@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import IOKit
 import NaturalLanguage
 import PDFKit
 import UniformTypeIdentifiers
@@ -794,6 +795,26 @@ func nlEntities(_ p: Params) throws -> Any {
     if let texts = p["texts"] as? [String] { return texts.map(tagNames) }
     guard let text = p["text"] as? String else { throw RPCError("bad_params", "text or texts required") }
     return tagNames(text)
+}
+
+// MARK: - this Mac
+
+/// This Mac's own identity — its serial number and hardware UUID — as the platform expert holds them, so the
+/// engine can keep them out of what leaves the Mac. The serial number of a leftover About This Mac window went
+/// out in 1,926 decider requests: no name tagger calls it a name, and no pattern knows its shape, so the Mac is
+/// asked for it instead. {serial, uuid}; empty when the registry does not say.
+func systemIdentity(_ p: Params) throws -> Any {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+    guard service != 0 else { return [String: Any]() }
+    defer { IOObjectRelease(service) }
+    var out: [String: Any] = [:]
+    for (key, name) in [(kIOPlatformSerialNumberKey, "serial"), (kIOPlatformUUIDKey, "uuid")] {
+        if let v = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String,
+           !v.isEmpty {
+            out[name] = v
+        }
+    }
+    return out
 }
 
 // MARK: - installed apps (localized display names: "计算器" for Calculator.app)

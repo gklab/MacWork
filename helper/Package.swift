@@ -11,7 +11,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit"),
                              .linkedFramework("NaturalLanguage"), .linkedFramework("Carbon"),
                              .linkedFramework("ScreenCaptureKit"), .linkedFramework("Vision"),
-                             .linkedFramework("PDFKit")]
+                             .linkedFramework("PDFKit"), .linkedFramework("IOKit")]
         ),
         .testTarget(
             name: "macwork-helperTests",

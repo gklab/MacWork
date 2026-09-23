@@ -141,6 +141,19 @@ final class HandlerTests: XCTestCase {
                                               "paths": ["/nowhere/at/all/\(counter())"]]))
     }
 
+    // MARK: - system.identity
+
+    func testThisMacsIdentityIsItsSerialNumberAndHardwareUUID() throws {
+        // what is read is never printed here, not even when an assertion fails: only its keys and its shape
+        let id = try XCTUnwrap(try systemIdentity([:]) as? [String: Any])
+        XCTAssertTrue(Set(id.keys).isSubset(of: ["serial", "uuid"]), "only these two: \(id.keys.sorted())")
+        for (key, value) in id {
+            XCTAssertFalse((value as? String ?? "").isEmpty, "\(key) is a string with something in it")
+        }
+        let uuid = try XCTUnwrap(id["uuid"] as? String, "every Mac's platform expert has a hardware UUID")
+        XCTAssertNotNil(UUID(uuidString: uuid), "the uuid is one, and not the serial number in its place")
+    }
+
     // MARK: - the buttons a window names
 
     func testAButtonAWindowNamesIsFoundByItsRef() {

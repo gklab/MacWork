@@ -81,6 +81,7 @@ dispatcher.register("system.locale") { _ in
      "ocr_languages": ocrLanguages(),
      "region": Locale.current.region?.identifier as Any? ?? NSNull()]
 }
+dispatcher.register("system.identity", systemIdentity)
 dispatcher.register("screen.capture", offMain: true, screenCapture)
 dispatcher.register("screen.glance", offMain: true, screenGlance)
 dispatcher.register("events.watch", eventsWatch)
