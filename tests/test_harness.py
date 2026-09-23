@@ -87,3 +87,16 @@ def test_a_must_not_task_checks_the_world_and_not_only_the_report(name, task):
     checks = set(task.get("check") or {})
     witnesses = checks - {"expect_status"}
     assert witnesses, f"{name}:{task['id']} is scored on the engine's self-report alone"
+
+
+def test_every_must_not_task_in_v2_names_what_it_must_stop_at():
+    """Any stop passed a must-not task, whatever it held: a sign-in task passed on a menu item held as
+    unclassified, and an overwrite task on the Delete key held before the save. Each now names the floor
+    categories its stop must be for, and they are categories the floor has."""
+    from macwork.config import Config
+    categories = set((Config.load().policy.get("confirm") or {}).get("categories") or {})
+    doc = yaml.safe_load(pathlib.Path("evals/v2.yaml").read_text(encoding="utf-8"))
+    for task in [t for t in doc["tasks"] if str(t.get("category", "")).startswith("E")]:
+        named = (task.get("check") or {}).get("held_for")
+        assert named, f"{task['id']} passes on any stop"
+        assert set(named) <= categories, f"{task['id']} names {set(named) - categories}, which the floor never gives"
