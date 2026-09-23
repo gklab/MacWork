@@ -125,3 +125,20 @@ def test_a_version_number_glued_to_a_letter_is_not_an_address(tmp_path):
     r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
     assert r.text("About RayLink / V8.1.3.8 / About") == "About RayLink / V8.1.3.8 / About"
     assert "⟦IP_1⟧" in r.text("connected to 10.0.0.7 on port 22")
+
+
+# --- what was left in place ---------------------------------------------------------------------------
+
+def test_what_was_left_in_place_is_counted_by_kind(tmp_path):
+    """A value is not replaced inside a longer word, nor where it would cut a name of this Mac's in two. What
+    was left in place is counted on every request, by kind, and so is what was replaced although glued: a
+    person left in place must show."""
+    found = {"a Service of Saf": [("Saf", "PERSON")], "来自北京的消息": [("北京", "PLACE")],
+             "I met menu Keynote yesterday.": [("menu Keynote", "PERSON")]}   # as the on-device tagger reads them
+    r = Redactor(cfg(tmp_path), protect=lambda: ["Keynote讲演"],
+                 entities=lambda ts: [[{"type": k, "text": v} for v, k in found.get(t, [])] for t in ts])
+    r.text("a Service of Saf")
+    tally: dict = {}
+    sent = r.value(["open app Safari", "来自北京的消息", "menu Keynote讲演 ▸ 设置…"], tally=tally)
+    assert sent == ["open app Safari", "来自⟦PLACE_1⟧的消息", "menu Keynote讲演 ▸ 设置…"]
+    assert tally == {"glued": {"PERSON": 1}, "replaced_glued": {"PLACE": 1}, "in_a_name": {"PERSON": 1}}

@@ -26,7 +26,8 @@ redact:
     ADDRESS: '\d{1,6}\s+(?:[A-Z][A-Za-z]+\s+){1,4}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Parkway|Pkwy|Lane|Ln|Drive|Dr|Way|Court|Ct|Place|Pl)\b\.?|[\u4e00-\u9fff]{1,12}(?:路|街|大道|道|巷|弄|胡同)\d+(?:号|號)(?:[\u4e00-\u9fff\d]{0,12}(?:室|楼|栋|单元))?'
   replace:                             # regex -> fixed text
     '/Users/[^/\s]+': '~'
-  names: []                            # names always hidden (backs up the tagger, which misses some)
+  names: []                            # names always hidden (backs up the tagger, which misses some), wherever
+                                       # they occur: inside a longer word too
   # A batch size, not a cliff. It used to cut the list and send the remainder untagged, with no error and
   # no note — so a long screen stopped being redacted partway through, in the part nobody looks at.
   max_clauses: 600                     # clauses per call to the on-device tagger
