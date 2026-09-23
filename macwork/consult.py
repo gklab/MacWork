@@ -26,6 +26,15 @@ def _where(obs: Observation, name: str) -> tuple[float, float] | None:
     return (f[0] + f[2] / 2, f[1] + f[3] / 2) if f else (float(hit.target["x"]), float(hit.target["y"]))
 
 
+def planner_down(task: Task) -> bool:
+    """The planner was asked, never answered, and was out of reach or refused at least once: whatever the task
+    did after that, it did without the planner it was built to have."""
+    use = task.planner_use or {}
+    errors = use.get("errors") or {}
+    return int(use.get("calls", 0)) >= 1 and int(use.get("answered", 0)) == 0 \
+        and int(errors.get("unreachable", 0)) + int(errors.get("refused", 0)) >= 1
+
+
 class ConsultMixin:
     # ------------------------------------------------------------- planning
     @property
@@ -35,6 +44,14 @@ class ConsultMixin:
         if self._planner is None:
             self._planner = make_planner(self.cfg, self.helper) or False
         return self._planner or None
+
+    def _planning(self, task: Task) -> Planning | None:
+        """The one way a task reaches its planner: every ask redacted for this task, audited under its id, and
+        counted and timed into `task.planner_use`. There were four hand-built ones and none of them counted."""
+        backend = self.planning_backend
+        if backend is None:
+            return None
+        return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=task.planner_use)
 
     def _brief(self, task: Task, ctx: Ctx | None, obs: Observation | None, affs: list[Affordance] | None = None,
                acting: bool = True) -> dict[str, Any]:
@@ -110,7 +127,7 @@ class ConsultMixin:
             log.info("planner: already asked about this screen")
             return False
         task.memory.consulted.add(here)
-        planning = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id)
+        planning = self._planning(task)
         try:
             ctx_brief = self._brief(task, ctx, obs, affs)
             # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
@@ -163,7 +180,7 @@ class ConsultMixin:
             # provided", and it is also what the answer is checked against afterwards.
             brief["seen_in_each_app"] = task.memory.facts.brief()
         try:
-            answer = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).answer(task.goal, brief)
+            answer = self._planning(task).answer(task.goal, brief)
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
@@ -242,8 +259,7 @@ class ConsultMixin:
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
         try:
-            text = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).fill(
-                task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief) or None
+            text = self._planning(task).fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief) or None
         except PlannerError as exc:
             log.info("planner fill: %s", exc)
             return None

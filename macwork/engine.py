@@ -27,7 +27,7 @@ from .config import Config
 from .budget import BudgetMixin
 from .invariants import check_ending
 from .words import FloorWords
-from .consult import ConsultMixin
+from .consult import ConsultMixin, planner_down
 from .decider import Decider, DeciderError, make_decider
 from .effects import EffectsMixin
 from .facts import Facts
@@ -48,6 +48,11 @@ from .tidy import TidyMixin
 log = logging.getLogger(__name__)
 
 __all__ = ["Engine", "MOVES", "Progress"]
+
+
+# Endings that are the task giving up on its own — no route, judged unreachable, only the user can go on,
+# nothing left to try — which an outage of the planner it asked for a way can explain.
+GAVE_UP = ("", "no_route", "unreachable", "needs_user", "no_actions")
 
 
 def _norm_name(s: str) -> str:
@@ -511,6 +516,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                     and not task.outputs.get("answer_is_no_answer"):
                 task.outputs["unfinished_but_answered"] = reason
                 status, reason, answered_anyway = "done", "the question is answered from what the task saw", ""
+        if status in ("failed", "blocked", "need_input") and task.cause in GAVE_UP and planner_down(task):
+            # It gave up, and every time it asked the planner for a way the planner could not be reached or
+            # refused it: the ending is the outage's, not the task's. Only over an ending that is a giving up
+            # — a decider that could not be reached, a locked screen or a spent budget say more.
+            task.cause = "planner_unreachable"
         if status == "need_confirm" and task.held is not None and not task.confirm_key:
             # What the "yes" will be for, by name. The held action itself is a live element and is not
             # stored; a task picked up after a restart had the caller's confirmation and nothing to apply it
@@ -527,7 +537,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 task.outputs["learned_routine"] = path.stem
         for app in task.apps.values():
             self.models.save(app)
-        self.audit.record("task", task=task.id, status=status, reason=reason, steps=len(task.steps))
+        self.audit.record("task", task=task.id, status=status, reason=reason, steps=len(task.steps), cause=task.cause)
         if status in ("failed", "cancelled") and task.changed and self.cfg.get("engine.revert.on_failure", False):
             # Before tidy, not after: putting a change back is done through the app's own undo command, and
             # tidy closes the windows that command lives in. `revert` refuses on its own terms — it will not

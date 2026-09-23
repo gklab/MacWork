@@ -44,3 +44,43 @@ def test_the_last_decider_standing_raises():
         pass
     else:
         raise AssertionError("no decider left and no error")
+
+
+class Counted(Flaky):
+    """A decider that has already answered `calls` times this session, at `cost` each."""
+
+    def __init__(self, name, fail_times, calls, cost=0.0002):
+        super().__init__(name, fail_times)
+        self.calls, self.cost_usd, self.unit = calls, calls * cost, cost
+
+    def decide(self, state, questions):
+        out = super().decide(state, questions)
+        self.calls += 1
+        self.cost_usd += self.unit
+        self.last_ms = 7.0 if self.name == "b" else 3.0
+        return out
+
+
+def test_a_switch_never_makes_the_counts_go_backwards():
+    """They were read off whoever was in front: 400 calls became 1 at a switch."""
+    a, b = Counted("a", 0, 400), Counted("b", 0, 0)
+    chain = ChainDecider([a, b])
+    before = (chain.calls, chain.cost_usd)
+    a.fail_times = 99                                     # the network goes: the next decision is b's
+    chain.decide({}, {"q": {}})
+    assert chain.calls == 401 and chain.calls >= before[0] and chain.cost_usd >= before[1]
+    assert chain.calls == a.calls + b.calls and chain.last_ms == 7.0, "the time is the answering decider's"
+    assert chain.name == "b", "who is answering is still whoever is in front"
+
+
+def test_the_decision_ceiling_still_holds_after_a_switch(tmp_path):
+    from macwork.engine import Engine
+    from tests.test_engine import FakeHelper, cfg
+    a, b = Counted("a", 99, 400), Counted("b", 0, 0)
+    eng = Engine(cfg(tmp_path, config={"engine": {"max_decisions": 3}}), helper=FakeHelper(), decider=ChainDecider([a, b]))
+    task = eng._new_task("anything", {}, None)
+    task.begin_run(eng._decider.calls, eng._decider.cost_usd)
+    for _ in range(3):
+        eng._decider.decide({}, {"q": {}})
+    spent = eng._overspent(task, eng.cfg.section("engine"))
+    assert spent is not None and spent.whole_task, "three decisions after a switch did not count against the ceiling"

@@ -454,12 +454,18 @@ class Task:
     updated: float = field(default_factory=time.time)
     reason: str = ""
     cause: str = ""                                            # why it ended, for a program: budget |
-                                                 # screen_locked | decider_unreachable | redaction_failed |
-                                                 # engine_error.
+                                                 # screen_locked | decider_unreachable | planner_unreachable
+                                                 # | redaction_failed | engine_error | app_not_answering
+                                                 # (and the gave-up causes no_route, unreachable,
+                                                 # needs_user, no_actions, …).
                                                  # `reason` is for a person; the eval harness read it for
                                                  # phrases to tell "the service was down" from "it failed"
     decider_calls: int = 0
     cost_usd: float = 0.0
+    # Every ask of the planner this task made: {calls, answered, failed, ms, by: {planner: n}, errors: {kind: n}}
+    # (planner.Planning._count). Kept, and handed back as result()["planner"] — never in `outputs`, which an
+    # eval's output_contains reads: ms counts can hold any number a check looks for.
+    planner_use: dict[str, Any] = field(default_factory=dict)
     # One *run* is one uninterrupted turn of the loop: do(), or a resume() after the caller answered. The step
     # and time budgets are per run, because the caller's thinking time is not the task's — a task that waited
     # two minutes for a "yes" must not come back already out of budget. What bounds a task over all its runs
@@ -502,4 +508,6 @@ class Task:
             out["outputs"] = self.outputs
         if self.plan:
             out["plan"] = {"steps": self.plan, "at": min(self.plan_i, len(self.plan)), "replans": self.pace.replans}
+        if self.planner_use.get("calls"):
+            out["planner"] = self.planner_use
         return out

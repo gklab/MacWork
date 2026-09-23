@@ -21,7 +21,6 @@ from .appmodel import signature
 from .contract import DEFERRED, kept, kept_by_change, promise
 from .invariants import check_look, check_step
 from .decider import DeciderError, choice, noul
-from .planner import Planning
 from .privacy import RedactionError
 from .act import Outcome
 from . import sight
@@ -751,8 +750,7 @@ class LoopMixin:
         if not self.spend_allowance(task, "done_opinions"):
             return ""
         try:
-            agrees, why = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).judge_done(
-                task.goal, self._brief(task, look.ctx, look.obs, look.affs, acting=False))
+            agrees, why = self._planning(task).judge_done(task.goal, self._brief(task, look.ctx, look.obs, look.affs, acting=False))
         except Exception as exc:  # noqa: BLE001  (an opinion that could not be had is no opinion; it never fails the task)
             log.info("second opinion on done: %s", exc)
             return ""

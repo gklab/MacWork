@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from importlib.metadata import entry_points
@@ -87,9 +88,33 @@ DONE_SCHEMA = {"type": "object", "properties": {"done": {"type": "boolean"}, "wh
 
 
 class PlannerError(RuntimeError):
-    def __init__(self, msg: str, refused: bool = False) -> None:
+    """A planner that did not answer, and what stopped it (`kind`): `unreachable` (nothing listening, no route,
+    a dropped connection), `timeout` (no reply in time), `refused` (the credentials were rejected), or `reply`
+    (it answered, and the answer was an error or unreadable). The five tasks of a v2 run on 09-20 asked the local
+    planner 9 times and got no plan back, and nothing in their results told that apart from a planner that had
+    nothing to say."""
+
+    def __init__(self, msg: str, refused: bool = False, kind: str = "reply") -> None:
         super().__init__(msg)
         self.refused = refused   # the credentials were rejected: this planner will not work until the user fixes them
+        self.kind = "refused" if refused else kind
+
+
+ERROR_KINDS = ("unreachable", "timeout", "refused", "reply")
+
+
+def _kind(exc: BaseException | None) -> str:
+    """What stopped a request answering, from the exception it ended in (see PlannerError)."""
+    if isinstance(exc, PlannerError):
+        return exc.kind
+    if isinstance(exc, urllib.error.HTTPError):          # a URLError, but one that did reach a server
+        return "refused" if exc.code in (401, 403) else "reply"
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError):
+        return "timeout"
+    if isinstance(exc, (OSError, urllib.error.URLError)) or isinstance(reason, OSError):
+        return "unreachable"
+    return "reply"
 
 
 class Planner(Protocol):
@@ -295,14 +320,14 @@ class OpenAICompatPlanner:
                 # given up on writes both. The loop that asked carries on without a plan, as it does for any
                 # planner error.
                 if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
-                    raise PlannerError(f"{self.name}: no reply within {self.timeout:.0f} s") from exc
+                    raise PlannerError(f"{self.name}: no reply within {self.timeout:.0f} s", kind="timeout") from exc
                 last = exc
             except (OSError, ValueError, PlannerError) as exc:
                 last = exc
             if asked_again:              # an empty or unreadable reply is asked for once more, and only once
                 break
             asked_again = True
-        raise PlannerError(f"{self.name}: {last}")
+        raise PlannerError(f"{self.name}: {last}", kind=_kind(last))
 
 
 class AnthropicPlanner:
@@ -341,8 +366,10 @@ class AnthropicPlanner:
                 betas=["server-side-fallback-2026-07-01"], extra_body={"fallbacks": "default"})
         except anthropic.APIStatusError as exc:
             raise PlannerError(f"anthropic {exc.status_code}: {exc.message}", refused=exc.status_code in (401, 403)) from exc
+        except anthropic.APITimeoutError as exc:      # before its parent below: a timeout is a connection error there
+            raise PlannerError(f"anthropic: no reply ({exc})", kind="timeout") from exc
         except anthropic.APIConnectionError as exc:
-            raise PlannerError(f"anthropic connection: {exc}") from exc
+            raise PlannerError(f"anthropic connection: {exc}", kind="unreachable") from exc
         if r.stop_reason == "refusal":
             raise PlannerError("planner declined the request")
         text = next((b.text for b in r.content if b.type == "text"), "")
@@ -466,12 +493,14 @@ class Planning:
     What goes to a planner that is not on this Mac is redacted and audited like everything sent to the decider;
     pseudonyms in what comes back are restored before anything is typed."""
 
-    def __init__(self, cfg: Config, planner: Planner, redactor: Any = None, audit: Any = None, task: str | None = None) -> None:
+    def __init__(self, cfg: Config, planner: Planner, redactor: Any = None, audit: Any = None, task: str | None = None,
+                 usage: dict[str, Any] | None = None) -> None:
         self.cfg = cfg
         self.p = planner
         self.redactor = redactor
         self.audit = audit
         self.task = task          # the audit record of every exchange names the task it was for
+        self.usage = usage        # the task's own count of its asks (Task.planner_use), kept by `_ask`
         self.max_steps = int(cfg.get("planner.max_steps", 8))
 
     @property
@@ -495,17 +524,45 @@ class Planning:
         system = self.cfg.question("planner_system")
         prompt = self.cfg.question(prompt_key).format(**{k: json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v for k, v in fields.items()})
         out: dict[str, Any] | None = None
+        error, answered = "", False
+        t0 = time.monotonic()
         try:
             out = self.p.complete(system, prompt, schema)
+            answered = True
+        except Exception as exc:
+            error = _kind(exc)
+            raise
         finally:
             # after the call, not before: which planner answered is only known once it has. A refused one
             # read the prompt before refusing, so it belongs in the record too — and so does the answer:
-            # a fill that came back empty was indistinguishable in the record from one never made.
+            # a fill that came back empty was indistinguishable in the record from one never made. How long
+            # it took, and what stopped it: planner time was recorded nowhere, and an outage looked like a
+            # planner with nothing to say.
+            ms = round((time.monotonic() - t0) * 1000)
+            tried = list(getattr(self.p, "tried", []) or [str(getattr(self.p, "name", "?"))])
+            if answered or error:            # an ask cut off by Ctrl-C neither answered nor failed
+                self._count(tried[-1] if tried else "?", ms, error)
             if self.audit is not None:
-                tried = list(getattr(self.p, "tried", []) or [str(getattr(self.p, "name", "?"))])
                 self.audit.record("plan", task=self.task, answered_by=tried[-1] if tried else "?", tried=tried, prompt=prompt,
-                                  answer=json.dumps(out, ensure_ascii=False)[:2000] if out is not None else None)
+                                  answer=json.dumps(out, ensure_ascii=False)[:2000] if out is not None else None, ms=ms,
+                                  **({"error": error} if error else {}))
         return self.redactor.restore(out) if self.redactor is not None else out
+
+    def _count(self, by: str, ms: int, error: str) -> None:
+        """One ask, into the task's usage: {calls, answered, failed, ms, by: {planner: n}, errors: {kind: n}}."""
+        u = self.usage
+        if u is None:
+            return
+        for key in ("calls", "answered", "failed", "ms"):
+            u.setdefault(key, 0)
+        kinds = u.setdefault("errors", {k: 0 for k in ERROR_KINDS})
+        who = u.setdefault("by", {})
+        u["calls"] += 1
+        u["ms"] += ms
+        u["failed" if error else "answered"] += 1
+        who[by] = int(who.get(by, 0)) + 1
+        if error:
+            kinds[error] = int(kinds.get(error, 0)) + 1
 
     def floor_words(self, language: str, categories: dict[str, str]) -> dict[str, list[str]]:
         """The words that mean each floor category in one interface language: asked once per language, kept

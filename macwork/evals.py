@@ -690,9 +690,12 @@ def _locked(engine: Engine) -> bool:
     return bool(engine.helper.call("session.state").get("screen_locked"))
 
 
-def _error_row(t: dict[str, Any], why: str) -> dict[str, Any]:
+def _error_row(t: dict[str, Any], why: str, code: str) -> dict[str, Any]:
+    """A run that says nothing about ability, and what stopped it (`error`: screen_locked, decider_changed,
+    decider_unreachable, planner_unreachable), counted apart in the summary's errors_by."""
     return {"id": t["id"], "app": t.get("app") or "", "goal": t["goal"], "status": "error", "passed": False, "valid": False,
-            "why": why, "reason": why, "steps": 0, "seconds": 0.0, "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
+            "why": why, "reason": why, "error": code, "steps": 0, "seconds": 0.0, "decider_calls": 0, "cost_usd": 0.0,
+            "planned": False, "trace": []}
 
 
 # How long an interrupted run waits for the task it cancelled to let go of the Mac before sweeping. A cancel is
@@ -986,7 +989,7 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
                                "reason": "", "steps": 0, "seconds": 0.0, "decider_calls": 0, "cost_usd": 0.0, "planned": False, "trace": []}
         if _locked(engine):   # nothing on screen can be judged or operated: says nothing about ability
             progress("   ERROR the screen is locked (not counted)")
-            return base | _error_row(t, "the screen is locked")
+            return base | _error_row(t, "the screen is locked", "screen_locked")
         lap("launch")
         cleanup(engine, t, "setup")
         # What an earlier task left, still up after setup: decided before the task runs, whatever it then does.
@@ -1047,15 +1050,20 @@ def _run_task(engine: Engine, suite: dict[str, Any], task: dict[str, Any], n: in
             # to count — half a run decided by a calibrated model and half by an uncalibrated one says nothing
             # about either. A real suite lost its network mid-run and the rest of it scored the fallback.
             progress(f"   ERROR the decider changed mid-run ({answering} → {now_answering}, not counted)")
-            return base | _error_row(t, f"the decider changed mid-run: {answering} → {now_answering}")
+            return base | _error_row(t, f"the decider changed mid-run: {answering} → {now_answering}", "decider_changed")
         if _locked(engine) or res.get("cause") == "screen_locked":
             progress("   ERROR the screen was locked during the task (not counted)")
             cleanup(engine, t)
-            return base | _error_row(t, "the screen was locked during the task")
-        if res.get("cause") == "decider_unreachable":   # the service was unreachable: says nothing about ability
+            return base | _error_row(t, "the screen was locked during the task", "screen_locked")
+        if res.get("cause") in ("decider_unreachable", "planner_unreachable"):
+            # a service it depends on could not be reached: says nothing about ability. The planner's counts
+            # only when it never answered in the run at all (the engine's own rule, consult.planner_down) — a
+            # run that lost one ask and got the next is scored, since failing runs ask more and would be
+            # dropped more often than passing ones
             cleanup(engine, t)
-            progress(f"   ERROR {res['reason'][:120]}")
-            return base | _error_row(t, res["reason"][:120])
+            why = f"{res['cause']}: {str(res.get('reason') or '')[:120]}"
+            progress(f"   ERROR {why} (not counted)")
+            return base | _error_row(t, why, res["cause"]) | {"task_id": res.get("task_id"), "planner": res.get("planner")}
         if "app_windows_grew" in (t.get("check") or {}) or "app_changed" in (t.get("check") or {}):
             grew = {x["pid"]: x["windows"] for x in _leftovers(engine, before)}
             res["_windows_grew"] = grew
@@ -1170,7 +1178,20 @@ def _summary(suite: str, sha: str | None, rows: list[dict[str, Any]], runs: int)
             "stopped_by_the_floor": {"runs": len(held), "by_category": dict(sorted(because.items())),
                                      "not_reached": sum(r.get("status") == "not_reached" for r in rows)},
             "forced_quits": sum(len(r.get("forced_quits") or []) for r in rows),
+            "errors_by": _count(r.get("error") or "other" for r in rows if r["status"] == "error"),
+            # what the planner could not do, over every run: counted, never a reason to leave a run out
+            "planner_failures": {"runs": sum(bool((r.get("planner") or {}).get("failed")) for r in rows),
+                                 "asks": sum(int((r.get("planner") or {}).get("failed") or 0) for r in rows),
+                                 "by_kind": _count(k for r in rows for k, n in ((r.get("planner") or {}).get("errors") or {}).items()
+                                                   for _ in range(int(n or 0)))},
             "at": time.strftime("%Y-%m-%d %H:%M")}
+
+
+def _count(items: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for x in items:
+        out[str(x)] = out.get(str(x), 0) + 1
+    return dict(sorted(out.items()))
 
 
 def _write(report: dict[str, Any], out_dir: Path, stamp: str) -> list[str]:
@@ -1207,6 +1228,7 @@ def _write(report: dict[str, Any], out_dir: Path, stamp: str) -> list[str]:
            f"repeats of one task are not independent trials)**; {s['passed']}/{s['valid']} runs ({s['rate']:.0%}); "
            f"passed every time: {s['pass_all']}/{len(by_task)} tasks; median {s['median_seconds']} s, p90 {s['p90_seconds']} s; "
            f"{s['decider_calls']} decisions, ${s['total_cost_usd']}; {s['invalid']} invalid, {s['errors']} errors"
+           + (f" ({', '.join(f'{k} {v}' for k, v in s['errors_by'].items())})" if s.get("errors_by") else "")
            + (f" ({s['tasks_listed'] - s['tasks']} of {s['tasks_listed']} tasks never counted)" if s['tasks_listed'] > s['tasks'] else "")
            + (f"; **{s['passed_by_answering_anyway']} passed by answering without finishing**" if s["passed_by_answering_anyway"] else "")
            + (f"; **{s['runs_with_broken_invariants']} run(s) with a broken engine invariant**" if s.get("runs_with_broken_invariants") else "")
