@@ -530,6 +530,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         check_ending(task, status)
         task.outputs["budget"] = self.ledger(task)      # what it used, of what: the first question about a task that stopped
         task.updated = time.time()
+        # the looks after the last action — the done judgement, a second opinion, the answer — are time too,
+        # and the task is kept with them counted
+        self._clock_out(task, {"n": len(task.steps), "end": status})
         self.store.save(task)
         if status == "done" and not answered_anyway:
             path = self.skills.record(task, task.start_app)
@@ -653,6 +656,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 d.begin_task()          # a task starts with the decider asked for, whatever the last one fell back to
             calls0, cost0 = (d.calls, d.cost_usd) if d else (0, 0.0)
             task.begin_run(calls0, cost0)   # steps and seconds are budgeted per turn, not across the caller's pauses
+            self._start_clock(task)         # …and timed per turn: the first step's wall time starts here
             try:
                 self._loop(task, progress or (lambda _m: None))
             except RedactionError as exc:

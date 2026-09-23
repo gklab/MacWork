@@ -1,8 +1,11 @@
 """Where a task's time goes, read from the tasks this Mac has actually run.
 
 Every change to the engine's speed or its caution was made without a way to see what it did, and the first
-real eval run had to overturn three of them. This reads the task store — nothing is run, nothing is driven —
-and reports the two factors wall-clock time is made of:
+real eval run had to overturn three of them. This reads what the engine recorded — nothing is run, nothing is
+driven. The audit's `step` records (one per step, numbers only: loop._step_record) are the default: they say
+how long each step took from end to end, which stage it was spent in, the planner's share and the slowest
+providers. The task store is the older view (`--store`), and a report's rows keep each task's totals for when
+the audit has rotated. The store's view reports the two factors wall-clock time is made of:
 
   cost per step   what each stage of a step costs (observe, decide, act, wait), so an optimisation is
                   aimed at the stage that is actually large. Measured here first: deciding is two-thirds
@@ -100,9 +103,111 @@ def profile(db_path: Path, limit: int = 50) -> dict[str, Any]:
     }
 
 
+STAGES = ("observe", "decide", "act", "wait", "planner")
+
+
+def audit_files(path: Path | None, keep: int = 3) -> list[Path]:
+    """The audit and its rotations (audit.<n>.jsonl, oldest first), those that exist."""
+    if path is None:
+        return []
+    return [f for f in [path.with_suffix(f".{n}.jsonl") for n in range(keep, 0, -1)] + [path] if f.exists()]
+
+
+def _step_records(paths: list[Path], task_ids: set[str] | None) -> list[dict[str, Any]]:
+    out = []
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if '"kind": "step"' not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("kind") == "step" and (task_ids is None or rec.get("task") in task_ids):
+                out.append(rec)
+    return out
+
+
+def _spread(values: list[float]) -> dict[str, float]:
+    v = sorted(values)
+    return {"median_ms": round(statistics.median(v)), "p90_ms": round(v[min(len(v) - 1, int(len(v) * 0.9))]), "n": len(v)}
+
+
+def _shares(totals: dict[str, float], wall: float) -> dict[str, float]:
+    """Each stage's share of task time, from sums — the planner is bursty, and a median step hides it — and what
+    no stage accounts for (looks that ended no step, settling, the loop itself)."""
+    if wall <= 0:
+        return {}
+    out = {k: round(totals.get(k, 0.0) / wall, 3) for k in STAGES}
+    out["unattributed"] = round(max(0.0, wall - sum(totals.get(k, 0.0) for k in STAGES)) / wall, 3)
+    return out
+
+
+def profile_audit(paths: list[Path], task_ids: set[str] | None = None) -> dict[str, Any]:
+    """From the audit's step records (optionally only these tasks'): steps and looks per step, each stage's
+    median and p90 per step, each stage's share of all task time, and the slowest providers."""
+    records = _step_records(paths, task_ids)
+    steps = [r for r in records if "end" not in r]
+    wall = float(sum(int(r.get("wall_ms") or 0) for r in records))
+    totals = {k: float(sum(int(r.get(f"{k}_ms") or 0) for r in records)) for k in STAGES}
+    providers: dict[str, list[int]] = {}
+    for r in steps:
+        for name, ms in (r.get("providers") or {}).items():
+            providers.setdefault(name, []).append(int(ms))
+    slowest = sorted(({"provider": k, "total_ms": sum(v), "median_ms": round(statistics.median(v)), "looks": len(v)}
+                      for k, v in providers.items()), key=lambda x: -x["total_ms"])[:8]
+    return {"source": "audit", "tasks": len({r.get("task") for r in records}), "steps": len(steps),
+            "looks_per_step": round(sum(int(r.get("looks") or 0) for r in records) / len(steps), 2) if steps else 0.0,
+            "task_seconds": round(wall / 1000, 1),
+            "stages": {k: _spread([float(r.get(f"{k}_ms") or 0) for r in steps]) for k in STAGES if steps},
+            "share_of_task_time": _shares(totals, wall), "slowest_providers": slowest,
+            "planner_calls": sum(int(r.get("planner_calls") or 0) for r in records),
+            "decisions": sum(int(r.get("decisions") or 0) for r in records)}
+
+
+def profile_report(report: dict[str, Any]) -> dict[str, Any]:
+    """From an eval report's rows alone (each keeps its task's totals, `timing`): for a run whose audit has
+    rotated away. Per step only on average — the rows keep sums, not steps."""
+    timed = [r.get("timing") or {} for r in report.get("rows") or [] if r.get("timing")]
+    steps = sum(int(t.get("steps") or 0) for t in timed)
+    wall = float(sum(int(t.get("wall_ms") or 0) for t in timed))
+    totals = {k: float(sum(int(t.get(f"{k}_ms") or 0) for t in timed)) for k in STAGES}
+    return {"source": "report", "tasks": len(timed), "steps": steps,
+            "looks_per_step": round(sum(int(t.get("looks") or 0) for t in timed) / steps, 2) if steps else 0.0,
+            "task_seconds": round(wall / 1000, 1),
+            "stages": {k: {"mean_ms": round(totals[k] / steps), "n": steps} for k in STAGES if steps},
+            "share_of_task_time": _shares(totals, wall), "slowest_providers": [],
+            "planner_calls": sum(int(t.get("planner_calls") or 0) for t in timed),
+            "decisions": sum(int(t.get("decisions") or 0) for t in timed)}
+
+
+def format_timing(p: dict[str, Any]) -> str:
+    if not p["steps"]:
+        return (f"no step records to read in the {p['source']}: steps are recorded there since the engine wrote one "
+                "per step (audit.enabled); an older run is read with --store while the store still holds it")
+    lines = [f"{p['tasks']} tasks, {p['steps']} steps, {p['looks_per_step']} looks per step, {p['task_seconds']} s of task time "
+             f"(from the {p['source']}); {p['planner_calls']} planner calls, {p['decisions']} decisions", "",
+             f"{'stage':12} {'median':>9} {'p90':>9}   share of task time"]
+    share = p["share_of_task_time"]
+    for k in STAGES:
+        v = p["stages"].get(k) or {}
+        mid = f"{v['median_ms']:>6} ms {v['p90_ms']:>6} ms" if "median_ms" in v else f"{'mean ' + str(v.get('mean_ms', 0)):>9} ms {'':>9}"
+        lines.append(f"{k:12} {mid}   {share.get(k, 0.0):.0%}")
+    lines.append(f"{'unattributed':12} {'':>21}   {share.get('unattributed', 0.0):.0%}   (looks that ended no step, settling, the loop)")
+    if p["slowest_providers"]:
+        lines += ["", "slowest providers (per look, of those over 5 ms): "
+                  + ", ".join(f"{x['provider']} {x['median_ms']} ms × {x['looks']}" for x in p["slowest_providers"][:5])]
+    return "\n".join(lines)
+
+
 def format_profile(p: dict[str, Any]) -> str:
     if not p["tasks"]:
-        return "no stored tasks to read (engine.persist is off, or nothing has run yet)"
+        return ("no stored tasks to read: the store keeps a task engine.tasks_ttl_s after it ends (1800 s by default), "
+                "and nothing at all when engine.persist is off. The audit keeps every step: `macwork profile` reads it")
     lines = [f"{p['tasks']} tasks, {p['steps']} steps (median {p['steps_per_task_median']} per task)", "",
              f"{'stage':14} {'median':>8} {'p90':>8}   share of a step"]
     for k, v in sorted(p["stages"].items(), key=lambda kv: -kv[1]["median_ms"]):

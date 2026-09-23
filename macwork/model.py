@@ -405,6 +405,11 @@ class TaskScope:
     pictures: dict[str, Any] = field(default_factory=dict)     # exact state -> what it looked like the first time
     vision_wanted: set[str] = field(default_factory=set)       # windows this task asked to read by sight
     windows_seen: set[Any] = field(default_factory=set)        # window ids seen so far: a new one is read first
+    # The clock of the step being made (loop._step_record): set at the start of each run, moved on at every step.
+    looks: int = 0                                             # looks since the last step
+    last_step_at: float | None = None                          # monotonic time of the last step, or of the run's start
+    planner_mark: tuple[int, int] = (0, 0)                     # planner_use (calls, ms) then
+    decisions_mark: int = 0                                    # the decider's count of decisions then
 
 
 @dataclass
@@ -466,6 +471,9 @@ class Task:
     # (planner.Planning._count). Kept, and handed back as result()["planner"] — never in `outputs`, which an
     # eval's output_contains reads: ms counts can hold any number a check looks for.
     planner_use: dict[str, Any] = field(default_factory=dict)
+    # Where its time went, summed over its step records (loop._step_record): steps, looks, wall_ms and each
+    # stage's ms. Handed back as result()["timing"], never in `outputs`, for the same reason as planner_use.
+    timing: dict[str, Any] = field(default_factory=dict)
     # One *run* is one uninterrupted turn of the loop: do(), or a resume() after the caller answered. The step
     # and time budgets are per run, because the caller's thinking time is not the task's — a task that waited
     # two minutes for a "yes" must not come back already out of budget. What bounds a task over all its runs
@@ -510,4 +518,6 @@ class Task:
             out["plan"] = {"steps": self.plan, "at": min(self.plan_i, len(self.plan)), "replans": self.pace.replans}
         if self.planner_use.get("calls"):
             out["planner"] = self.planner_use
+        if self.timing:
+            out["timing"] = self.timing
         return out

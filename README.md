@@ -225,7 +225,7 @@ that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic
 ```sh
 macwork eval --suite evals/v2.yaml --compare         # → evals/reports/{stamp}.{json,md}, paired with evals/baseline/
 macwork compare <before>.json <after>.json           # paired, exact McNemar; drives nothing
-macwork profile                                      # where each step's time goes, and how many steps were wasted
+macwork profile                                      # where the time goes, by stage, planner and provider
 ```
 
 `evals/v2.yaml` holds 29 tasks over navigation, multi-step, cross-app, question answering, must-not and
