@@ -121,8 +121,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
 
     def _helper_restarted(self) -> None:
         """A new helper process means every Accessibility reference handed out by the old one is gone, and pids
-        may be reused. Anything keyed on them has to go with it."""
-        for key in ("menu.snap", "menubar.snap", "menubar.owners", "ambient", "vision.ocr"):
+        may be reused. Anything keyed on them has to go with it — and what the old one said this Mac's own
+        identifiers were: a helper rebuilt since may read what the old one could not (`_mac_identity`)."""
+        for key in ("menu.snap", "menubar.snap", "menubar.owners", "ambient", "vision.ocr", "privacy.identity"):
             self.cache.pop(key, None)
         self._last = None
         log.info("helper restarted: dropped the caches that held its references")
@@ -173,6 +174,23 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         services = [str(s.get("name")) for s in (scanned[1] or [] if scanned else []) if s.get("name")]
         return self.cache["privacy.vocab"] + services
 
+    def _mac_identity(self) -> list[str]:
+        """This Mac's own serial number and hardware UUID, asked of the Mac and hidden wherever they occur.
+
+        An About This Mac window left open put the serial number into 1,911 decider requests of 189 tasks, and
+        into 445 planner prompts of 8: no tagger calls it a name and no pattern can know its shape. Only an
+        answer is kept. A helper that could not be asked (an older one does not know the question) is asked
+        again by the next redactor, so an engine that outlives a helper rebuild does not go on sending the
+        serial number for the rest of its life."""
+        if "privacy.identity" not in self.cache:
+            try:
+                got = self.helper.call("system.identity") or {}
+            except HelperError as exc:
+                log.info("this Mac's serial number and hardware UUID could not be read (%s)", exc)
+                return []
+            self.cache["privacy.identity"] = [str(v) for v in (got.get("serial"), got.get("uuid")) if v and len(str(v)) >= 6]
+        return self.cache["privacy.identity"]
+
     def system(self) -> dict[str, Any]:
         """What this Mac is set to — asked once, and of the Mac. Everything that used to be a fixed locale or
         a fixed pair of OCR languages reads it from here."""
@@ -194,7 +212,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             self._redactors.pop(key, None)
         if key not in self._redactors:
             self._redactors[key] = Redactor(self.cfg, entities=self._entities, protect=self._mac_vocabulary,
-                                            detect=self._detect)
+                                            detect=self._detect, identity=self._mac_identity)
         return self._redactors[key]
 
     @property

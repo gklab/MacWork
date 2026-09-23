@@ -15,6 +15,7 @@ import threading
 import pytest
 
 from macwork.engine import Engine
+from macwork.helper import HelperError
 from macwork.privacy import Audit, Gate, RedactionError, Redactor
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg, names_in
 
@@ -125,3 +126,106 @@ def test_a_version_number_glued_to_a_letter_is_not_an_address(tmp_path):
     r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
     assert r.text("About RayLink / V8.1.3.8 / About") == "About RayLink / V8.1.3.8 / About"
     assert "⟦IP_1⟧" in r.text("connected to 10.0.0.7 on port 22")
+
+
+# --- numbers that are not phone, card or ID numbers ----------------------------------------------------
+
+def test_the_digits_after_a_decimal_point_are_not_a_card_or_phone_number(tmp_path):
+    """A ruler mark read 「20.⟦CARD_1⟧」 and a stepper 「0.⟦CARD_1⟧」: 6,401 times in 79 tasks the decider was
+    shown a pseudonym where a number was."""
+    r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
+    for number in ("20.31746031746032", "0.27000121772289", "12.13812345678"):
+        assert r.text(f"value {number}") == f"value {number}", number
+    assert "4111 1111 1111 1111" not in r.text("Card ending in 4111 1111 1111 1111")
+    assert "13812345678" not in r.text("call 13812345678")
+
+
+def test_a_csv_row_after_a_number_still_hides_its_phone_and_card(tmp_path):
+    """After a comma the digits are the next field of a row, not the rest of a number — and the system's
+    detector finds none of these, so the patterns are all there is."""
+    r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
+    for row, kind in (("1,13812345678", "PHONE"), ("3,4111111111111111", "CARD"), ("1,11010519491231002X", "IDNUM"),
+                      ("12,5500-0000-0000-0004", "CARD")):
+        field = row.split(",", 1)[1]
+        sent = r.text(row)
+        assert field not in sent and f"⟦{kind}_" in sent, sent
+
+
+# --- what was left in place ---------------------------------------------------------------------------
+
+def test_what_was_left_in_place_is_counted_by_kind(tmp_path):
+    """A value is not replaced inside a longer word, nor where it would cut a name of this Mac's in two. What
+    was left in place is counted on every request, by kind, and so is what was replaced although glued: a
+    person left in place must show."""
+    found = {"a Service of Saf": [("Saf", "PERSON")], "来自北京的消息": [("北京", "PLACE")],
+             "I met menu Keynote yesterday.": [("menu Keynote", "PERSON")]}   # as the on-device tagger reads them
+    r = Redactor(cfg(tmp_path), protect=lambda: ["Keynote讲演"],
+                 entities=lambda ts: [[{"type": k, "text": v} for v, k in found.get(t, [])] for t in ts])
+    r.text("a Service of Saf")
+    tally: dict = {}
+    sent = r.value(["open app Safari", "来自北京的消息", "menu Keynote讲演 ▸ 设置…"], tally=tally)
+    assert sent == ["open app Safari", "来自⟦PLACE_1⟧的消息", "menu Keynote讲演 ▸ 设置…"]
+    assert tally == {"glued": {"PERSON": 1}, "replaced_glued": {"PLACE": 1}, "in_a_name": {"PERSON": 1}}
+
+
+# --- this Mac's own identifiers -----------------------------------------------------------------------
+
+SERIAL, UUID = "C02TESTSERIAL", "4A1B2C3D-1111-2222-3333-4444ABCDEF12"   # its middle reads as a card number
+
+
+class Identified(FakeHelper):
+    """A Mac that answers what its serial number and hardware UUID are — after `failures` errors."""
+
+    def __init__(self, failures=0, **kw):
+        super().__init__(**kw)
+        self.failures = failures
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "system.identity":
+            self.calls.append((method, p))
+            if self.failures:
+                self.failures -= 1
+                raise HelperError("no_method", "unknown method system.identity")
+            return {"serial": SERIAL, "uuid": UUID}
+        return super().call(method, timeout, **p)
+
+
+def test_this_macs_own_serial_number_is_never_sent(tmp_path):
+    """An About This Mac window left open put the serial number into 1,911 decider requests: no tagger calls it
+    a name and no pattern knows its shape. The Mac is asked for it instead."""
+    eng = Engine(cfg(tmp_path), helper=Identified(), decider=ScriptedDecider([]))
+    sent = eng.redactor("t").value({"screen_text": f"Serial number {SERIAL}\nHardware UUID: {UUID}"})
+    assert sent == {"screen_text": "Serial number ⟦DEVICE_1⟧\nHardware UUID: ⟦DEVICE_2⟧"}   # whole, never in pieces
+
+
+def test_the_serial_number_is_asked_of_the_mac_once(tmp_path):
+    h = Identified()
+    eng = Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([]))
+    assert SERIAL not in eng.redactor("a").text(f"Serial number {SERIAL}")
+    eng.redactor("b")
+    assert len(h.did("system.identity")) == 1
+
+
+def test_the_macs_identity_is_asked_again_after_the_helper_failed(tmp_path):
+    """An older helper does not know the question. Kept as "nothing to hide", its error outlived the helper: an
+    engine running on across a helper rebuild would have sent the serial number for the rest of its life."""
+    h = Identified(failures=1)
+    eng = Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([]))
+    assert SERIAL in eng.redactor("a").text(f"Serial number {SERIAL}")      # an older helper: nothing to hide it by
+    assert SERIAL not in eng.redactor("b").text(f"Serial number {SERIAL}")  # asked again, and answered
+    eng.redactor("c")
+    assert len(h.did("system.identity")) == 2                               # an answer is kept
+    eng._helper_restarted()                                                 # …until the helper is a new one
+    eng.redactor("d")
+    assert len(h.did("system.identity")) == 3
+
+
+# --- privacy-check ------------------------------------------------------------------------------------
+
+def test_privacy_check_writes_nothing_to_the_real_audit(tmp_path):
+    """Its through-the-gate pass wrote every corpus request into the engine's audit log, as a task called ''."""
+    from macwork import privacycheck
+    c = cfg(tmp_path)
+    res = privacycheck.run(c, lambda ts: [[] for _ in ts], ["Safari"])
+    assert res["through_the_gate"]["requests"] == len(privacycheck.corpus())
+    assert not (tmp_path / "audit.jsonl").exists()

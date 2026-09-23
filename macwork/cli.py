@@ -590,11 +590,20 @@ def cmd_selftest(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_privacy_check(cfg: Config, args: argparse.Namespace) -> int:
-    """Run the synthetic corpus through the real redactor and on-device tagger; report leaks and over-redaction."""
+    """Run the synthetic corpus through the real redactor and on-device tagger; report leaks and over-redaction.
+    With --replay, put one recorded task's step requests from the audit log through one redactor again."""
     from .engine import Engine
-    from .privacycheck import run
+    from .privacycheck import recorded, replay, run
 
     eng = Engine(cfg)
+    if args.replay:
+        path = expand(cfg.get("audit.path"))
+        requests = list(recorded(path, args.replay)) if path else []
+        if not requests:
+            print(f"no step requests of task {args.replay} in the audit log ({path})")
+            return 1
+        _print(replay(cfg, eng._entities, eng._mac_vocabulary(), eng._detect, requests))
+        return 0
     _print(run(cfg, eng._entities, eng._mac_vocabulary(), detect=eng._detect))
     return 0
 
@@ -672,7 +681,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--transport", default="streamable-http", choices=["stdio", "streamable-http"])
     p = sub.add_parser("audit")
     p.add_argument("-n", type=int, default=20)
-    sub.add_parser("privacy-check", help="measure redaction on a synthetic corpus (leaks, over-redaction)")
+    p = sub.add_parser("privacy-check", help="measure redaction on a synthetic corpus (leaks, over-redaction)")
+    p.add_argument("--replay", metavar="TASK_ID",
+                   help="put one recorded task's step requests from the audit log through one redactor again")
     p = sub.add_parser("selftest", help="run planners, learn and routine replay for real (harmless)")
     p.add_argument("--skip-learn", action="store_true")
     p.add_argument("--skip-replay", action="store_true")

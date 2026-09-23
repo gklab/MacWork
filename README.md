@@ -209,12 +209,12 @@ The safety floor in `policy.yaml` is a floor, not a way of deciding what to do.
 Everything a decider or planner sees passes through `privacy.py` on this Mac first.
 
 * Names found by on-device NaturalLanguage, and configured patterns (email, phone, ID and card numbers, IPs,
-  addresses), become stable pseudonyms — `⟦PERSON_1⟧` is the same person for the whole task.
-* `privacy.redact.names` hides names you list; `never_send` withholds whole fields; home paths become `~`;
-  **if tagging fails, text is withheld rather than sent.**
-* What `mac_observe` / `mac_act` hand an MCP caller is redacted the same way: the caller is a model
-  somewhere else (`server.raw_observe` opts a local one out). Every request and answer is written to a
-  local audit log as sent. `audit.dry_run: true` sends nothing at all.
+  addresses), become stable pseudonyms (`⟦PERSON_1⟧` is one person for the whole task) wherever the value
+  stands as a word or was found glued. Glued into a longer word the tagger never finds it in, it may be sent.
+* `privacy.redact.names` hides names you list, glued or not; `never_send` withholds whole fields; home paths
+  become `~`; **if tagging fails, text is withheld rather than sent.** `audit.dry_run: true` sends nothing.
+* What `mac_observe` / `mac_act` hand an MCP caller is redacted the same way (`server.raw_observe` opts a
+  local model out). Each request and answer is audited as sent; `kept` counts the known names left in place.
 * No screenshots leave the machine and there is no telemetry. The API key lives in the Keychain.
 
 `macwork privacy-check` measures the leak rate on a synthetic corpus and reports it as it is — including
