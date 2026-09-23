@@ -102,41 +102,201 @@ private func axSize(_ v: CFTypeRef?) -> CGSize? {
 func axAttr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
     var v: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(el, name as CFString, &v)
-    if err == .cannotComplete { Unresponsive.shared.note(el) }   // the app did not answer in time
+    Unresponsive.shared.saw(err, el, name)   // a timeout marks the app; any answer ends its mark
     return err == .success ? v : nil
 }
 
-/// Apps that do not answer Accessibility.
+/// Whether an app has not finished launching yet, as the system says it.
+func appIsLaunching(_ pid: pid_t) -> Bool {
+    NSRunningApplication(processIdentifier: pid).map { !$0.isFinishedLaunching } ?? false
+}
+
+/// Whether a process is still there at all (EPERM: there, and someone else's).
+func processIsRunning(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
+
+/// Apps that do not answer Accessibility, believed only until they are asked again.
 ///
 /// Every call to such an app waits out the messaging timeout — measured on one: 500 ms per scope, 1500 ms
 /// for "the focused window" (three attributes tried), and a full look cost nearly five seconds to learn
-/// nothing. `.cannotComplete` is the system saying exactly this, so it is believed for a short while rather
-/// than rediscovered on every call. Short, because an app that was busy may answer a moment later.
+/// nothing. `.cannotComplete` is the system saying exactly this, so it is remembered rather than paid for
+/// again on every call.
+///
+/// It was believed for 20 s, restarted by every later timeout and ended by nothing else. An app that has just
+/// been launched times out on its first questions, so it read as having no window for those 20 s: Calculator
+/// was opened at 07:24:16.4 (task 7ffdee1b4ce3), the looks at 17.7 and 35.6 read nothing of it, and the first
+/// look after the 20 s showed its window. Wherever looks were frequent, blindness ended 17.5-20.2 s after the
+/// first blind look, and the look after it showed the app's window in all 13 cases that had one. Before the
+/// cooldown, the first look after opening Calculator, TextEdit or Dictionary read its window in 20 of 21 opens,
+/// 0.8-1.9 s after them.
+///
+/// Now a mark stands only until the app is asked again:
+/// - any answer from the app, to any call, ends it at once;
+/// - while it stands, a snapshot is skipped for `wait` after the last timeout; after that the question that
+///   timed out is asked once more — the same attribute of the same element, not the app's role, which a
+///   toolkit serving Accessibility off its main thread answers while its windows still time out;
+/// - no answer again doubles `wait` (0.5, 1, 2 … up to the old 20 s), so an app that never answers is asked
+///   less and less often (22ce357's case: 6795 ms a look) — except while it is still launching: that app is
+///   starting, not stuck, and is asked again every 0.5 s.
+/// Every mark and every end of one is a line on stderr, and `ping` lists them: whether an app answered while
+/// it was marked is something a live run can now check rather than infer from timings.
 final class Unresponsive {
     static let shared = Unresponsive()
-    private let lock = NSLock()
-    private var seen: [pid_t: TimeInterval] = [:]
-    var cooldown: TimeInterval = 20
 
-    private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+    static let firstWait: TimeInterval = 0.5
+    static let longestWait: TimeInterval = 20
 
-    func note(_ el: AXUIElement) {
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(el, &pid) == .success else { return }
-        lock.lock(); seen[pid] = now(); lock.unlock()
+    /// An app believed not to answer: since when, for how long, and the question it did not answer.
+    struct Mark {
+        var at: TimeInterval          // the last timeout seen
+        var wait: TimeInterval        // how long after it the app is left alone
+        let el: AXUIElement
+        let attr: String
+        var questions = 0             // how many times it has been asked again
     }
 
-    /// True when this app timed out recently: ask it nothing, and say why.
-    func skip(_ pid: pid_t) -> Bool {
+    /// How an app's last mark ended, for `ping`.
+    private struct Ended {
+        let at: TimeInterval, wait: TimeInterval, questions: Int, by: String
+    }
+
+    private let lock = NSLock()
+    private var marks: [pid_t: Mark] = [:]
+    private var ended: [pid_t: Ended] = [:]
+    private let now: () -> TimeInterval
+    private let ask: (AXUIElement, String) -> AXError
+    private let isLaunching: (pid_t) -> Bool
+    private let isRunning: (pid_t) -> Bool
+    private let say: (String) -> Void
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         // the question asked again, directly: through axAttr it would report its own answer twice
+         ask: @escaping (AXUIElement, String) -> AXError = { el, attr in
+             var v: CFTypeRef?
+             return AXUIElementCopyAttributeValue(el, attr as CFString, &v)
+         },
+         isLaunching: @escaping (pid_t) -> Bool = appIsLaunching,
+         isRunning: @escaping (pid_t) -> Bool = processIsRunning,
+         say: @escaping (String) -> Void = { FileHandle.standardError.write(Data("macwork-helper: \($0)\n".utf8)) }) {
+        self.now = now
+        self.ask = ask
+        self.isLaunching = isLaunching
+        self.isRunning = isRunning
+        self.say = say
+    }
+
+    /// An answer, whatever it says: the app read the question and replied.
+    private static func answered(_ err: AXError) -> Bool {
+        switch err {
+        case .success, .noValue, .attributeUnsupported, .parameterizedAttributeUnsupported, .actionUnsupported, .notImplemented:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether this app is still launching: asked of the system, not of the app.
+    func launching(_ pid: pid_t) -> Bool { isLaunching(pid) }
+
+    /// What one Accessibility call came back with. `.cannotComplete` marks the element's app; any answer ends
+    /// its mark; `.invalidUIElement` from an app that has exited drops it. `.failure`, `.apiDisabled` and the
+    /// rest are neither an answer nor a timeout, and leave the mark as it is.
+    func saw(_ err: AXError, _ el: AXUIElement, _ attr: String) {
+        if err != .cannotComplete {
+            lock.lock()
+            let none = marks.isEmpty
+            lock.unlock()
+            if none { return }                      // nothing is marked: nothing for an answer to end
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(el, &pid) == .success else { return }   // local: no question to the app
+        saw(err, el, attr, pid: pid)
+    }
+
+    /// The same, for an element whose app is already known.
+    func saw(_ err: AXError, _ el: AXUIElement, _ attr: String, pid: pid_t) {
+        guard pid > 0 else { return }
         lock.lock()
         defer { lock.unlock() }
-        guard let at = seen[pid] else { return false }
-        if now() - at < cooldown { return true }
-        seen.removeValue(forKey: pid)
-        return false
+        if err == .cannotComplete {
+            if var m = marks[pid] {                 // another call timed out: the mark is refreshed, never grown
+                m.at = now()
+                marks[pid] = m
+                return
+            }
+            marks[pid] = Mark(at: now(), wait: Self.firstWait, el: el, attr: attr)
+            ended[pid] = nil
+            say("pid \(pid) did not answer \(attr): it is asked again in \(Self.firstWait) s")
+        } else if marks[pid] != nil {
+            if Self.answered(err) {
+                endLocked(pid, by: "answer", attr)
+            } else if err == .invalidUIElement && !isRunning(pid) {
+                dropLocked(pid)
+            }
+        }
     }
 
-    func clear(_ pid: pid_t) { lock.lock(); seen.removeValue(forKey: pid); lock.unlock() }
+    /// True while this app is believed not to answer: ask it nothing, and say why. Once `wait` has passed since
+    /// its last timeout — or at once with `askNow` — the question that timed out is asked again, once.
+    func skip(_ pid: pid_t, askNow: Bool = false) -> Bool {
+        lock.lock()
+        guard let m = marks[pid] else { lock.unlock(); return false }
+        if !askNow && now() - m.at < m.wait { lock.unlock(); return true }
+        lock.unlock()
+        let err = ask(m.el, m.attr)                 // outside the lock: this can take the whole messaging timeout
+        lock.lock()
+        defer { lock.unlock() }
+        if Self.answered(err) {
+            if marks[pid] != nil { endLocked(pid, by: "reask", m.attr) }
+            return false
+        }
+        if err == .invalidUIElement && !isRunning(pid) {
+            dropLocked(pid)
+            return false
+        }
+        var again = marks[pid] ?? m
+        again.at = now()
+        again.questions += 1
+        if err == .cannotComplete {
+            again.wait = isLaunching(pid) ? Self.firstWait : min(again.wait * 2, Self.longestWait)
+            say("pid \(pid) did not answer \(m.attr) again (\(again.questions) asked): it is asked again in \(again.wait) s")
+        }
+        marks[pid] = again
+        return true
+    }
+
+    private func endLocked(_ pid: pid_t, by: String, _ attr: String) {
+        guard let m = marks.removeValue(forKey: pid) else { return }
+        let t = now()
+        ended[pid] = Ended(at: t, wait: m.wait, questions: m.questions, by: by)
+        say("pid \(pid) answered \(attr) (\(by)) after \(m.questions) asked again")
+    }
+
+    private func dropLocked(_ pid: pid_t) {
+        guard marks.removeValue(forKey: pid) != nil else { return }
+        ended[pid] = nil
+        say("pid \(pid) has exited: its mark is dropped")
+    }
+
+    /// {pid: {age_ms, wait_s, questions, cleared_by}}: every app marked now (cleared_by null, age since its last
+    /// timeout) and how each app's last mark ended ('answer': another call was answered; 'reask': the question
+    /// asked again was; age since then). An app that has exited is left out.
+    func report() -> [String: Any] {
+        lock.lock()
+        defer { lock.unlock() }
+        let t = now()
+        for pid in Array(marks.keys) + Array(ended.keys) where !isRunning(pid) {
+            marks[pid] = nil
+            ended[pid] = nil
+        }
+        var out: [String: Any] = [:]
+        for (pid, e) in ended {
+            out[String(pid)] = ["age_ms": safeInt((t - e.at) * 1000), "wait_s": e.wait, "questions": e.questions, "cleared_by": e.by]
+        }
+        for (pid, m) in marks {
+            out[String(pid)] = ["age_ms": safeInt((t - m.at) * 1000), "wait_s": m.wait, "questions": m.questions, "cleared_by": NSNull()]
+        }
+        return out
+    }
 }
 
 /// Which running processes own a menu bar extra, in one call.
@@ -286,8 +446,11 @@ func axSnapshot(_ p: Params) throws -> Any {
     } else {
         guard let pidNum = p["pid"] as? Int else { throw RPCError("bad_params", "pid or ref required") }
         pid = pid_t(pidNum)
-        if Unresponsive.shared.skip(pid) {
-            return ["nodes": [Any](), "ms": 0, "truncated": false, "not_answering": true]
+        // `ask_now`: the caller is waiting for this app and wants it asked, whatever the wait. `launching` tells
+        // an app that is starting from one that is stuck; how long starting may take is the caller's call.
+        if Unresponsive.shared.skip(pid, askNow: p["ask_now"] as? Bool ?? false) {
+            return ["nodes": [Any](), "ms": Int(Date().timeIntervalSince(started) * 1000), "truncated": false,
+                    "not_answering": true, "launching": Unresponsive.shared.launching(pid)]
         }
         let app = AXUIElementCreateApplication(pid)
         for (flag, attr) in [("manual_accessibility", "AXManualAccessibility"), ("enhanced_ui", "AXEnhancedUserInterface")] {
@@ -359,8 +522,11 @@ func axSnapshot(_ p: Params) throws -> Any {
         if d.children.count > maxChildren { node["more_children"] = d.children.count - maxChildren; nodes[nodes.count - 1] = node }
         for child in kids.reversed() { stack.append((child, ref, item.depth + 1, clip, free)) }
     }
-    return ["gen": gen, "pid": Int(pid), "nodes": nodes, "truncated": truncated,
-            "ms": Int(Date().timeIntervalSince(started) * 1000)]
+    var out: [String: Any] = ["gen": gen, "pid": Int(pid), "nodes": nodes, "truncated": truncated,
+                              "ms": Int(Date().timeIntervalSince(started) * 1000)]
+    // an app that answers but has not finished launching may have no window yet: not "it has none"
+    if p["ref"] == nil, Unresponsive.shared.launching(pid) { out["launching"] = true }
+    return out
 }
 
 // MARK: - act

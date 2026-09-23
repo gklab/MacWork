@@ -19,9 +19,12 @@ func screenLocked() -> Bool {
 }
 
 dispatcher.register("ping") { _ in
+    // `marks`: the apps believed not to answer Accessibility, and how each one's last mark ended — whether an
+    // app answered while it was marked could only be inferred from timings before
     ["version": version, "pid": Int(getpid()), "ax_trusted": AXIsProcessTrusted(),
      "screen_capture": CGPreflightScreenCaptureAccess(), "screen_locked": screenLocked(),
-     "secure_input": IsSecureEventInputEnabled(), "methods": dispatcher.methods]
+     "secure_input": IsSecureEventInputEnabled(), "methods": dispatcher.methods,
+     "marks": Unresponsive.shared.report()]
 }
 dispatcher.register("session.state") { _ in
     ["screen_locked": screenLocked(), "frontmost": (NSWorkspace.shared.frontmostApplication?.bundleIdentifier as Any?) ?? NSNull()]
