@@ -513,10 +513,12 @@ def test_reopen_is_not_offered_while_a_window_of_the_app_is_on_screen(tmp_path):
     assert not reopened(obs), "the main window was offered back while a window of the app was on screen"
     assert obs.notes["open_windows"] == ["「Untitled」 (on screen; Accessibility does not describe it)"]
     assert obs.notes["window_stand_in"] == {"id": 501, "title": "Untitled", "frame": [100, 100, 600, 400]}
-    # the guard: a status item and a toolbar strip are not its windows, and alone they leave reopen offered
+    # the guard: a status item, a toolbar strip and a tooltip are not its windows, and alone they leave reopen
+    # offered (observe.windows.min_size: the harness counted strips of 1512x33 and tooltips of 100x30 as windows)
     status_item = {**MAIN, "id": 502, "layer": 25, "ordinary": False, "frame": [900, 0, 30, 24]}
     strip = {**MAIN, "id": 503, "frame": [0, 60, 1512, 33]}
-    for alone in (status_item, strip):
+    tooltip = {**MAIN, "id": 504, "frame": [0, 0, 100, 30]}
+    for alone in (status_item, strip, tooltip):
         obs = look(tmp_path, Starting(answer_on=0, windowless=True, screen=[alone]), ["window", "windows"])
         assert len(reopened(obs)) == 1 and obs.notes["open_windows"] == [], alone
 
@@ -546,7 +548,9 @@ def test_an_app_that_does_not_answer_is_read_from_its_window_on_screen(tmp_path)
     assert ctx.cache["window_frame_by_pid"][42] == MAIN["frame"], "the next glance is not taken of that window"
     # read again on this look — the loop does, after a step that changed only the picture — it is still that
     # window, by its number
+    from macwork.observe import read_the_change
     get_provider("vision")(ctx, obs)
+    read_the_change(ctx, obs, MAIN["frame"])
     assert not h.did("ax.fingerprint") and [p.get("window_id") for p in h.did("screen.ocr")] == [501]
     # six texts outside every node make a canvas of an answering app's window; of one that did not answer,
     # they say nothing about its tree, and the first look it answers would pay a read for it

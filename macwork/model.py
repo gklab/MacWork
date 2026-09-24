@@ -171,6 +171,10 @@ class Observation:
     focused: dict[str, Any] | None = None
     notes: dict[str, Any] = field(default_factory=dict)   # provider diagnostics (timings, truncation)
     at: float = field(default_factory=time.time)
+    tree_text: str = ""                          # every word the Accessibility trees gave — texts, what fields hold,
+                                                 # what controls are called — whole, not cut to screen_text's cap:
+                                                 # what a line read off the screen is checked against
+                                                 # (observe.read_the_change). Never sent anywhere
 
     def by_id(self) -> dict[str, Affordance]:
         return {a.id: a for a in self.affordances}
@@ -192,6 +196,8 @@ class Change:
     gone: list[str] = field(default_factory=list)          # …and the reverse
     picture_share: float | None = None                     # of the window's picture, when a glance could compare
     picture_where: str | None = None
+    picture_region: list[int] | None = None                # …and where on screen, in points (sight.compare): what
+                                                           # the step drew is read there (observe.read_the_change)
 
     @property
     def app_changed(self) -> bool:
@@ -244,6 +250,7 @@ class Change:
         return {"app_before": self.app_before, "app_after": self.app_after, "window_before": self.window_before,
                 "window_after": self.window_after, "appeared": list(self.appeared), "gone": list(self.gone),
                 "picture_share": self.picture_share, "picture_where": self.picture_where,
+                "picture_region": list(self.picture_region) if self.picture_region else None,
                 "picture_only": self.picture_only, "nothing": self.nothing}
 
 
@@ -454,6 +461,11 @@ class TaskScope:
     # every installed app, opened once while Calculator was not answering, was still open in front of the
     # keypad on each of the nine looks that followed.
     opened: dict[str, Any] | None = None
+    # What was read by sight where a step changed the picture and no text (observe.read_the_change): {pid,
+    # window, region, lines, glance}, the glance being the one the lines were read on. The lines are part of
+    # the screen text while that region looks as it did then (observe.keep_what_was_read): read once and
+    # then missing, a panel still on screen was reported gone by the next step's change.
+    read_there: dict[str, Any] | None = None
 
 
 @dataclass

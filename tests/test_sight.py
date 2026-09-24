@@ -42,6 +42,23 @@ def test_it_says_how_much_and_roughly_where():
     assert sight.compare(glance(), glance({62: 0, 63: 0}), 2)["where"] == "at the bottom right"
 
 
+def test_it_says_where_on_screen_the_picture_changed():
+    """In screen points, where what the step drew can be read: the changed cells' box and one cell around it,
+    cut to the window. A panel in a described window was read and dropped, or not read at all, because only
+    the words "at the top left" said where it was."""
+    at = (40, 90, 800, 600)                  # 8×8 cells of 100×75 points
+    corner = sight.compare(glance(frame=at), glance({0: 200, 1: 200, 8: 200, 9: 200}, frame=at), 2)
+    assert corner.get("region") == [40, 90, 300, 225], "the box of cells 0-1 × 0-1, one cell more, cut at the edge"
+    middle = sight.compare(glance(frame=at), glance({27: 0, 28: 0}, frame=at), 2)
+    assert middle.get("region") == [40 + 200, 90 + 150, 400, 225]
+    assert sight.compare(glance(frame=at), glance(frame=at), 2) == {"share": 0.0, "cells": 0, "where": ""}
+    # …and whether that part has changed since: only the cells there are compared, part for part, though
+    # the window has moved
+    moved = (140, 190, 800, 600)
+    assert sight.compare(glance(frame=at), glance({63: 0}, frame=moved), 2, within=[40, 90, 300, 225])["cells"] == 0
+    assert sight.compare(glance(frame=at), glance({9: 0}, frame=moved), 2, within=[40, 90, 300, 225])["cells"] == 1
+
+
 def test_pictures_of_different_things_are_not_compared():
     assert sight.compare(glance(), glance(frame=(0, 0, 1024, 768)), 2) is None, "the window was resized"
     assert sight.compare(glance(frame=(0, 0, 800, 600)), glance(frame=(40, 90, 800, 600)), 2) is not None, "only moved"
