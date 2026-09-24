@@ -14,8 +14,10 @@ the one below is 'Example Input', composing the 'lo' of 'hello'.
 """
 
 import json
+from typing import Any
 
-from macwork.act import get_channel
+from macwork.act import Outcome, get_channel
+from macwork.contract import kept
 from macwork.engine import Engine
 from macwork.helper import HelperError
 from macwork.model import Affordance
@@ -94,3 +96,66 @@ def test_each_typing_step_is_recorded_by_how_it_was_handed_back_never_by_its_tex
               if json.loads(line)["kind"] == "step"][0]
     assert failed["ok"] is False and (failed.get("typed_landed"), failed.get("typed_kept")) == ("read", False), \
         "a step that broke its promise still says how its keys were handed back"
+
+
+# ----------------------------------------------------------------- letters still being composed are not typed
+
+class Composing(FakeHelper):
+    """The field and the element with the keyboard focus both hold "hello", of which an input method is still
+    composing `marked` — said, as helper 0.2.0 says it, only when the read asks with marked=True. `ABSENT`: the
+    element publishes no marked range, or the helper is older, and nothing is said."""
+
+    ABSENT = object()
+
+    def __init__(self, marked: Any = "lo") -> None:
+        super().__init__()
+        self.marked = marked
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "ax.get":
+            self.calls.append((method, p))
+            got = {"value": "hello"}
+            if p.get("marked") and self.marked is not self.ABSENT:
+                got["marked"] = self.marked
+            return got
+        if method == "ax.focused":
+            self.calls.append((method, p))
+            node = {"role": "AXTextArea", "ref": "focus", "value": "hello"}
+            if p.get("marked") and self.marked is not self.ABSENT:
+                node["marked"] = self.marked
+            return {"focused": node, "pid": 42, "app": "TextEdit", "secure_input": False}
+        return super().call(method, timeout, **p)
+
+
+def ctx_of(tmp_path, helper) -> Ctx:
+    return Ctx(cfg(tmp_path), helper, app={"pid": 42, "name": "TextEdit"}, goal="", inputs={}, task="t", gate=None, cache={})
+
+
+def test_letters_still_being_composed_at_the_cursor_are_not_typed(tmp_path):
+    held, why = kept(ctx_of(tmp_path, Composing()), AT_CURSOR, {"text": "hello"}, Outcome(True), [])
+    assert held is False, why
+    assert why == "「lo」 is still being composed by the input method: not yet in where the cursor is"
+
+
+def test_letters_still_being_composed_in_a_field_are_not_typed(tmp_path):
+    held, why = kept(ctx_of(tmp_path, Composing()), INTO_FIELD, {"text": "hello"}, Outcome(True), [])
+    assert held is False, why
+    assert why == "「lo」 is still being composed by the input method: not yet in the field"
+
+
+def test_the_read_back_asks_what_is_being_composed(tmp_path):
+    h = Composing(marked="")
+    for a in (INTO_FIELD, AT_CURSOR):
+        kept(ctx_of(tmp_path, h), a, {"text": "hello"}, Outcome(True), [])
+    assert [p.get("marked") for p in h.did("ax.get")] == [True]
+    assert [p.get("marked") for p in h.did("ax.focused")] == [True]
+
+
+def test_committed_text_is_still_typed(tmp_path):
+    """Nothing composing (""), a marked range that says nothing, or nothing said at all — the element publishes
+    no range, or the helper is older: the text is read back as it was before. So is anything but text, which
+    helper 0.2.0 never sends: its WebKit branch, which would have said True, was dropped unchecked."""
+    for marked in (Composing.ABSENT, None, "", True):
+        for a in (INTO_FIELD, AT_CURSOR):
+            held, why = kept(ctx_of(tmp_path, Composing(marked)), a, {"text": "hello"}, Outcome(True), [])
+            assert held is True and why.startswith("the text is in"), (marked, a.channel, why)
