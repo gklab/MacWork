@@ -25,7 +25,7 @@ from typing import Any, Callable
 from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
-from .model import Affordance, Observation, Slot, with_state, TaskScope
+from .model import Affordance, Observation, Slot, clip, with_state, TaskScope
 
 log = logging.getLogger(__name__)
 
@@ -1973,15 +1973,81 @@ def group_of(a: Affordance) -> tuple[str, str]:
     return f"ch:{a.channel}", names.get(a.channel, f"the {a.channel} actions")
 
 
-def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int = 12,
-            fold_over: int = 0) -> tuple[list[Affordance], dict[str, tuple[str, list[Affordance]]]]:
+SCREEN = "screen"   # the screen in front as one group: the key of its rest, when it alone is more than there is room for
+
+Anchor = tuple[str, int]   # where a page begins: a member's handle, and which of the members with that handle it is
+
+
+def on_screen(group: str) -> bool:
+    """Is this group (a `group_of` key) part of the screen in front, an area or a list of the window, rather
+    than a place to look into?"""
+    return group.startswith(("area:", "list:"))
+
+
+def page_members(affs: list[Affordance], group: str, pinned: set[str] | frozenset[str] = frozenset()) -> list[Affordance]:
+    """What `arrange` pages through for a group: its members in `affs` order, less the planner's suggestions,
+    which are offered on their own. SCREEN is every area and list of the screen in front."""
+    return [a for a in affs if a.id not in pinned
+            and (on_screen(group_of(a)[0]) if group == SCREEN else group_of(a)[0] == group)]
+
+
+def page_anchor(members: list[Affordance], first: Affordance) -> Anchor:
+    """Where a page that begins at `first` begins, in a form the next look can find again: its handle, and
+    which of the members with that handle it is.
+
+    The handle alone is not enough. Content has no identity, so its handle is its label, and a page anchored
+    on a handle that an earlier member shares began at that earlier member instead. A window of 320 controls,
+    every eleventh a 「Archive」 button, paged at 199: page 1 came back eight times running, and 122 controls
+    were never shown. The window options of the 186 looks in this Mac's audit that had 120 or more, paged
+    that way at a budget of 100 and of 60, left controls out of reach on 65 and 68 of them; anchored on
+    (handle, which), on none."""
+    h = first.handle()
+    same = [a for a in members if a.handle() == h]
+    return h, next((i for i, a in enumerate(same) if a is first), 0)
+
+
+def _from(members: list[Affordance], anchor: Anchor | None) -> list[Affordance]:
+    """The members in their order, beginning with the one `anchor` names, and the ones before it after the
+    last: a page, then the rest, then round again. A missing anchor, or one that names no member here, is
+    the first."""
+    if anchor:
+        handle, nth = anchor
+        at = [i for i, a in enumerate(members) if a.handle() == handle]
+        if 0 <= nth < len(at):
+            return members[at[nth]:] + members[:at[nth]]
+    return members
+
+
+def _sample(members: list[Affordance], sample: int) -> str:
+    """The first few members of a group by the last part of their names, each cut where a word ends."""
+    return ", ".join(clip(m.label.split(" ▸ ")[-1], 40) for m in members[:sample]) + (", …" if len(members) > sample else "")
+
+
+def arrange(affs: list[Affordance], budget: int, expanded: set[str] | dict[str, Anchor | None], sample: int = 12,
+            fold_over: int = 0, pinned: set[str] | frozenset[str] = frozenset(),
+            min_page: int = 60) -> tuple[list[Affordance], dict[str, tuple[str, list[Affordance]]]]:
     """Fit what can be done into one choice of at most ``budget`` options without guessing relevance: everything
-    when it fits; otherwise the smallest groups stay as they are and the largest are offered as one entry each
-    ("look into the File menu: New, Open, …"), which the decider can open like a person opens a menu. Groups
-    already opened in this task are always shown in full."""
+    when it fits. Otherwise, in this order:
+
+    * the screen in front, whole; when it alone is more than there is room for, its first part, and the rest
+      one "look into the rest of the window" away;
+    * the planner's suggestions (`pinned`, by id), each on its own, never with its whole group;
+    * the group the decider opened (`expanded`: {group: the `Anchor` its page begins at, None for its first
+      member}, or a set of one group, opened at its first), shown from there: at least ``min_page`` of it
+      (all of it when smaller) and as much more as the room left holds, its rest one "look into the rest
+      of …" away. One group is open at a time; SCREEN opens the screen's own rest;
+    * then the smallest other groups whole, and the others as one "look into …" each, which the decider can
+      open like a person opens a menu.
+
+    Every place keeps at least its own entry, so nothing is dropped: an action is an option, or inside an
+    entry that names it. Only more places than options can break that, and `invariants.check_options` says so."""
+    opened = dict(expanded) if isinstance(expanded, dict) else dict.fromkeys(expanded)
+    group, anchor = next(iter(opened.items()), (None, None))   # one group is open at a time
     groups: dict[str, list[Affordance]] = {}
     names: dict[str, str] = {}
     for a in affs:
+        if a.id in pinned:
+            continue
         k, n = group_of(a)
         groups.setdefault(k, []).append(a)
         names[k] = n
@@ -1990,28 +2056,55 @@ def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int
     # every installed app, and the decider was shown 185 options — Format ▸ Rows ▸ Hide, eight URL schemes,
     # the user's Shortcuts — with the whole sheet folded behind one "look into the window" it never opened.
     # Where an action lives is still the only thing this goes by: on the screen now, before anywhere else.
-    on_screen = lambda k: k.startswith(("area:", "list:"))   # noqa: E731
-    huge = {k for k in groups if fold_over and len(groups[k]) > fold_over and k not in expanded and not on_screen(k)}
+    huge = {k for k in groups if fold_over and len(groups[k]) > fold_over and k != group and not on_screen(k)}
     if len(affs) <= budget and not huge:
         return affs, {}
-    shown = {k for k in groups if (k in expanded or len(groups[k]) == 1) and k not in huge}   # folding one option saves nothing
-    used = sum(len(groups[k]) for k in shown) + (len(groups) - len(shown))
-    for k in sorted((k for k in groups if k not in shown and k not in huge), key=lambda k: (not on_screen(k), len(groups[k]))):
-        if used - 1 + len(groups[k]) > budget and not on_screen(k):
-            break                 # the screen does not fold: if it alone is over the budget its tail is cut, and said
-        shown.add(k)
-        used += len(groups[k]) - 1
+    pins = [a for a in affs if a.id in pinned]
+    screen = page_members(affs, SCREEN, pinned)
+    others = [k for k in groups if not on_screen(k)]
+    opens = group if group in groups and not on_screen(group) else None
+    # …and it goes first when room runs out, before what the decider opened. Opened groups were listed first
+    # and the tail cut: a real task looked into the 535 installed apps while Calculator was not answering, the
+    # list stayed open, and on the next nine looks 102 to 195 apps stood in front of the keypad and not one of
+    # Calculator's 59 controls was an option. The opened group is owed a page; the screen has the rest.
+    room = budget - len(pins) - len(others)                  # every other place keeps at least its own entry
+    owed = min(len(groups[opens]) - 1, min_page) if opens else 0
+    fits = max(room - owed, 0)
     folded: dict[str, tuple[str, list[Affordance]]] = {}
-    for k, members in groups.items():
-        if k not in shown:
-            names_ = ", ".join(m.label.split(" ▸ ")[-1][:40] for m in members[:sample])
-            folded[k] = (f"look into {names[k]} ({len(members)} options: {names_}{', …' if len(members) > sample else ''})", members)
-    opened = [a for a in affs if group_of(a)[0] in expanded]   # what the decider asked to see comes first if space runs out
-    rest = [a for a in affs if group_of(a)[0] in shown and group_of(a)[0] not in expanded]
-    flat = opened + [a for a in rest if on_screen(group_of(a)[0])] + [a for a in rest if not on_screen(group_of(a)[0])]
+    shown_screen, screen_rest = screen, []
+    if len(screen) > fits:
+        paged = _from(screen, anchor if group == SCREEN else None)
+        shown_screen, screen_rest = paged[: max(fits - 1, 0)], paged[max(fits - 1, 0):]
+        room -= 1
+    room -= len(shown_screen)
+    page: list[Affordance] = []
+    if opens:
+        members = _from(groups[opens], anchor)
+        if len(members) - 1 <= room:
+            page, room = members, room - (len(members) - 1)
+        else:
+            spare = max(room, 0)
+            page, rest, room = members[:spare], members[spare:], room - spare
+            # worded as a "look into" like every other entry: the decider's instructions say what those are
+            folded[opens] = (f"look into the rest of {names[opens]} ({len(rest)} more of {len(members)}: "
+                             f"{_sample(rest, sample)})", rest)
     # Smallest groups first is not a guess at what matters — it is what shows the most *distinct* places at
     # once; the largest become one "look into …" each, so nothing is dropped for being judged uninteresting.
-    # What can still be dropped is the tail of this list when even that does not fit, and the caller is told.
+    shown: set[str] = set()
+    for k in sorted((k for k in others if k != opens and k not in huge), key=lambda k: len(groups[k])):
+        if len(groups[k]) - 1 > room:
+            break
+        shown.add(k)
+        room -= len(groups[k]) - 1
+    for k in others:
+        if k != opens and k not in shown:
+            folded[k] = (f"look into {names[k]} ({len(groups[k])} options: {_sample(groups[k], sample)})", groups[k])
+    if screen_rest:
+        folded[SCREEN] = (f"look into the rest of the window ({len(screen_rest)} more of {len(screen)} on screen: "
+                          f"{_sample(screen_rest, sample)})", screen_rest)
+    flat = shown_screen + pins + page + [a for a in affs if a.id not in pinned and group_of(a)[0] in shown]
+    # Only more places than options can still cut anything here; the caller is told, and the look breaks
+    # an invariant (`invariants.check_options`).
     return flat[: max(0, budget - len(folded))], folded
 
 

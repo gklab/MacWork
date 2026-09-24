@@ -323,7 +323,6 @@ class Memory:
     interruptions: dict[str, dict[str, Any]] = field(default_factory=dict)   # what each thing in the way turned out to be
     no_effect: set[str] = field(default_factory=set)           # "screen|action" that changed nothing: never offered again
     no_progress: set[str] = field(default_factory=set)         # "screen|action" taken in a stretch that got the task nowhere
-    expanded: set[str] = field(default_factory=set)            # option groups the decider chose to look into
     screens_seen: set[str] = field(default_factory=set)
     screen_notes: dict[str, str] = field(default_factory=dict)  # distinct screens seen (signature -> short text)
     circles: list[str] = field(default_factory=list)           # actions that only led back to a screen already seen
@@ -410,6 +409,13 @@ class TaskScope:
     last_step_at: float | None = None                          # monotonic time of the last step, or of the run's start
     planner_mark: tuple[int, int] = (0, 0)                     # planner_use (calls, ms) then
     decisions_mark: int = 0                                    # the decider's count of decisions then
+    # The one group of options the decider opened, and where: {group, start, where, steps} (loop._open_group).
+    # Like a menu a person opened, it lasts until the next step is taken or the app or window in front
+    # changes, and opening another replaces it; the rest of the screen in front stays open across steps on
+    # the same window. It was `memory.expanded`, kept for the whole task and stored with it: the list of
+    # every installed app, opened once while Calculator was not answering, was still open in front of the
+    # keypad on each of the nine looks that followed.
+    opened: dict[str, Any] | None = None
 
 
 @dataclass

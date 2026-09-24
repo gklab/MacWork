@@ -23,6 +23,24 @@ def test_a_look_must_offer_things_that_can_be_remembered_and_told_apart():
     assert "invariants_broken" not in clean.outputs
 
 
+def test_every_action_a_look_found_is_an_option_or_inside_a_group():
+    """The options are fitted into one choice, and nothing the look found is dropped on the way: a real task
+    kept Calculator's 59 controls out of reach for nine looks, and was told only that they "did not fit"."""
+    from macwork.invariants import check_options
+    keypad = [Affordance(f"w{i}", "window", "press", f"button 「{i}」", context="Keypad") for i in range(30)]
+    keys = [Affordance(f"k{i}", "keys", "key", f"press the key {i}") for i in range(13)]
+    typed = Affordance("t0", "keys", "type", "type 「17」 at the cursor (suggested by the planner)", {"text": "17"})
+    affs = keypad + keys + [typed]
+    task = Task(goal="x")
+    check_options(task, affs, keypad[:10] + keys, {})
+    said = task.outputs["invariants_broken"]
+    assert len(said) == 1 and "21 action(s)" in said[0] and "20 of them on the screen in front" in said[0]
+    clean = Task(goal="x")
+    check_options(clean, affs, keypad[:10] + [typed], {"ch:keys": ("look into keys", keys),
+                                                       "screen": ("look into the rest of the window", keypad[10:])})
+    assert "invariants_broken" not in clean.outputs
+
+
 def test_a_step_must_say_where_it_was_taken_from_and_what_it_promised():
     task = Task(goal="x")
     check_step(task, Step(0, "button 「OK」", ok=True, before=None, promise="", kept=False), had_look=True)
