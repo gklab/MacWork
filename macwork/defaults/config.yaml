@@ -108,9 +108,14 @@ observe:
     field_chars: 300             # how much of a text field's contents is shown as evidence
     screen_text_chars: 1500
   windows:                       # the app's windows as the window server lists them, which needs no answer from
-                                 # the app: asked when it does not answer Accessibility (starting, or busy)
+                                 # the app: what it has on screen when it does not answer Accessibility (starting,
+                                 # or busy), and the windows on screen its tree does not describe when it does
     min_size: [100, 60]          # smaller is not one of its windows: the harness's own floor, set after it counted
                                  # toolbar strips, tooltips and unrealised panels at [0, 0, 100, 30] as windows
+    read_by_sight: 0             # how many windows on screen that the tree of an answering app does not describe
+                                 # are read off the screen, by their number, on each look; 0 lists them unread.
+                                 # Stays 0 until a read-only survey of this Mac's apps has counted how many such
+                                 # windows are ones nobody sees: each of those would cost a read per action
   apps:
     # launchservices: Spotlight finds the bundles, LaunchServices says which copy it would open for each
     #   bundle id — that copy is the one reported. Finds apps wherever they are (405 here against 146 by

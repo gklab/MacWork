@@ -195,5 +195,22 @@ until it asks again and says whether an app is still launching:
   second opinion asks the planner's judge about that look), and a low progress vote, which counts the step before
   it toward the no-progress rule and as having gone wrong when the planner is next asked.
 
-Reading the windows Accessibility does not describe — by window number, by sight — waits for a read-only survey
-of how often such windows are phantoms.
+## What the tree does not describe is read off the screen (2026-09-24)
+
+Offline, with fakes (scratchpad `b_head_probe` scenarios 2, 3 and 7b): an answering app whose tree lists no
+window, with one on screen, was told it had none and offered "bring back the main window"; the window on screen
+of an app that does not answer was never read; and a panel an app draws in a window of its own was never read.
+
+* **The app's windows are asked of the window server on every look** (`observe.windows`). One its tree holds
+  nowhere — matched by its windows' titles and frames and by the focused window's nodes, a popover's frame
+  inside the window server's that takes in its arrow — is listed as on screen and not described, and no reopen
+  is offered while one is up. Up to `observe.windows.read_by_sight` of them are read by sight, by their number
+  (helper 0.2.0's `window_id`). That is 0 until a read-only survey of this Mac's apps has counted how many such
+  windows are ones nobody sees: they are listed, not read.
+* **A window the tree does not give stands in for it** (`window_stand_in`): the one on screen of an app that
+  does not answer, or of one whose tree lists no window. It is read by its number, with no fingerprint asked (of
+  a silent app that is three 0.5 s timeouts), keyed on the look's glance as well, since no action is taken while
+  the engine waits. From an app that does not answer it is text only: a busy app applies the events it is sent
+  to whatever it shows once it catches up.
+* **Text read by sight is counted** (`read_by_sight_lines`): a check that reads the screen text reads it too, and
+  pass rates across this change are compared with that split.

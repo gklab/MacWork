@@ -10,6 +10,11 @@ which needs no answer from it; no sub-goal advances on a look nobody could read;
 or the goal made on one waits first, and an ending on one says that the app did not answer; and the planner is not
 asked about one while a wait is still possible.
 
+The window server also shows what an app's tree does not hold. A window on screen that the tree of an answering
+app does not describe is listed as such, keeps "bring back the main window" from being offered, and is read by its
+number where observe.windows.read_by_sight allows; the window on screen of an app that does not answer is read by
+its number, text only.
+
 No new name is imported at module level: each test fails at the base of this change on its own assertion,
 except where the name it covers is itself new.
 """
@@ -400,3 +405,191 @@ def test_every_ending_on_a_blind_look_names_the_app_that_did_not_answer(tmp_path
     res = eng.do("close the panel")
     assert res["status"] == status and res["reason"].startswith(reason)
     assert res["cause"] == "app_not_answering" and "TextEdit is busy and did not answer Accessibility" in res["reason"]
+
+
+# ----------------------------------------------------------------- windows on screen the tree does not describe
+PANEL = {"pid": 42, "id": 502, "owner": "TextEdit", "title": "About", "layer": 0, "ordinary": True,
+         "frame": [300, 200, 240, 180], "alpha": 1, "on_screen": True}
+LISTED = [{"ref": "l.0", "role": "AXWindow", "title": "Untitled", "frame": [100, 100, 600, 400], "depth": 0}]
+FOCUSED = [{"ref": "w.0", "role": "AXWindow", "title": "Untitled", "frame": [100, 100, 600, 400], "depth": 0},
+           {"ref": "w.1", "role": "AXButton", "rdesc": "button", "title": "Send", "actions": ["AXPress"],
+            "frame": [110, 110, 60, 20], "parent": "w.0"},
+           {"ref": "w.2", "role": "AXStaticText", "value": "Draft saved", "frame": [110, 150, 200, 16], "parent": "w.0"}]
+VERSION = [{"text": "About TextEdit", "frame": [330, 230, 150, 16]}, {"text": "Version 10.9.12865", "frame": [330, 260, 150, 14]}]
+
+
+class Answering(FakeHelper):
+    """The app (pid 42) answers. Its tree lists the windows `listed` and its focused window holds `focused`;
+    the window server lists `screen`. The screen is read by window number (`drawn`: window id -> what is
+    drawn in it); asked without one, it reads nothing."""
+
+    def __init__(self, screen, listed=LISTED, focused=FOCUSED, drawn=None):
+        super().__init__()
+        self.screen, self.listed, self.focused, self.drawn = list(screen), listed, focused, dict(drawn or {})
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "ax.snapshot" and p.get("pid") == 42 and p.get("scope") in ("windows", "focused_window"):
+            self.calls.append((method, p))
+            return {"nodes": [dict(n) for n in (self.listed if p["scope"] == "windows" else self.focused)], "ms": 1}
+        if method == "screen.ocr":
+            self.calls.append((method, p))
+            w = next((w for w in self.screen if w["id"] == p.get("window_id")), None)
+            return {"boxes": list(self.drawn.get(w["id"], [])) if w else [], "frame": w["frame"] if w else p.get("near"), "ms": 5}
+        return super().call(method, timeout, **p)
+
+    def read_by_number(self):
+        return [p["window_id"] for m, p in self.calls if m == "screen.ocr" and p.get("window_id") is not None]
+
+
+def seen(tmp_path, helper, providers, **observe):
+    """One observation through the named providers, and the context it was taken in."""
+    c = cfg(tmp_path, config={"observe": {"providers": providers, **observe}})
+    ctx = Ctx(c, helper, app=dict(APP), running=helper.call("apps.running"))
+    obs = Observation(app=ctx.app, window=None, affordances=[])
+    for name in providers:
+        get_provider(name)(ctx, obs)
+    return ctx, obs
+
+
+def test_a_window_accessibility_does_not_list_is_read_by_its_number(tmp_path):
+    """A panel an app puts in a window of its own, which its tree does not hold: the window list said nothing
+    of it, and the capture took the window nearest the tree's frame, so it was never read."""
+    h = Answering(screen=[PANEL, MAIN], drawn={502: VERSION, 501: [{"text": "Draft saved", "frame": [110, 150, 90, 16]}]})
+    ctx, obs = seen(tmp_path, h, ["window", "windows"], windows={"read_by_sight": 1})
+    assert h.read_by_number() == [502], "the window the tree does not describe was not read by its number"
+    assert "Version 10.9.12865" in obs.screen_text
+    assert obs.notes["open_windows"] == ["Untitled", "「About」 (on screen; Accessibility does not describe it)"]
+    assert obs.notes["undescribed_windows"] == [{"id": 502, "title": "About", "frame": [300, 200, 240, 180]}]
+    assert "[a window of TextEdit that Accessibility does not describe, 「About」: About TextEdit / Version 10.9.12865]" \
+        in obs.screen_text.splitlines()
+    assert obs.notes["read_by_sight_lines"] == 1 and not reopened(obs)
+    _, listed_only = seen(tmp_path, Answering(screen=[PANEL, MAIN], drawn={502: VERSION}), ["window", "windows"])
+    assert "undescribed_windows" in listed_only.notes and "Version" not in listed_only.screen_text, \
+        "observe.windows.read_by_sight 0 lists such a window and reads none"
+
+    class Older(Answering):          # a helper before 0.2.0 does not know window_id: it reads the main window
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.ocr":
+                self.calls.append((method, p))
+                return {"boxes": [{"text": "Draft saved", "frame": [110, 150, 90, 16]}], "frame": MAIN["frame"], "ms": 5}
+            return super().call(method, timeout, **p)
+    _, older = seen(tmp_path, Older(screen=[PANEL, MAIN]), ["window", "windows"], windows={"read_by_sight": 1})
+    assert "does not describe, 「About」" not in older.screen_text, "the main window's text was taken for the panel's"
+
+
+def test_a_sheet_the_tree_holds_is_not_a_window_it_does_not_describe(tmp_path):
+    """A sheet and a popover are windows of their own to the window server, and the focused window's tree
+    holds them: the sheet in the same place (to a couple of points), the popover inside the window that also
+    takes in its arrow."""
+    sheet = {**PANEL, "id": 503, "title": "", "frame": [250, 122, 300, 160]}
+    popover = {**PANEL, "id": 504, "title": "", "frame": [390, 290, 220, 175]}
+    focused = FOCUSED + [{"ref": "w.3", "role": "AXSheet", "frame": [252, 124, 302, 162], "parent": "w.0"},
+                         {"ref": "w.4", "role": "AXPopover", "frame": [400, 300, 200, 150], "parent": "w.0"}]
+    h = Answering(screen=[popover, sheet, MAIN], focused=focused, drawn={503: VERSION, 504: VERSION})
+    ctx, obs = seen(tmp_path, h, ["window", "windows"], windows={"read_by_sight": 2})
+    assert "undescribed_windows" not in obs.notes and obs.notes["open_windows"] == ["Untitled"]
+    assert h.read_by_number() == [], "a window the tree holds was read by its number"
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "windows"]}}), helper=h, decider=ScriptedDecider([]))
+    assert not [k for k in eng.observe()["notes"] if k.startswith("_")], "what providers hand each other left the look"
+
+
+def test_a_window_with_the_same_title_is_not_listed_twice(tmp_path):
+    """The helper leaves out a frame an app gives as NaN or infinite: such a window of the tree has only its
+    title to be matched by."""
+    report = {**PANEL, "id": 510, "title": "Report", "frame": [120, 140, 640, 420]}
+    listed = [{"ref": "l.0", "role": "AXWindow", "title": "Report", "depth": 0}]
+    h = Answering(screen=[report], listed=listed, focused=[], drawn={510: VERSION})
+    ctx, obs = seen(tmp_path, h, ["window", "windows"], windows={"read_by_sight": 1})
+    assert obs.notes["open_windows"] == ["Report"] and "undescribed_windows" not in obs.notes
+    assert h.read_by_number() == []
+    other = Answering(screen=[{**report, "title": "Report 2"}], listed=listed, focused=[], drawn={510: VERSION})
+    ctx, obs = seen(tmp_path, other, ["window", "windows"], windows={"read_by_sight": 1})
+    assert obs.notes["open_windows"] == ["Report", "「Report 2」 (on screen; Accessibility does not describe it)"], \
+        "a window of another title, with the tree's window giving no frame, is one the tree does not describe"
+
+
+def test_reopen_is_not_offered_while_a_window_of_the_app_is_on_screen(tmp_path):
+    obs = look(tmp_path, Starting(answer_on=0, windowless=True, screen=[MAIN]), ["window", "windows"])
+    assert not reopened(obs), "the main window was offered back while a window of the app was on screen"
+    assert obs.notes["open_windows"] == ["「Untitled」 (on screen; Accessibility does not describe it)"]
+    assert obs.notes["window_stand_in"] == {"id": 501, "title": "Untitled", "frame": [100, 100, 600, 400]}
+    # the guard: a status item and a toolbar strip are not its windows, and alone they leave reopen offered
+    status_item = {**MAIN, "id": 502, "layer": 25, "ordinary": False, "frame": [900, 0, 30, 24]}
+    strip = {**MAIN, "id": 503, "frame": [0, 60, 1512, 33]}
+    for alone in (status_item, strip):
+        obs = look(tmp_path, Starting(answer_on=0, windowless=True, screen=[alone]), ["window", "windows"])
+        assert len(reopened(obs)) == 1 and obs.notes["open_windows"] == [], alone
+
+
+def test_an_app_that_does_not_answer_is_read_from_its_window_on_screen(tmp_path):
+    """Its window is on screen, and the window server lists it without asking the app: it is read by its
+    number, text only. Nothing on it is offered to point at: a busy app applies the events it was sent to
+    whatever it shows once it catches up."""
+    page = VERSION + [{"text": t, "frame": [330, 290 + 20 * i, 150, 14]} for i, t in enumerate(("Copyright 2026", "Licenses", "Website", "Check for updates"))]
+
+    class Drawn(Starting):
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.ocr":
+                self.calls.append((method, p))
+                if p.get("window_id") == 501:
+                    return {"boxes": page, "frame": MAIN["frame"], "ms": 5}
+                return {"boxes": [], "frame": p.get("near"), "ms": 5}
+            return super().call(method, timeout, **p)
+
+    h = Drawn(screen=[MAIN])
+    ctx, obs = seen(tmp_path, h, ["window", "windows", "vision"])
+    assert [p.get("window_id") for p in h.did("screen.ocr")] == [501], "its window on screen was not read by its number"
+    assert "Version 10.9.12865" in obs.screen_text and obs.window == "Untitled"
+    assert not h.did("ax.fingerprint"), "the fingerprint of an app that does not answer was asked for"
+    assert not [a for a in obs.affordances if a.channel == "pointer"], "something on a busy app's window was offered to point at"
+    assert obs.notes["read_by_sight_lines"] == 6 and obs.notes["window_frame"] == MAIN["frame"]
+    assert ctx.cache["window_frame_by_pid"][42] == MAIN["frame"], "the next glance is not taken of that window"
+    # read again on this look — the loop does, after a step that changed only the picture — it is still that
+    # window, by its number
+    get_provider("vision")(ctx, obs)
+    assert not h.did("ax.fingerprint") and [p.get("window_id") for p in h.did("screen.ocr")] == [501]
+    # six texts outside every node make a canvas of an answering app's window; of one that did not answer,
+    # they say nothing about its tree, and the first look it answers would pay a read for it
+    assert "42|Untitled" not in ctx.cache.get("vision.canvas", set())
+    # what the cap cuts is not in the screen text, and is not counted as read into it
+    _, cut = seen(tmp_path, Drawn(screen=[MAIN]), ["window", "windows", "vision"], window={"screen_text_chars": 40})
+    assert cut.screen_text.startswith("About TextEdit\nVersion 10.9.12865\n") and cut.notes["screen_text_cut"] > 0
+    assert cut.notes["read_by_sight_lines"] == 2, "lines the cap cut were counted as read into the screen text"
+
+
+def test_an_app_whose_tree_lists_no_window_is_read_from_the_one_on_screen(tmp_path):
+    """It answers, and its window on screen is one its tree does not give: read by its number as the canvas it
+    then is, with what is read on it offered to point at, as for any window the tree says nothing about."""
+    h = Answering(screen=[MAIN], listed=[], focused=[], drawn={501: VERSION})
+    ctx, obs = seen(tmp_path, h, ["window", "windows", "vision"])
+    assert h.read_by_number() == [501] and "Version 10.9.12865" in obs.screen_text and obs.window == "Untitled"
+    clicks = [a.label for a in obs.affordances if a.channel == "pointer" and a.verb == "click"]
+    assert "click the text 「Version 10.9.12865」" in " ".join(clicks), clicks
+    assert not h.did("ax.fingerprint") and not reopened(obs)
+
+
+def test_a_window_read_while_its_app_did_not_answer_is_read_again_once_it_looks_different(tmp_path):
+    """No action is taken while the engine waits for an app to answer, so the actions taken do not tell a
+    window that finished starting meanwhile from the one read before: its picture does."""
+    import base64
+
+    class Starts(Starting):
+        text = "Loading"
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "screen.glance":
+                cells = bytes([0 if self.text == "Loading" else 200] * 64)
+                return {"grid": 8, "cells": base64.b64encode(cells).decode(), "frame": MAIN["frame"]}
+            if method == "screen.ocr":
+                self.calls.append((method, p))
+                return {"boxes": [{"text": self.text, "frame": [150, 150, 120, 16]}], "frame": MAIN["frame"], "ms": 5}
+            return super().call(method, timeout, **p)
+
+    h = Starts(screen=[MAIN])
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "sight", "windows", "vision"]}}), helper=h,
+                 decider=ScriptedDecider([]))
+    assert "Loading" in eng.observe()["screen_text"]
+    assert len(h.did("screen.ocr")) == 1 and "Loading" in eng.observe()["screen_text"] and len(h.did("screen.ocr")) == 1, \
+        "a window that looks the same was read again"
+    h.text = "Ready to write"
+    assert "Ready to write" in eng.observe()["screen_text"], "what the window showed before was handed back"
