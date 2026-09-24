@@ -127,8 +127,8 @@ def test_a_question_about_the_screen_is_not_handed_the_whole_route(tmp_path):
 
     route = eng._brief(task, ctx, obs)
     asked = eng._brief(task, ctx, obs, acting=False)
-    assert {"actions_available", "app_model", "running_apps"} <= set(route)
-    assert not {"actions_available", "app_model", "running_apps"} & set(asked)
+    assert {"on_screen", "menus", "app_model", "running_apps"} <= set(route)
+    assert not {"on_screen", "menus", "app_model", "running_apps"} & set(asked)
     assert asked["field_contents"] == ["Recipient: zw@example.com"], "what a field holds was read off the action labels"
     assert asked["window"] == route["window"] and asked["screen_text"] == route["screen_text"]
 

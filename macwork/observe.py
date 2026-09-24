@@ -24,9 +24,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import Config
+from .facts import CALLERS
 from .helper import Helper, HelperError
 from .appmodel import parse_services
-from .model import Affordance, Observation, Slot, clip, with_state, TaskScope
+from .model import Affordance, Observation, Slot, clip, steady, with_state, TaskScope
 from .onscreen import app_windows, input_method_panel, same_place, still_launching, unreadable
 from .sight import compare as compare_pictures
 
@@ -47,6 +48,8 @@ class Ctx:
     redactor: Any = None                        # this task's pseudonym table
     task: str = ""                              # whose look this is: for what is remembered per task, not per Mac
     scope: TaskScope = field(default_factory=TaskScope)   # that task's live working state (see model.TaskScope)
+    texts: list[dict[str, str]] = field(default_factory=list)   # texts the task holds besides the caller's inputs,
+                                                # {text, from} (`held_texts`): typing at the cursor is offered for them
 
 
 Provider = Callable[[Ctx, Observation], None]
@@ -225,6 +228,19 @@ def _shortcut(cmd: dict[str, Any] | None) -> str:
     m = int(cmd.get("mods") or 0)
     keys = "".join(sym for bit, sym in _MODS if m & bit) + ("" if m & 8 else "⌘")
     return f" ({keys}{shown})"
+
+
+# What `_shortcut` puts at the end of a menu item's label, and only that: modifiers then one key, or a key the Mac
+# has a glyph for, pressed alone (see `plain_name`).
+_KEY_EQUIVALENT = re.compile(r" \((?:[⇧⌥⌃]*⌘|[⇧⌥⌃]+)(?:F\d{1,2}|\S)\)$|"
+                             r" \((?:F\d{1,2}|[" + re.escape("".join(sorted({g for g in _KEY_GLYPHS.values() if len(g) == 1})))
+                             + r"])\)$")
+
+
+def key_equivalent(label: str) -> str:
+    """The key equivalent a menu item's label ends with, as its menu shows it ('⇧⌘P'), or "" when it has none."""
+    m = _KEY_EQUIVALENT.search(label or "")
+    return m.group(0)[2:-1] if m else ""
 
 
 _COMBO_MODS = [(8, None), (4, "ctrl"), (2, "alt"), (1, "shift")]
@@ -1995,6 +2011,20 @@ def plain_key(label: str) -> str:
     return _KEY_SAID.sub("", label or "")
 
 
+@lru_cache(maxsize=8192)
+def plain_name(label: str) -> str:
+    """An option's name as a planner writes it back: its label without what the engine adds to it — 'menu '
+    before a menu item's place, the key equivalent after it (`_shortcut`), what `declare_keys` says of a key
+    (`plain_key`), what a control shows right now (`model.steady`) — and with '...' written '…'.
+
+    A move names an option as the planner saw it: a menu item by its place, a field as it stood when the plan was
+    written. Matched on the whole label, 'File ▸ New Document' named nothing where the option is 'menu File ▸ New
+    Document (⌘N)', nor a field whose label had gained '(now: x)' since, and a key named nothing once its label
+    said which button Return presses."""
+    x = _KEY_EQUIVALENT.sub("", steady(plain_key(label or "")).strip())
+    return x.removeprefix("menu ").replace("...", "…").strip()
+
+
 def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:
     """What the Mac declares about where each key and each keystroke of typing goes, as `Affordance.facts`:
     `in` (`_keys_in`), `keyboard_on` (the role and subrole of the focused element, when the focus is in the
@@ -2094,7 +2124,13 @@ def _cursor_note(ctx: Ctx, obs: Observation) -> str:
 
 @provider("typing")
 def typing(ctx: Ctx, obs: Observation) -> None:
-    """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller)."""
+    """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller), and
+    wherever the keyboard is in a field of the app while the task holds texts of its own (`Ctx.texts`), which one
+    being the decider's choice when the step is taken (`ConsultMixin._which_text`).
+
+    Those texts were typed nowhere but into a field a provider offers, and a field inside a row is none (its text
+    names the row): c56ca3bdf52a held the plan's folder name, chose Rename twice, and was offered no typing option
+    on any of the 8 looks from its new folder on. Pressing Return after is for the caller's text only."""
     tc = ctx.cfg.section("observe.typing")
     needs = tc.get("requires_input")   # only when the caller gave text: otherwise it lures the decider into typing junk
     if (obs.focused or {}).get("secure_input"):
@@ -2102,10 +2138,17 @@ def typing(ctx: Ctx, obs: Observation) -> None:
         # option was offered anyway — steps spent reaching a refusal that was known before they were taken
         obs.notes["typing_withheld"] = "a password field has focus: keystrokes are refused while that is so"
         return
-    if ctx.app and tc.get("enabled", True) and (not needs or ctx.inputs.get(needs)):
+    if not ctx.app or not tc.get("enabled", True):
+        return
+    callers = not needs or bool(ctx.inputs.get(needs))
+    f = obs.focused or {}
+    in_a_field = f.get("pid") == ctx.app.get("pid") and f.get("role") in set(ctx.cfg.get("observe.window.text_roles") or []) \
+        and f.get("role") != "AXSecureTextField"
+    if callers or (ctx.texts and in_a_field):
         where = _cursor_note(ctx, obs)
         obs.affordances.append(Affordance("y0", "keys", "type", str(tc.get("label") or "type the given text at the cursor") + where, {},
                                           slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
+    if callers:
         obs.affordances.append(Affordance("y1", "keys", "type_submit", str(tc.get("submit_label") or "type the given text at the cursor and press Return") + where,
                                           {}, slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
 
@@ -2207,7 +2250,8 @@ def services(ctx: Ctx, obs: Observation) -> None:
             # read as sending, and the floor stopped 「New TextEdit Window Containing Selection」 and 「Look Up in
             # Dictionary」 as outward-facing on three cross-app tasks in a row. The Service's name is the fact.
             f"v{len(obs.affordances)}", "service", "perform", f"「{s['name']}」 — a Service of {s['app']} on this Mac",
-            {"name": s["name"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
+            # whose it is, for the planner's brief: the Services of the apps a goal names are named there (brief.py)
+            {"name": s["name"], "app": s["app"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
             context=f"{s['app']} (a system service)"))
 
 
@@ -2354,6 +2398,32 @@ def named_paths(text: str, max_words: int = 6, max_trim: int = 40) -> list[Path]
                     out.append(found)
                 break
     return out
+
+
+def held_texts(goal: str, admitted: dict[str, dict[str, Any]], exclude: Any = (), limit: int = 4,
+               max_words: int = 6, max_trim: int = 40) -> list[dict[str, str]]:
+    """The texts a task holds besides the caller's inputs, each with where it came from ({text, from}, and planner:
+    its source, for what the planner wrote): the paths its goal names that exist on this Mac (`named_paths`), then
+    what a planner wrote that a place the task may draw from holds word for word (`Memory.admitted` entries
+    'traced'); none of `exclude`, at most `limit`.
+
+    Never a planner's text a decider judged (in 8b1a7646fc9f it let the planner's own definition of a word through
+    at 0.76 with only Finder seen): that fills only the slot it was written for. And not the goal's
+    quoted spans: each of the 11 in the goals of this Mac's audit names something on a screen (a tab, a column,
+    a folder), not a text to type."""
+    out: list[dict[str, str]] = []
+    seen = {str(x) for x in exclude}
+    for path in named_paths(goal, max_words, max_trim):
+        if str(path) not in seen:
+            seen.add(str(path))
+            out.append({"text": str(path), "from": "a path the goal names"})
+    for text, got in admitted.items():
+        # traced to the caller's inputs, it is theirs: told to a planner as held, it would say what they hold
+        if got.get("how") == "traced" and got.get("source") != CALLERS and text not in seen:
+            seen.add(text)
+            out.append({"text": text, "from": f"the planner's {got.get('key') or 'text'}, as {got.get('source') or 'a screen'} has it",
+                        "planner": str(got.get("source") or "")})
+    return out[:limit]
 
 
 @provider("files")

@@ -81,8 +81,8 @@ def test_an_app_the_goal_names_is_offered_in_plain_sight_and_to_the_planner(tmp_
     assert any("open another app" in name for name, _members in folded.values())
 
     brief = eng._brief(eng._new_task(goal, {}, None), ctx, obs)
-    assert brief["actions_available"][0] == "open app Dictionary", "the planner is never shown the other apps"
-    assert not any(label.startswith("open app Filler") for label in brief["actions_available"])
+    assert brief.get("apps_the_goal_names") == ["open app Dictionary"], "the planner is never shown the other apps"
+    assert "Filler" not in json.dumps(brief, ensure_ascii=False)
 
 
 def test_which_apps_the_goal_names_is_part_of_what_the_leaving_question_sees(tmp_path):
