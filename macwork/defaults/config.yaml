@@ -192,7 +192,10 @@ observe:
     timeout_ms: 250
   typing:                        # type the caller's text wherever the cursor is (editors that expose no text field)
     enabled: true
-    requires_input: text         # offered only when the caller supplied inputs.text
+    requires_input: text         # offered only when the caller supplied inputs.text — or, without "and press Return",
+                                 # when a field of the app has the keyboard and the task holds texts of its own
+    max_texts: 4                 # texts the task holds besides the caller's inputs (paths the goal names, the planner's
+                                 # text a screen holds word for word) that an empty field is offered, the decider choosing
     # English, like every other string this repo writes. What the Mac says comes from the Mac and is in
     # whatever language it is set to; what *we* say is ours, and saying it twice in two chosen languages
     # only makes Chinese look special. Goals are the caller's own words, in any language they like.

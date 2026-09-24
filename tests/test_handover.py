@@ -361,3 +361,156 @@ def test_an_option_the_planner_names_by_its_place_or_its_steady_name_is_marked(t
     for said, named in [("View ▸ Scientific ✓", ["menu View ▸ Scientific ✓ (⌘2)"]), ("View ▸ Scientific (⌘2)", ["menu View ▸ Scientific ✓ (⌘2)"]),
                         ("File ▸ Export", []), ("Recipient", [])]:
         assert [a.label for a in find_named(look.affs, said)] == named, said
+
+
+# ----------------------------------------------------------------- texts the task holds
+class Chooses(ScriptedDecider):
+    """The decider as the chooser of a text the task holds: the option holding `text`, else none."""
+
+    def __init__(self, script=(), text=None):
+        super().__init__(list(script))
+        self.text, self.offered = text, []
+
+    def decide(self, state, questions):
+        if "which_text" in questions:
+            self.calls += 1
+            options = questions["which_text"]["criteria"]
+            self.offered.append(list(options.values()))
+            return {"which_text": {"type": "choice", "choice": next((k for k, v in options.items() if self.text and self.text in v), "none")}}
+        return super().decide(state, questions)
+
+
+def a_folder(tmp_path) -> str:
+    (tmp_path / "reports").mkdir(exist_ok=True)
+    return str(tmp_path / "reports")
+
+
+def test_a_text_the_task_holds_can_be_typed_at_the_cursor_through_a_choice(tmp_path):
+    """c56ca3bdf52a held the plan's folder name and was offered no typing option on eight looks: typing at the
+    cursor was offered for the caller's inputs.text alone, and a field inside a row is not offered at all. With a
+    field of the app holding the keyboard and a text the task holds, typing at the cursor is offered — not its
+    '…and press Return', which stays the caller's — and which text is the decider's choice."""
+    path = a_folder(tmp_path)
+    d = Chooses(text=path)
+    eng = Engine(cfg(tmp_path, config=TYPING), helper=FakeHelper(), decider=d)
+    task = eng._new_task(f"go to {path} and name the new folder there", {}, None)
+    look = eng._look(task, eng._step_context(task))
+    at_cursor = [a for a in look.flat if a.channel == "keys" and a.verb in ("type", "type_submit")]
+    assert [a.id for a in at_cursor] == ["y0"], [a.label for a in at_cursor]
+    assert eng._perform(task, look.ctx, look, at_cursor[0], lambda _: None) is None
+    assert eng.helper.did("input.type")[-1]["text"] == path
+    assert d.offered and any(path in o and "a path the goal names" in o for o in d.offered[0])
+    assert "typed_by_planner" not in task.outputs, "the goal's own path is not the planner's text"
+
+    eng.helper.focus_pid = 7                             # the keyboard is in another app: nothing to type into here
+    look = eng._look(task, eng._step_context(task))
+    assert not [a.label for a in look.flat if a.channel == "keys" and a.verb in ("type", "type_submit")]
+
+
+def test_a_planners_text_is_offered_to_the_decider_not_typed_unasked(tmp_path):
+    """A plan input a screen or the goal holds word for word is the planner's, held apart from the caller's. It is
+    typed only where the decider chooses it for a field that needs text — and then it is where the injection checks
+    look, as any planner text typed."""
+    d = Chooses(text="reports")
+    eng = Engine(cfg(tmp_path, config=TYPING), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([])                   # asked for nothing: a text the task holds comes first
+    task = eng._new_task("name the new folder reports", {}, None)
+    eng._plan_inputs(task, eng._step_context(task), {"folder_name": "reports", "note": "a line no screen showed"})
+    assert task.memory.admitted["a line no screen showed"]["how"] == "judged"
+    look = eng._look(task, eng._step_context(task))
+    assert not [a.label for a in look.affs if "reports" in typed_unasked(task, a)], "the planner's text fills a slot unasked"
+    chosen = next(a for a in look.flat if a.label == "type into text field 「Recipient」")
+    assert eng._perform(task, look.ctx, look, chosen, lambda _: None) is None
+    assert eng.helper.did("input.type")[-1]["text"] == "reports" and not eng._planner.prompts
+    assert any("reports" in o and "the planner's folder_name" in o for o in d.offered[0]), d.offered
+    assert not [o for o in d.offered[0] if "no screen showed" in o], "a text the decider judged is offered to be typed"
+    assert task.outputs["typed_by_planner"] == [{"into": "type into text field 「Recipient」", "text": "reports", "source": "the goal"}]
+
+
+def test_an_empty_field_takes_a_text_the_task_holds_before_the_planner_is_asked(tmp_path):
+    """0ab712dadc94 ended need_input at the Go to Folder field while its plan's input held exactly the path it
+    needed. With no planner at all, the field takes the goal's own path, the decider choosing it."""
+    path = a_folder(tmp_path)
+    d = Chooses([{"pick": "Recipient"}, {"pick": "done"}], text=path)
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+    res = eng.do(f"put {path} in the Recipient field")
+    assert res["status"] == "done", (res["status"], res.get("reason"))
+    assert eng.helper.did("input.type")[0]["text"] == path and len(d.offered) == 1
+
+
+def test_which_text_is_asked_only_where_the_floor_rejudges_the_value(tmp_path):
+    """The floor judges a step again with its value in it only for text typed (type, type_submit) and a link
+    opened (a url slot): what a decider chooses is typed only through that judgement. A Service's text is handed
+    over with no such judgement, so it is not chosen this way."""
+    path = a_folder(tmp_path)
+
+    def run(chosen):
+        d = Chooses(text=path)
+        eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+        task = eng._new_task(f"hand {path} over", {}, None)
+        return d, eng, eng._perform(task, eng._step_context(task), None, chosen, lambda _: None)
+
+    d, _eng, got = run(Affordance("v0", "service", "perform", "「Open Folder」 — a Service of Finder on this Mac",
+                                  {"name": "Open Folder", "app": "Finder"}, slots={"text": Slot("text", "the text to hand over")}))
+    assert got and got["status"] == "need_input" and not d.offered, "a text was chosen for a slot the floor does not judge with it"
+    d, eng, got = run(Affordance("y0", "keys", "type", "type the given text at the cursor", {},
+                                 slots={"text": Slot("text", "the text to type at the cursor")}))
+    assert got is None and len(d.offered) == 1 and eng.helper.did("input.type")[-1]["text"] == path
+
+    d = Chooses(text=path)                               # typing at the cursor and pressing Return: the caller's only
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+    task = eng._new_task(f"hand {path} over", {"note": "hello"}, None)
+    y1 = Affordance("y1", "keys", "type_submit", "type the given text at the cursor and press Return", {},
+                    slots={"text": Slot("text", "the text to type at the cursor")})
+    assert eng._perform(task, eng._step_context(task), None, y1, lambda _: None)["status"] == "need_input"
+    assert d.offered == [["「hello」 — the caller's input 「note」", "none of these: the step needs another text"]], d.offered
+
+
+def test_no_planner_prompt_carries_the_callers_inputs(tmp_path):
+    """A planner on another machine is sent what the redactor lets through, and it catches names and patterns, not a
+    password or a token. The caller's inputs go to the decider, which is shown them on every look; the texts the
+    planner is told the task holds are the goal's paths and its own traced text, never the caller's — nor a text of
+    its own that traces to them: told it back as held, a planner would learn what the caller's inputs hold."""
+    secret = "hunter2-Qx7-zz"
+    d = Chooses([{"pick": "New Document", "move": "rethink"}, {"pick": "Recipient"}, {"pick": "done"}])
+    eng = Engine(cfg(tmp_path, config={"planner": {"second_opinion_on_done": True}}), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([{"steps": ["fill in the recipient"], "inputs": {"folder_name": "reports", "guess": secret},
+                                 "try": [], "blocked": ""},
+                                {"text": "zw@example.com"}, {"done": True, "why": "it is filled in"}])
+    res = eng.do("fill in the recipient for the reports folder", {"password": secret})
+    assert len(eng._planner.prompts) == 3, (res["status"], len(eng._planner.prompts))
+    assert d.offered and any(secret in o for o in d.offered[0]), "the caller's inputs are the decider's to choose among"
+    assert not [p for p in eng._planner.prompts if secret in p], "a planner prompt carried the caller's inputs"
+    assert "texts_the_task_holds" in eng._planner.prompts[1] and "reports" in eng._planner.prompts[1]
+
+
+def test_the_fill_is_told_the_texts_the_task_holds(tmp_path):
+    """7357798484a7's fill wrote file:///Users/$(whoami)/… while its plan's own input held the path: the fill was
+    told none of the texts the task held."""
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    eng._planner = FakeBackend([{"text": "reports"}])
+    task = eng._new_task("name the new folder reports", {}, None)
+    ctx = eng._step_context(task)
+    eng._plan_inputs(task, ctx, {"folder_name": "reports"})
+    assert eng._fill(task, ctx, None, field("Name"), "text") == "reports"
+    context = json.loads(eng._planner.prompts[0].split("Screen and context: ", 1)[1])
+    assert context.get("texts_the_task_holds") == ["reports"], context
+    assert eng._brief(task, ctx, observe(ctx)).get("texts_the_task_holds") == ["reports"], "the planner is not told what the task holds"
+
+
+def test_the_texts_a_task_holds_are_its_goals_paths_and_the_planners_traced_text(tmp_path):
+    """Held: the paths the goal names that exist on this Mac, then the planner's text a place the task saw holds
+    word for word — never a text the decider only judged, never the caller's inputs (the decider is shown those
+    as inputs), no goal quotes (each of the 11 in this Mac's audit names something on a screen), at most
+    observe.typing.max_texts."""
+    path = a_folder(tmp_path)
+    eng = Engine(cfg(tmp_path, config={"observe": {"typing": {"max_texts": 2}}}), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = eng._new_task(f"copy 「Q3」 from {path} and name it reports, then add notes", {"text": "reports"}, None)
+    task.memory.admitted = {"reports": {"source": "the goal", "how": "traced", "key": "folder"},
+                            "the planner's own words": {"source": "judged", "how": "judged", "key": "note"},
+                            "report": {"source": "the caller's inputs", "how": "traced", "key": "draft"},
+                            "notes": {"source": "the goal", "how": "traced", "key": "name"},
+                            "copy": {"source": "the goal", "how": "traced", "key": "verb"}}
+    held = eng._held_for(task)
+    assert [h["text"] for h in held] == [path, "notes"], held
+    assert held[0]["from"] == "a path the goal names" and held[1].get("planner") == "the goal"

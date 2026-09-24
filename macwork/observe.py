@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import Config
+from .facts import CALLERS
 from .helper import Helper, HelperError
 from .appmodel import parse_services
 from .model import Affordance, Observation, Slot, clip, steady, with_state, TaskScope
@@ -47,6 +48,8 @@ class Ctx:
     redactor: Any = None                        # this task's pseudonym table
     task: str = ""                              # whose look this is: for what is remembered per task, not per Mac
     scope: TaskScope = field(default_factory=TaskScope)   # that task's live working state (see model.TaskScope)
+    texts: list[dict[str, str]] = field(default_factory=list)   # texts the task holds besides the caller's inputs,
+                                                # {text, from} (`held_texts`): typing at the cursor is offered for them
 
 
 Provider = Callable[[Ctx, Observation], None]
@@ -2113,7 +2116,13 @@ def _cursor_note(ctx: Ctx, obs: Observation) -> str:
 
 @provider("typing")
 def typing(ctx: Ctx, obs: Observation) -> None:
-    """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller)."""
+    """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller), and
+    wherever the keyboard is in a field of the app while the task holds texts of its own (`Ctx.texts`), which one
+    being the decider's choice when the step is taken (`ConsultMixin._which_text`).
+
+    Those texts were typed nowhere but into a field a provider offers, and a field inside a row is none (its text
+    names the row): c56ca3bdf52a held the plan's folder name, chose Rename twice, and was offered no typing option
+    on any of the 8 looks from its new folder on. Pressing Return after is for the caller's text only."""
     tc = ctx.cfg.section("observe.typing")
     needs = tc.get("requires_input")   # only when the caller gave text: otherwise it lures the decider into typing junk
     if (obs.focused or {}).get("secure_input"):
@@ -2121,10 +2130,17 @@ def typing(ctx: Ctx, obs: Observation) -> None:
         # option was offered anyway — steps spent reaching a refusal that was known before they were taken
         obs.notes["typing_withheld"] = "a password field has focus: keystrokes are refused while that is so"
         return
-    if ctx.app and tc.get("enabled", True) and (not needs or ctx.inputs.get(needs)):
+    if not ctx.app or not tc.get("enabled", True):
+        return
+    callers = not needs or bool(ctx.inputs.get(needs))
+    f = obs.focused or {}
+    in_a_field = f.get("pid") == ctx.app.get("pid") and f.get("role") in set(ctx.cfg.get("observe.window.text_roles") or []) \
+        and f.get("role") != "AXSecureTextField"
+    if callers or (ctx.texts and in_a_field):
         where = _cursor_note(ctx, obs)
         obs.affordances.append(Affordance("y0", "keys", "type", str(tc.get("label") or "type the given text at the cursor") + where, {},
                                           slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
+    if callers:
         obs.affordances.append(Affordance("y1", "keys", "type_submit", str(tc.get("submit_label") or "type the given text at the cursor and press Return") + where,
                                           {}, slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
 
@@ -2374,6 +2390,32 @@ def named_paths(text: str, max_words: int = 6, max_trim: int = 40) -> list[Path]
                     out.append(found)
                 break
     return out
+
+
+def held_texts(goal: str, admitted: dict[str, dict[str, Any]], exclude: Any = (), limit: int = 4,
+               max_words: int = 6, max_trim: int = 40) -> list[dict[str, str]]:
+    """The texts a task holds besides the caller's inputs, each with where it came from ({text, from}, and planner:
+    its source, for what the planner wrote): the paths its goal names that exist on this Mac (`named_paths`), then
+    what a planner wrote that a place the task may draw from holds word for word (`Memory.admitted` entries
+    'traced'); none of `exclude`, at most `limit`.
+
+    Never a planner's text a decider judged (in 8b1a7646fc9f it let the planner's own definition of a word through
+    at 0.76 with only Finder seen): that fills only the slot it was written for. And not the goal's
+    quoted spans: each of the 11 in the goals of this Mac's audit names something on a screen (a tab, a column,
+    a folder), not a text to type."""
+    out: list[dict[str, str]] = []
+    seen = {str(x) for x in exclude}
+    for path in named_paths(goal, max_words, max_trim):
+        if str(path) not in seen:
+            seen.add(str(path))
+            out.append({"text": str(path), "from": "a path the goal names"})
+    for text, got in admitted.items():
+        # traced to the caller's inputs, it is theirs: told to a planner as held, it would say what they hold
+        if got.get("how") == "traced" and got.get("source") != CALLERS and text not in seen:
+            seen.add(text)
+            out.append({"text": text, "from": f"the planner's {got.get('key') or 'text'}, as {got.get('source') or 'a screen'} has it",
+                        "planner": str(got.get("source") or "")})
+    return out[:limit]
 
 
 @provider("files")

@@ -290,6 +290,7 @@ class LoopMixin:
         front = not first or bool(self.cfg.get("engine.start_in_front_app", True))
         ctx = self._ctx(task.goal, task.inputs, task.target or task.app, task.id, front=front)
         ctx.gate = self.gate
+        ctx.texts = self._held_for(task)               # typing at the cursor is offered for them where a field has focus
         self._note_opened(task, ctx.running)
         host = ctx.app is not None and self._host_app(ctx.app)
         if host:                                       # e.g. an open that landed in the terminal running the engine
@@ -1067,7 +1068,17 @@ class LoopMixin:
             if carried in chosen.target and "try" in chosen.target:
                 params[carried] = chosen.target[carried]
         missing = {k: s.desc for k, s in chosen.slots.items() if s.required and k not in params}
-        for k in list(missing):                   # Jev writes no text: the planner may, before we bother the caller
+        for k in list(missing):
+            # A text the task holds, the decider choosing which (`_which_text`); else, since Jev writes no text, the
+            # planner may write one; only then is the caller asked
+            held = self._which_text(task, ctx, obs, chosen, k)
+            if held is not None:
+                params[k] = held["text"]
+                if held.get("planner") is not None:   # where the injection checks look, as for any planner text typed
+                    task.outputs.setdefault("typed_by_planner", []).append(
+                        {"into": chosen.label, "text": held["text"], "source": held["planner"]})
+                missing.pop(k)
+                continue
             text = self._fill(task, ctx, obs, chosen, k)
             if text:
                 params[k] = text

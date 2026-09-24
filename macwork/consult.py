@@ -14,9 +14,9 @@ from enum import Enum
 from typing import Any, Callable
 
 from .brief import as_named, shares
-from .decider import DeciderError, noul
-from .model import Affordance, Observation, Step, Task, exact_state
-from .observe import Ctx, canonical_combo, named_combo, plain_name
+from .decider import DeciderError, choice, noul
+from .model import Affordance, Observation, Step, Task, clip, exact_state
+from .observe import Ctx, canonical_combo, held_texts, named_combo, plain_name
 from .onscreen import unreadable
 from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, make_planner
 
@@ -251,7 +251,26 @@ class ConsultMixin:
             # '⌘\b'), text no screen had shown, an action naming nothing on screen — and the next replan was asked
             # as if it had never been given.
             brief["moves_that_could_not_be_used"] = dict(task.memory.unusable)
+        if acting:
+            held = self._texts_the_task_holds(task)
+            if held:
+                brief["texts_the_task_holds"] = held
         return brief
+
+    def _held_for(self, task: Task) -> list[dict[str, str]]:
+        """The texts this task holds besides the caller's inputs, with where each came from (`observe.held_texts`):
+        the paths its goal names that exist on this Mac and the planner's own text a place the task saw holds word
+        for word; at most observe.typing.max_texts."""
+        fc = self.cfg.section("observe.files")
+        return held_texts(task.goal, task.memory.admitted, exclude=[str(v) for v in task.inputs.values()],
+                          limit=int(self.cfg.get("observe.typing.max_texts", 4)),
+                          max_words=int(fc.get("max_path_words", 6)), max_trim=int(fc.get("max_path_trim", 40)))
+
+    def _texts_the_task_holds(self, task: Task) -> list[str]:
+        """What a planner is told the task holds (`_held_for`), and nothing else: never the caller's inputs. No planner
+        prompt carried them at 7aa894d, and the redactor catches names and patterns, not a password or a token, while
+        a planner may be a cloud one."""
+        return [t["text"] for t in self._held_for(task)]
 
     def _may_still_wait(self, task: Task, ctx: Ctx | None, obs: Observation) -> bool:
         """This look read nothing of the app, and waiting may still change that: it is still starting, the next
@@ -606,6 +625,12 @@ class ConsultMixin:
         brief = self._brief(task, ctx, obs, acting=False)
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
+        held = self._texts_the_task_holds(task)
+        if held:
+            # 7357798484a7's fill wrote file:///Users/$(whoami)/… while its plan's own input held the path: the fill
+            # brief carried none of the texts the task held. Of the 21 fills since c0e7011 whose text the audit
+            # keeps, 11 wrote one the task held (9 a path the goal names, 2 an earlier fill)
+            brief["texts_the_task_holds"] = held
         try:     # waited for with no deadline: the step cannot be taken without it
             text = self._planner_wait(task, self._planner_call(
                 task, lambda planning, stop: planning.fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief))) or None
@@ -625,6 +650,44 @@ class ConsultMixin:
         self._hold_text(task, text, got, slot)
         self.audit.record("filled_text", task=task.id, into=a.label, source=got[0])
         return text
+
+    def _which_text(self, task: Task, ctx: Ctx | None, obs: Observation | None, a: Affordance, slot: str) -> dict[str, str] | None:
+        """For an empty slot, a text the task already holds, the decider choosing which ({text, from, and planner:
+        its source when the planner wrote it}), or None: none fits, or none is to be asked about here.
+
+        The planner was asked to write it instead, a call of its own, and wrote again what the task held — 11 of
+        the 21 fills since c0e7011 whose text the audit keeps — or wrote nothing: 0ab712dadc94 ended need_input at
+        the Go to Folder field while the plan's own input held exactly the path it needed.
+
+        Asked only where the floor judges the step again with the value in it (a type or type_submit verb, a url
+        slot: `LoopMixin._perform`), which is what any text typed or link opened has to pass. The options are the
+        caller's inputs — the decider sees them on every look already; a planner never does — then the texts the
+        task holds (`_held_for`), each with where it came from, and none. Typing at the cursor and pressing Return
+        is for the caller's text only."""
+        if ctx is None or ctx.gate is None or not (slot == "url" or (slot == "text" and a.verb in ("type", "type_submit"))):
+            return None
+        texts = [{"text": str(v), "from": f"the caller's input 「{k}」"} for k, v in task.inputs.items()
+                 if isinstance(v, str) and v.strip() and k != "clarification"]     # the engine's own question's answer
+        if not (a.channel == "keys" and a.verb == "type_submit"):
+            texts += self._held_for(task)
+        seen: set[str] = set()
+        texts = [t for t in texts if not (t["text"] in seen or seen.add(t["text"]))]   # one each, the first kept
+        if not texts:
+            return None
+        options = {f"h{i}": f"「{clip(t['text'], 200)}」 — {t['from']}" for i, t in enumerate(texts)} | \
+            {"none": "none of these: the step needs another text"}
+        state: dict[str, Any] = {"goal": task.goal, "what_it_needs": a.slots[slot].desc}
+        if obs is not None:
+            state["window"] = obs.window
+        if task.plan and task.plan_i < len(task.plan):
+            state["current_step"] = task.plan[task.plan_i]
+        try:
+            ans = ctx.gate.decide(self.redactor(task.id), state,
+                                  {"which_text": choice(self.cfg.question("which_text"), options, fills={"action": a.label})}, task=task.id)
+        except DeciderError:
+            return None
+        pick = str((ans.get("which_text") or {}).get("choice") or "")
+        return texts[int(pick[1:])] if pick in options and pick != "none" else None
 
     def _admit_text(self, task: Task, ctx: Ctx | None, text: str, into: str) -> tuple[str, str] | None:
         """Where text a planner wrote for `into` comes from, as (source, how), or None: it may not be written.
