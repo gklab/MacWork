@@ -4,6 +4,10 @@ A key equivalent that prints nothing (Delete, Escape, the arrows, paging) was wr
 as the raw control character AppKit reports for it: 109 menu items in 11 apps of this Mac's audit, ten of them
 bound to a delete key. It is shown as the menu shows it, never by an English name, which would be a floor word.
 
+A tooltip that names a control counted as the control's own words. The full-screen button is named by its
+tooltip, which on this Mac says the button can also "execute" a zoom, in Chinese: a floor word, which raised
+the bar the button had to clear from 0.7 to 0.9.
+
 No threshold, release list or bar changes here.
 """
 
@@ -101,3 +105,50 @@ def test_a_key_equivalent_that_prints_nothing_is_shown_as_its_glyph(tmp_path):
         assert a.target["combo"] is None
     assert labels["Back"].label == "menu Go ▸ Back (⌘⌫)"
     assert eng._floor_hits(labels["Back"]) == [], "the key's name would have been a floor word the item does not say"
+
+
+# --------------------------------------------------------------------------- a tooltip is not the control's own words
+
+FULL_SCREEN = {"nodes": [
+    {"ref": "f.0", "role": "AXWindow", "subrole": "AXStandardWindow", "title": "Untitled", "depth": 0},
+    {"ref": "f.1", "role": "AXButton", "subrole": "AXFullScreenButton", "rdesc": "full screen button",
+     "help": "This button can also execute a zoom of the window", "actions": ["AXPress"], "parent": "f.0", "depth": 1},
+    {"ref": "f.2", "role": "AXButton", "rdesc": "button", "help": "Move to Trash", "actions": ["AXPress"], "parent": "f.0", "depth": 1},
+    {"ref": "f.3", "role": "AXGroup", "rdesc": "group", "help": "Collected items", "actions": ["AXRemoveFromToolbar"],
+     "action_desc": {"AXRemoveFromToolbar": "Remove from Toolbar"}, "parent": "f.0", "depth": 1},
+    {"ref": "f.4", "role": "AXTable", "parent": "f.0", "depth": 1},
+    {"ref": "f.5", "role": "AXRow", "rdesc": "row", "help": "Double-click to execute the saved search", "parent": "f.4", "depth": 2},
+    {"ref": "f.6", "role": "AXStaticText", "value": "Weekly report", "parent": "f.5", "depth": 3},
+], "ms": 1, "truncated": False}
+
+
+def tooltip_named(tmp_path, decider, word):
+    eng, ctx = setup(tmp_path, Mac(window=FULL_SCREEN), decider)
+    obs = observe(ctx)
+    return eng, ctx, obs, next(a for a in obs.affordances if word in a.label)
+
+
+def test_a_tooltip_is_not_the_controls_own_words(tmp_path):
+    """Measured on this Mac's audit: the full-screen button, named by its tooltip, had 29 of its 42 recorded
+    verdicts gated at the 0.9 bar its tooltip's floor word chose, and would have had none gated at 0.7."""
+    eng, ctx, obs, button = tooltip_named(tmp_path, Classifier(lambda state: {"navigate": 0.8, "other": 0.2}), "full screen")
+
+    assert button.label == "full screen button 「This button can also execute a zoom of the window」", "still shown by it"
+    assert eng._floor_hits(button) == []
+    assert eng._floor("t", ctx, button, obs.window) == [], "navigate 0.8 clears the 0.7 bar of an action no word flagged"
+    row = next(a for a in obs.affordances if a.verb == "select")
+    assert row.label == "select row 「Double-click to execute the saved search」"
+    assert eng._floor_hits(row) == [], "a row named by its tooltip is matched on the text it shows"
+
+
+def test_a_tooltip_only_control_the_classifier_calls_delete_still_stops(tmp_path):
+    """Guard: the classifier reads the label, tooltip and all, and its verdict is not a word hit."""
+    eng, ctx, obs, trash = tooltip_named(tmp_path, Classifier(lambda state: {"delete": 0.9, "navigate": 0.1}), "Move to Trash")
+    assert eng._floor("t", ctx, trash, obs.window) == ["delete"]
+
+
+def test_the_apps_own_name_for_an_action_still_counts(tmp_path):
+    """Guard: only the tooltip is left out of the words. The action's own name, the app's, is not."""
+    eng, ctx, obs, group = tooltip_named(tmp_path, Classifier(), "Remove from Toolbar")
+    assert group.label == "Remove from Toolbar group 「Collected items」"
+    assert eng._floor_hits(group) == ["delete"]

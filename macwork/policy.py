@@ -132,7 +132,9 @@ class PolicyMixin:
         to be.
         """
         conf = self.cfg.policy.get("confirm", {}) or {}
-        text = f"{a.verb} {a.label} {a.context}"
+        # the label as it reads without a tooltip that is a control's only name (`floor_text`, observe.py): the
+        # action's own verb and title still count, the tooltip's sentence about it does not
+        text = f"{a.verb} {a.target.get('floor_text', a.label)} {a.context}"
         derived = self._floor_words()
         hits = [name for name, c in (conf.get("categories") or {}).items()
                 if any(re.search(rx, text) for rx in list((c or {}).get("patterns") or []) + derived.get(name, []))]

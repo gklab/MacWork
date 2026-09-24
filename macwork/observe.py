@@ -417,12 +417,14 @@ def _structural_identity(n: dict[str, Any], by_ref: dict[str, dict[str, Any]], k
     return "axpath|" + "/".join(reversed(path))
 
 
-def _label(n: dict[str, Any]) -> str:
+def _label(n: dict[str, Any]) -> tuple[str, str]:
+    """What names an element, and the attribute that name came from: ("", "") when nothing does. "help" is a
+    tooltip, the one name that is not the control's own words (see `element_affordances`)."""
     for k in ("title", "desc", "value", "placeholder", "help"):
         v = n.get(k)
         if v and not str(v).startswith("_NS:"):
-            return str(v)
-    return ""
+            return str(v), k
+    return "", ""
 
 
 def _context_of(n: dict[str, Any], by_ref: dict[str, dict[str, Any]]) -> str:
@@ -488,18 +490,30 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         rd = n.get("rdesc") or role.removeprefix("AX").lower()
         if n.get("enabled", True) is False:
             continue
-        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), _label(n)) \
+        own, source = _label(n)
+        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), own) \
             or _structural_identity(n, by_ref, kids, content_roles)   # "" for content, whose name is its identity
         if n["ref"] in in_row and (role in text_roles or role in read_roles or role in ("AXCell", "AXImage", "AXGroup")):
             continue
         ctx_text = _context_of(n, by_ref) or where
+        # A control named only by its tooltip is shown by it, but the tooltip is not the control's own words:
+        # 「此按钮也可以执行缩放窗口的操作」 names the full-screen button, and its 执行 is a floor word for running
+        # code, which raised the bar the button had to clear to 0.9: 29 of the 42 verdicts recorded for it since
+        # 09-22 05:00 were gated there, and none would have been at the 0.7 an unflagged action has to clear. The
+        # floor's words are matched on the label as it would read without the tooltip, `floor_text`, made here:
+        # a label cut to fit could not have the tooltip taken back out of it.
+        tooltip = source == "help"
         if selectable(n, role):   # rows are chosen by selecting them, not by an action
-            name = _label(n) or " · ".join(dict.fromkeys(inner_text(n["ref"])))
+            shown = " · ".join(dict.fromkeys(inner_text(n["ref"])))
+            name = own or shown
             if name:
                 state = "selected" if n.get("selected") else ""
+                target = {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}
+                if tooltip:
+                    target["floor_text"] = with_state(f"select {rd}" + (f" 「{shown[:80]}」" if shown else ""), state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select",
                                                   with_state(f"select {rd} 「{name[:80]}」", state),
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}, context=ctx_text, key=ikey))
+                                                  target, context=ctx_text, key=ikey))
         if role in text_roles and n.get("editable") is False and not by_capability:   # shows text, cannot be typed into
             role = "AXStaticText"
         if typeable(n, role):
@@ -527,7 +541,8 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             if not (n.get("actions") and by_capability):
                 continue
         # a subrole (close button, sort button…) makes the role description itself a name
-        label = _label(n) or (str(n["rdesc"]) if n.get("subrole") and n.get("rdesc") else "")
+        by_subrole = str(n["rdesc"]) if n.get("subrole") and n.get("rdesc") else ""
+        label = own or by_subrole
         named = [a for a in n.get("actions", []) if a in labels and (a != "AXShowMenu" or role in menu_roles)]
         # An action outside the naming table used to be discarded, which made AXRaise, AXCancel, AXDelete and
         # every app's own actions invisible. They are offered now — but only where nothing named already
@@ -544,9 +559,12 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 verb = labels.get(act) or str((n.get("action_desc") or {}).get(act) or "")   # the app's own word
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
                 text = with_state(f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}", state)
+                target = {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame"), "title": label}
+                if tooltip:
+                    target["floor_text"] = with_state(f"{verb + ' ' if verb else ''}{rd}"
+                                                      + (f" 「{by_subrole}」" if by_subrole else "") + goes, state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame"),
-                                                   "title": label}, context=ctx_text, key=ikey))
+                                                  target, context=ctx_text, key=ikey))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
             t = str(n.get("value") or n.get("title") or n.get("desc") or "").strip()
             if t and n.get("url"):   # where a link goes is the thing worth knowing about it
