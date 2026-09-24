@@ -100,6 +100,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         self.cache["appmodels"] = self.models
         self.cache["skills"] = self.skills
         self._planner: Any = None
+        # One call at a time to a local planner, whoever asks: a task, beside its loop or waiting, or the floor
+        # deriving its words (consult._planner_call, policy._derive_floor_words). A local server asked twice at
+        # once works on both answers.
+        self._planner_lock = threading.Lock()
         self.last_timing: dict[str, int] = {}
         self.helper.on_reset = self._helper_restarted
         atexit.register(self.close)
@@ -517,6 +521,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
 
     def _finish(self, task: Task, status: str, reason: str = "", pending: dict[str, Any] | None = None,
                 cause: str = "") -> dict[str, Any]:
+        # A route asked for beside the loop is no use once the run is over, and the seconds it ran belong in the
+        # ledger this ending writes. `_run`'s finally stops it too, but only after the ledger has been written.
+        self._stop_planning(task)
         answered_anyway = False
         if cause:
             task.cause = cause
@@ -681,6 +688,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 # deciding on "[withheld]" everywhere is deciding blind: stop rather than degrade quietly
                 self._finish(task, "failed", f"nothing could be sent to the decider: {exc}", cause="redaction_failed")
             finally:  # everything this run asked the decider, web research included
+                self._stop_planning(task)       # …and whatever it still had asked of the planner: never into the next run
                 task.end_run()
                 if self._decider is not None:
                     task.decider_calls += self._decider.calls - calls0

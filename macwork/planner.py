@@ -20,11 +20,12 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
 from importlib.metadata import entry_points
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .config import Config
 
@@ -92,15 +93,21 @@ class PlannerError(RuntimeError):
     a dropped connection), `timeout` (no reply in time), `refused` (the credentials were rejected), or `reply`
     (it answered, and the answer was an error or unreadable). The five tasks of a v2 run on 09-20 asked the local
     planner 9 times and got no plan back, and nothing in their results told that apart from a planner that had
-    nothing to say."""
+    nothing to say. `stopped` is the engine's doing, not the planner's: the call was stopped because a newer
+    question replaced it, the run's time ran out, or the run ended (`PlannerCall.cancel`)."""
 
     def __init__(self, msg: str, refused: bool = False, kind: str = "reply") -> None:
         super().__init__(msg)
         self.refused = refused   # the credentials were rejected: this planner will not work until the user fixes them
         self.kind = "refused" if refused else kind
 
+    @property
+    def stopped(self) -> bool:
+        return self.kind == "stopped"
 
-ERROR_KINDS = ("unreachable", "timeout", "refused", "reply")
+
+ERROR_KINDS = ("unreachable", "timeout", "refused", "reply", "stopped")
+_COUNTING = threading.Lock()     # asks are counted into a task's usage from the threads they ran on (Planning._count)
 
 
 def _kind(exc: BaseException | None) -> str:
@@ -115,6 +122,60 @@ def _kind(exc: BaseException | None) -> str:
     if isinstance(exc, (OSError, urllib.error.URLError)) or isinstance(reason, OSError):
         return "unreachable"
     return "reply"
+
+
+class PlannerCall:
+    """One question to a planner, asked on a thread of its own: its answer or its error once it lands, a way to
+    stop it, and how long it has run.
+
+    The loop waited on every question it put to the planner: on 09-23, 7ffdee1b4ce3 spent 28.8 of its 44.3 s and
+    4e69ff4e791e 27.3 of about 35 s waiting on it, a plan and a replan each. A call made here can be waited for
+    (`wait`), or left to run while the loop goes on and taken in when it has landed. Whatever it raises comes back
+    as a PlannerError with its kind (`_kind`), never as an exception on a thread nobody reads: an http.client error
+    in the middle of a stream is a planner error like any other. `waited` says the loop sat waiting on it, so its
+    seconds are counted as waited and not again as run beside the loop.
+    """
+
+    def __init__(self, run: Callable[[threading.Event], Any]) -> None:
+        self.stop = threading.Event()
+        self.result: Any = None
+        self.error: PlannerError | None = None
+        self.waited = False
+        self.started = time.monotonic()
+        self.ended: float | None = None
+        self._done = threading.Event()
+        threading.Thread(target=self._run, args=(run,), name="planner", daemon=True).start()
+
+    def _run(self, run: Callable[[threading.Event], Any]) -> None:
+        try:
+            self.result = run(self.stop)
+        except PlannerError as exc:
+            self.error = exc
+        except Exception as exc:  # noqa: BLE001  (whatever it was, the loop reads it as a planner that did not answer)
+            self.error = PlannerError(f"{type(exc).__name__}: {exc}", kind=_kind(exc))
+        finally:
+            self.ended = time.monotonic()
+            self._done.set()
+
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self, until: float | None = None) -> bool:
+        """Wait for it to land, until `until` (time.monotonic) at the latest. True once it has."""
+        return self._done.wait(None if until is None else max(0.0, until - time.monotonic()))
+
+    def cancel(self) -> None:
+        """Stop it: a planner that can be stopped is at its next line (`OpenAICompatPlanner._stream`), one that
+        cannot runs on and its answer is dropped. It returns at once either way."""
+        self.stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self.stop.is_set()
+
+    @property
+    def seconds(self) -> float:
+        return (self.ended or time.monotonic()) - self.started
 
 
 class Planner(Protocol):
@@ -184,6 +245,8 @@ class OpenAICompatPlanner:
     """Any OpenAI-compatible chat endpoint, named in ``planner.endpoints``: DeepSeek's official API, or a local
     server (LM Studio, Ollama, mlx_lm.server, vLLM). Keys come from an env var or the Keychain, never a file."""
 
+    beside = True       # it has a connection of its own, so it may be asked while the loop looks and acts
+
     def __init__(self, cfg: Config, name: str, conf: dict[str, Any]) -> None:
         from .decider import keychain_key
 
@@ -196,6 +259,9 @@ class OpenAICompatPlanner:
         self.max_tokens = conf.get("max_tokens")
         self.local = bool(conf.get("local", False))
         self.stream = bool(conf.get("stream", False))   # read the reply as it is written (see `_stream`)
+        # A streamed reply is read a line at a time, so it can be stopped between two lines; one asked for all at
+        # once can only be waited out, and its answer dropped.
+        self.stoppable = self.stream
         self.extra = conf.get("extra") or {}
         env = conf.get("api_key_env")
         self.key = (os.environ.get(env, "").strip() if env else "") or \
@@ -208,7 +274,7 @@ class OpenAICompatPlanner:
         with urllib.request.build_opener(*handlers).open(req, timeout=timeout) as r:
             return json.loads(r.read())
 
-    def _stream(self, body: dict[str, Any]) -> str:
+    def _stream(self, body: dict[str, Any], stop: threading.Event | None = None) -> str:
         """The reply's text, read as the server writes it, the connection closed as soon as one whole JSON
         object has arrived.
 
@@ -218,6 +284,10 @@ class OpenAICompatPlanner:
         87 s that takes 11 s on its own. Streamed, the timeout is on silence, not on length, and closing the
         connection is how a server is told to stop (mlx_lm stops at its next write). Nothing after the object
         is waited for either.
+
+        `stop` is looked at before every line, and once it is set the connection is closed on the spot: leaving
+        the `with` closes it. The line it waits for may be a while coming: mlx_lm 0.31.3 writes a keep-alive once
+        per 2048-token chunk of the prompt it is reading, 10-13 s of this Mac's 27B model.
         """
         req = urllib.request.Request(self.base + "/chat/completions", data=json.dumps({**body, "stream": True}).encode(),
                                      headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {self.key}"} if self.key else {})})
@@ -225,6 +295,8 @@ class OpenAICompatPlanner:
         text = ""
         with urllib.request.build_opener(*handlers).open(req, timeout=self.timeout) as r:
             for raw in r:                                   # server-sent events, one line at a time
+                if stop is not None and stop.is_set():
+                    raise PlannerError(f"{self.name}: stopped", kind="stopped")
                 line = raw.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
                     continue                                # blank separators, ": keepalive" while the prompt is read
@@ -279,7 +351,7 @@ class OpenAICompatPlanner:
             except Exception:  # noqa: BLE001  (best effort)
                 return
 
-    def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def complete(self, system: str, prompt: str, schema: dict[str, Any], stop: threading.Event | None = None) -> dict[str, Any]:
         example = {k: ([] if v.get("type") == "array" else {} if v.get("type") == "object" else "") for k, v in schema.get("properties", {}).items()}
         # On one line: indentation is written a token at a time, and on this Mac's local model every token
         # of output costs 70 ms.
@@ -295,11 +367,15 @@ class OpenAICompatPlanner:
         last: Exception | None = None
         asked_again = False
         while True:
+            if stop is not None and stop.is_set():
+                # Never asked again once stopped, whatever the last try came to: a stopped question sent a second
+                # time is the doubled work the stop is there to end.
+                raise PlannerError(f"{self.name}: stopped", kind="stopped")
             if self.model:
                 body["model"] = self.model
             try:
                 if self.stream:
-                    content = self._stream(body)
+                    content = self._stream(body, stop)
                 else:
                     r = self._post("/chat/completions", body, self.timeout)
                     content = (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
@@ -334,6 +410,7 @@ class AnthropicPlanner:
     """Claude via the official SDK, with a JSON schema on the output and server-side refusal fallback."""
 
     name = "anthropic"
+    beside = True       # a connection of its own; it cannot be stopped mid-answer, so a late answer is dropped
 
     def __init__(self, cfg: Config) -> None:
         c = cfg.section("planner.anthropic")
@@ -381,6 +458,8 @@ class FoundationPlanner:
 
     name = "foundation"
     local = True      # it says so itself; nothing else should be deciding this from its name
+    beside = False    # it answers through the helper's main connection, held for the whole generation: asked beside
+                      # the loop, every look and every action would queue behind the answer
 
     def __init__(self, cfg: Config, helper: Any) -> None:
         self.helper = helper
@@ -474,12 +553,28 @@ class Chain:
     def local(self) -> bool:
         return all(bool(getattr(p, "local", False)) for p in self.planners)
 
-    def complete(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    @property
+    def beside(self) -> bool:
+        """May it be asked while the loop goes on? Only if whoever ends up answering may, and that can be any of
+        them. Forwarded like `name`, it would be the one in front's, and a chain headed by a cloud planner would
+        ask the on-device one behind it beside the loop."""
+        return all(bool(getattr(p, "beside", False)) for p in self.planners)
+
+    @property
+    def stoppable(self) -> bool:
+        """It takes a stop when one of them can use it; it is handed on to those only (`complete`)."""
+        return any(bool(getattr(p, "stoppable", False)) for p in self.planners)
+
+    def complete(self, system: str, prompt: str, schema: dict[str, Any], stop: threading.Event | None = None) -> dict[str, Any]:
         self.tried = []
         while True:
             head = self.planners[0]
+            if stop is not None and stop.is_set():
+                raise PlannerError(f"{getattr(head, 'name', '?')}: stopped", kind="stopped")
             self.tried.append(str(getattr(head, "name", "?")))
             try:
+                if stop is not None and getattr(head, "stoppable", False):
+                    return head.complete(system, prompt, schema, stop=stop)
                 return head.complete(system, prompt, schema)
             except PlannerError as exc:
                 if not exc.refused or len(self.planners) == 1:
@@ -518,7 +613,7 @@ class Planning:
         # on-device however many cloud planners stood behind it. A planner says whether it is on this Mac.
         return bool(getattr(self.p, "local", False))
 
-    def _ask(self, prompt_key: str, schema: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    def _ask(self, prompt_key: str, schema: dict[str, Any], stop: threading.Event | None = None, **fields: Any) -> dict[str, Any]:
         if self.redactor is not None and not (self.on_device and self.cfg.get("planner.trust_on_device", True)):
             fields = self.redactor.value(fields)
         system = self.cfg.question("planner_system")
@@ -527,7 +622,10 @@ class Planning:
         error, answered = "", False
         t0 = time.monotonic()
         try:
-            out = self.p.complete(system, prompt, schema)
+            # handed only to a planner that says it can use it: one from elsewhere (an entry point, a test's)
+            # is asked the way it always was
+            kw = {"stop": stop} if stop is not None and getattr(self.p, "stoppable", False) else {}
+            out = self.p.complete(system, prompt, schema, **kw)
             answered = True
         except Exception as exc:
             error = _kind(exc)
@@ -549,20 +647,27 @@ class Planning:
         return self.redactor.restore(out) if self.redactor is not None else out
 
     def _count(self, by: str, ms: int, error: str) -> None:
-        """One ask, into the task's usage: {calls, answered, failed, ms, by: {planner: n}, errors: {kind: n}}."""
+        """One ask, into the task's usage: {calls, answered, failed, ms, by: {planner: n}, errors: {kind: n}}.
+
+        An ask made beside the loop is counted from its own thread, and so is one that was stopped and ran on: two
+        can count at once, and the task can be read or written to disk meanwhile. So one count at a time, and the
+        two tables are replaced whole rather than grown in place — a dict that grows while it is being read out
+        raises. (`ConsultMixin._planning` puts every top-level key there before any ask is made.)"""
         u = self.usage
         if u is None:
             return
-        for key in ("calls", "answered", "failed", "ms"):
-            u.setdefault(key, 0)
-        kinds = u.setdefault("errors", {k: 0 for k in ERROR_KINDS})
-        who = u.setdefault("by", {})
-        u["calls"] += 1
-        u["ms"] += ms
-        u["failed" if error else "answered"] += 1
-        who[by] = int(who.get(by, 0)) + 1
-        if error:
-            kinds[error] = int(kinds.get(error, 0)) + 1
+        with _COUNTING:
+            for key in ("calls", "answered", "failed", "ms"):
+                u.setdefault(key, 0)
+            kinds = dict(u.get("errors") or {k: 0 for k in ERROR_KINDS})
+            who = dict(u.get("by") or {})
+            u["calls"] += 1
+            u["ms"] += ms
+            u["failed" if error else "answered"] += 1
+            who[by] = int(who.get(by, 0)) + 1
+            if error:
+                kinds[error] = int(kinds.get(error, 0)) + 1
+            u["errors"], u["by"] = kinds, who
 
     def floor_words(self, language: str, categories: dict[str, str]) -> dict[str, list[str]]:
         """The words that mean each floor category in one interface language: asked once per language, kept
@@ -571,16 +676,18 @@ class Planning:
         words = out.get("words") if isinstance(out, dict) else None
         return {k: [str(w) for w in v if str(w).strip()] for k, v in (words or {}).items() if k in categories and isinstance(v, list)}
 
-    def plan(self, goal: str, context: dict[str, Any], asks_first: list[str] | None = None) -> dict[str, Any]:
-        """`asks_first`: what the safety floor stops to ask the user about, in policy's words."""
-        out = self._ask("planner_plan", PLAN_SCHEMA, goal=goal, context=context, asks_first=list(asks_first or []))
+    def plan(self, goal: str, context: dict[str, Any], asks_first: list[str] | None = None,
+             stop: threading.Event | None = None) -> dict[str, Any]:
+        """`asks_first`: what the safety floor stops to ask the user about, in policy's words. `stop`: set, the
+        question is given up on (`PlannerCall.cancel`)."""
+        out = self._ask("planner_plan", PLAN_SCHEMA, stop=stop, goal=goal, context=context, asks_first=list(asks_first or []))
         steps, evidence = _steps(out.get("steps"), self.max_steps)
         return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}
 
     def replan(self, goal: str, context: dict[str, Any], done: list[str], problem: str,
-               asks_first: list[str] | None = None) -> dict[str, Any]:
-        out = self._ask("planner_replan", PLAN_SCHEMA, goal=goal, context=context, done=done, problem=problem,
+               asks_first: list[str] | None = None, stop: threading.Event | None = None) -> dict[str, Any]:
+        out = self._ask("planner_replan", PLAN_SCHEMA, stop=stop, goal=goal, context=context, done=done, problem=problem,
                         asks_first=list(asks_first or []))
         steps, evidence = _steps(out.get("steps"), self.max_steps)
         return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},

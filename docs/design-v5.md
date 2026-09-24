@@ -86,7 +86,8 @@ class of bug rather than one instance.
 * **One rule for a task going nowhere** (`engine.max_no_progress`, `_no_progress_run`). Repeats, circles
   and an unchanged screen were three counters with three thresholds that agreed by accident. A step went
   nowhere if it failed, broke its promise, led back or moved nothing; a run of those is the one thing
-  consulted about and the one thing that ends the task.
+  consulted about. Ending a task on it alone is not made yet: a task still ends `no_route` on rethinks that
+  brought no new route (see "A rethink asks; it waits only on evidence" below).
 * **Invariants checked where they must hold** (`invariants.py`). After every look: options can be told
   apart and remembered, and every action the look found is an option or inside an entry that names it;
   after every step: it says where it was taken from and what it promised, and a broken promise is never
@@ -197,3 +198,50 @@ until it asks again and says whether an app is still launching:
 
 Reading the windows Accessibility does not describe — by window number, by sight — waits for a read-only survey
 of how often such windows are phantoms.
+
+## A rethink asks; it waits only on evidence (2026-09-24)
+
+A rethink vote stopped the task for a planner call, and when a route came the action chosen with it was dropped.
+On 09-22..23 (62 tasks, held-out goals left out) the loop sat waiting on the planner for most of the two key tasks:
+28.8 of 44.3 s and 27.3 of about 35 s. Of 201 rethink looks, 23 chose the planner's own suggestion (7 waited for a
+call, 57 s: both key tasks among them, and both replans dropped the 「type 17」 and 「type serendipity」 chosen), 96
+chose an action on offer with nothing gone wrong (60 calls, 575 s; after 24 of them the next look chose the same
+action again), 47 came after a step that got nowhere (26 calls, 291 s), 8 had nothing to act on and 27 looked into
+a group of options. And every rethink that brought nothing counted toward the ending alike: of the 20 `no_route`
+endings, 16 came on a question refused as asked already with its allowance left, 2 of them on the planner's own
+suggestion.
+
+* **A question to the planner is one call at a time, and can be stopped** (`planner.PlannerCall`,
+  `ConsultMixin._planner_call`). It runs on a thread of its own; a newer question stops the one before it, and a
+  local server is sent the next only once the stopped one has let go, at its next line (`engine._planner_lock`):
+  asked twice at once it works on both answers. The on-device planner answers through the helper's main
+  connection and is never asked beside the loop.
+* **The planner's own suggestion is taken** with no question asked and nothing counted.
+* **With nothing gone wrong, an action the floor lets through and a screen not judged risky, the route is asked
+  for beside the loop** (`planner.beside`, the switch) while the action goes through every gate as before, and it
+  is taken in at the first look after it lands (`_merge_beside`). That route is tried before the planner is asked
+  again: the stretch the no-progress rule found is not asked about at that look.
+* **Otherwise the route is waited for, and never past the run's time** (`engine.budget_s`): a step that got
+  nowhere (`_nowhere`, what the no-progress rule counts), nothing to act on, an action the floor stops for (20 of
+  the 96 above, by the floor's last verdict before the look), a planner that cannot be asked beside the loop, a
+  call still on its way, or no fruitless rethink left. An answer too late for its run is `late`, and the loop's own
+  budget check says what happens next.
+* **A question says what it came to** (`consult.Route`): a new route, blocked, the same route, an empty answer
+  (the last one stands), asked already (on this exact screen, structure and text, for this reason), the allowance
+  spent, no planner, an error, late, pending, or not asked because the app could not be read. The fruitless count
+  takes the same route, an empty answer, an error, a spent allowance and no planner; never an "asked already", a
+  look nobody could read, or an answer late or still on its way. A new route resets it.
+* **The ending is the one it was**: `engine.max_fruitless_rethinks` of those, with `min_steps_before_giving_up`
+  taken or nothing untried, end the task `no_route`, and `_finish` names it `planner_unreachable` when every
+  question failed and the planner could not be reached or refused (`planner_down`). Ending on the no-progress rule
+  alone is not made: 12 of the 20 `no_route` tasks had their last step judged 0.2 or more, and would have run on
+  to the step budget. Under the kept ending, the 14 decided by an "asked already" refusal on an action of the
+  decider's own would go on (a replay): at most 75 more steps within their runs, about 244 more decider requests
+  at their own rate.
+* **The planner's seconds are counted apart**: `outputs.budget.planner_seconds` {waited, beside} for the run, and
+  every step record's `planner_waited_ms` and `planner_beside_ms`.
+
+Stopping a local call is not free. mlx_lm 0.31.3 notices a closed connection at its next write, a keep-alive once
+per 2048-token chunk of prompt it reads, and the client closes it at the next line it reads: measured on this Mac,
+a recorded replan sent right after another was stopped 3 s into its prefill had its first token 11.5-19.3 s after
+the stop (31.4 s once, the stopped prompt two recorded ones long), against 4.9-7.2 s on an idle server.

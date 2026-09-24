@@ -576,7 +576,7 @@ def test_a_key_the_planner_suggests_is_judged_where_this_looks_keys_are(tmp_path
     task = eng._new_task("empty the list", {}, None)
     task.tries = [{"keys": "cmd+return"}]
     look = eng._look(task, eng._ctx(task.goal, {}, None, task.id))
-    suggested = next(a for a in look.affs if a.id == "t0")
+    suggested = next(a for a in look.affs if a.target.get("try") == 0)     # the planner's first try, by its marker
     assert suggested.facts.get("in") == "AXSheet", suggested.facts
 
 

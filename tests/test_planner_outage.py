@@ -159,7 +159,7 @@ def test_every_planner_ask_is_timed_in_the_audit(tmp_path):
     plans = [json.loads(x) for x in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [(isinstance(r.get("ms"), int), r.get("error")) for r in plans] == [(True, None), (True, "unreachable")]
     assert (use["calls"], use["answered"], use["failed"]) == (2, 1, 1)
-    assert use["errors"] == {"unreachable": 1, "timeout": 0, "refused": 0, "reply": 0}
+    assert use["errors"] == {"unreachable": 1, "timeout": 0, "refused": 0, "reply": 0, "stopped": 0}
     assert use["by"] == {"fake-cloud": 1, "local": 1}
 
 

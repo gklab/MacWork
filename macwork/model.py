@@ -324,7 +324,12 @@ class Pace:
     settled_leave: bool = False                                # the app was let finish before the task left it
     settled_done: bool = False                                 # the screen was let settle before judging "done"
     redo: int = 0                                              # decisions discarded because the screen moved meanwhile
-    fruitless: int = 0                                         # "rethink" asked with no new route to be had
+    fruitless: int = 0                                         # rethinks that brought no new route: asked and got
+                                                               # the same, nothing or no answer, or found no planner
+                                                               # or allowance to ask. A question refused as asked
+                                                               # already, and an answer late or still on its way,
+                                                               # never count (consult.FRUITLESS). A new route, or the
+                                                               # planner's word that only the user can go on, resets it
     answer_tries: int = 0                                      # times a goal asking for information ended with none
     done_opinions: int = 0                                     # second opinions asked on "done" (budget: planner.max_done_opinions)
     ready_waits: int = 0                                       # looks that waited for the app to answer first
@@ -350,6 +355,9 @@ class Memory:
     screen_notes: dict[str, str] = field(default_factory=dict)  # distinct screens seen (signature -> short text)
     circles: list[str] = field(default_factory=list)           # handles of the steps that only led back to a screen
                                                                # already seen (`Step.led_back`), once each
+    stuck_at: str = ""                                         # "steps:length" of the stretch that got nowhere the
+                                                               # planner was last asked about, or whose route had
+                                                               # just landed: one stretch is asked about once
     facts: Any = None                                          # facts.Facts: what this task has actually seen
     serves: dict[str, bool] = field(default_factory=dict)      # "does leaving for X serve the goal", asked once per action
     declined: set[str] = field(default_factory=set)            # floor actions the decider judged the goal never asked for
@@ -445,8 +453,13 @@ class TaskScope:
     # The clock of the step being made (loop._step_record): set at the start of each run, moved on at every step.
     looks: int = 0                                             # looks since the last step
     last_step_at: float | None = None                          # monotonic time of the last step, or of the run's start
-    planner_mark: tuple[int, int] = (0, 0)                     # planner_use (calls, ms) then
+    planner_mark: tuple[int, int, int, int] = (0, 0, 0, 0)     # planner_use (calls, ms, waited_ms, beside_ms) then
     decisions_mark: int = 0                                    # the decider's count of decisions then
+    # The one question to the planner this task has running beside the loop (planner.PlannerCall), and what it
+    # was asked (consult.Asked): taken in at a later look, stopped when a newer question replaces it or the run
+    # ends. A thread and an answer on its way belong to this process, never to the stored task.
+    planning: Any = None
+    planning_asked: Any = None
     # The one group of options the decider opened, and where: {group, start, where, steps} (loop._open_group).
     # Like a menu a person opened, it lasts until the next step is taken or the app or window in front
     # changes, and opening another replaces it; the rest of the screen in front stays open across steps on
@@ -512,8 +525,10 @@ class Task:
     decider_calls: int = 0
     cost_usd: float = 0.0
     # Every ask of the planner this task made: {calls, answered, failed, ms, by: {planner: n}, errors: {kind: n}}
-    # (planner.Planning._count). Kept, and handed back as result()["planner"] — never in `outputs`, which an
-    # eval's output_contains reads: ms counts can hold any number a check looks for.
+    # (planner.Planning._count), and over the whole task how long the loop sat waiting on the planner (waited_ms)
+    # and how long the planner worked while the loop went on (beside_ms; consult._planner_wait, _stop_planning).
+    # Kept, and handed back as result()["planner"] — never in `outputs`, which an eval's output_contains reads:
+    # ms counts can hold any number a check looks for.
     planner_use: dict[str, Any] = field(default_factory=dict)
     # Where its time went, summed over its step records (loop._step_record): steps, looks, wall_ms and each
     # stage's ms. Handed back as result()["timing"], never in `outputs`, for the same reason as planner_use.
@@ -527,9 +542,13 @@ class Task:
     spent_s: float = 0.0                                       # working time of the runs that are over
     run_calls0: int = 0                                        # the decider's call count when this run began
     run_cost0: float = 0.0
+    run_waited_ms0: int = 0                                    # planner_use waited_ms and beside_ms when this run
+    run_beside_ms0: int = 0                                    # began: the ledger's planner_seconds are this run's
 
     def begin_run(self, calls: int, cost: float) -> None:
         self.run_started, self.run_step0, self.run_calls0, self.run_cost0 = time.monotonic(), len(self.steps), calls, cost
+        self.run_waited_ms0 = int(self.planner_use.get("waited_ms", 0))
+        self.run_beside_ms0 = int(self.planner_use.get("beside_ms", 0))
         # The counts in `pace` bound loops inside a run — how many times to look into a group, wait, ask
         # the planner again — and were never reset, while steps and seconds were. A task handed back with
         # `need_continue` three times came back with fresh steps and no replan left. The flags stay: they

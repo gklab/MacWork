@@ -3,17 +3,21 @@ turning its concrete suggestions into options for the decider."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
-from dataclasses import replace
-from typing import Any
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Any, Callable
 
 from .decider import DeciderError, noul
-from .model import Affordance, Observation, Task
+from .model import Affordance, Observation, Step, Task, exact_state
 from .observe import Ctx, named_combo
 from .onscreen import unreadable
-from .planner import Planning, PlannerError, make_planner
+from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, make_planner
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +43,54 @@ def planner_down(task: Task) -> bool:
         and int(errors.get("unreachable", 0)) + int(errors.get("refused", 0)) >= 1
 
 
+class Route(str, Enum):
+    """What asking the planner for a route came to, and, when nothing new came of it, why.
+
+    It was a bare True or False, and a rethink counted every False alike toward `engine.max_fruitless_rethinks`,
+    whose second ended the task no_route once it had taken `min_steps_before_giving_up` steps: the planner's own
+    nothing, a question refused as asked already, an allowance used up. Of the 20 no_route endings on 09-22..23
+    (held-out goals left out), 16 came on a rethink refused as asked already with its allowance left — 2 of them on
+    the planner's own suggestion, 7b2096c07a38's 「type 10」 right after its 「type 2」 — and 4 on one refused with
+    its allowance used up. Only NEW and BLOCKED are a route, and only they are true.
+    """
+    NEW = "new"                 # sub-goals or moves it had not given before
+    BLOCKED = "blocked"         # it says only the user can go on
+    SAME = "same"               # the route it gave last time
+    EMPTY = "empty"             # an answer with nothing in it: the last one stands
+    ASKED = "asked"             # this exact screen, at this point of the plan, for this reason, was answered already
+    SPENT = "spent"             # the allowance for this kind of question is used up
+    NONE = "none"               # there is no planner to ask
+    ERROR = "error"             # no answer could be had
+    LATE = "late"               # the run's time ran out first: the loop's own budget check says what happens next
+    PENDING = "pending"         # asked beside the loop; the answer is taken in at a later look
+    UNREADABLE = "unreadable"   # not asked: the app could not be read and can still be waited for
+
+    def __bool__(self) -> bool:
+        return self is Route.NEW or self is Route.BLOCKED
+
+
+# The rethinks that count against engine.max_fruitless_rethinks: asked and nothing new came of it, or no planner
+# to ask, or none of its allowance left. Not ASKED — the answer given on this exact screen stands — and not a look
+# that could not be read, an answer too late for its run, or one still on its way.
+FRUITLESS = frozenset({Route.SAME, Route.EMPTY, Route.ERROR, Route.SPENT, Route.NONE})
+
+
+@dataclass
+class Asked:
+    """One question for the planner, put together on the loop's thread — the brief reads the task, the app model
+    and the screen — so that the call itself can run on another."""
+    key: tuple[Any, ...]                 # what `Memory.consulted` remembers once it is answered
+    kind: str                            # rethink | stuck | first | blocked | impossible | nothing_left
+    problem: str
+    went_wrong: bool                     # the last step got nowhere: a correction, not a replan
+    first: bool                          # no plan yet: plan, not replan
+    steps_at: int                        # steps taken when it was asked
+    plan_i_at: int                       # the sub-goal the plan was at
+    brief: dict[str, Any] = field(default_factory=dict)
+    asks_first: list[str] = field(default_factory=list)
+    done: list[str] = field(default_factory=list)
+
+
 class ConsultMixin:
     # ------------------------------------------------------------- planning
     @property
@@ -55,7 +107,70 @@ class ConsultMixin:
         backend = self.planning_backend
         if backend is None:
             return None
-        return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=task.planner_use)
+        # Every key there is, before an ask can be counted from a thread of its own (`Planning._count`): the
+        # task is read and written to disk on the loop's thread meanwhile, and a dict must not grow under that.
+        use = task.planner_use
+        for key in ("calls", "answered", "failed", "ms", "waited_ms", "beside_ms"):
+            use.setdefault(key, 0)
+        use.setdefault("errors", {k: 0 for k in ERROR_KINDS})
+        use.setdefault("by", {})
+        return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=use)
+
+    # ------------------------------------------------------------- one planner call at a time
+    def _planner_call(self, task: Task, ask: Callable[[Planning, threading.Event], Any], beside: bool = False) -> PlannerCall:
+        """Every question this task puts to its planner goes out through here, on a thread of its own
+        (`PlannerCall`). `ask(planning, stop)` is the question; `beside`: it runs while the loop goes on, as the
+        task's one call in flight (`TaskScope.planning`), and is taken in at a later look.
+
+        Whatever this task still has running beside the loop is stopped first: a newer question replaces it. A
+        local server asked twice at once works on both answers — one plan took 87 s that takes 11 s on its own
+        (`OpenAICompatPlanner._stream`) — so a call to a local planner is sent only once the one before it has
+        let go (`engine._planner_lock`), which a stopped call does at its next line. A call to one that is not on
+        this Mac does not wait for it: the doubling is a local server's, and a cloud planner asked without a
+        stream (deepseek's endpoint, Anthropic) cannot be stopped, so the next question would sit out an answer
+        that is dropped anyway. Nothing is sent once the call has been stopped."""
+        self._stop_planning(task)
+        planning = self._planning(task)
+        lock = self._planner_lock if getattr(self.planning_backend, "local", False) else contextlib.nullcontext()
+
+        def run(stop: threading.Event) -> Any:
+            with lock:
+                if stop.is_set():
+                    raise PlannerError("stopped before it was sent", kind="stopped")
+                return ask(planning, stop)
+        call = PlannerCall(run)
+        if beside:
+            self.scope(task.id).planning = call
+        return call
+
+    def _planner_wait(self, task: Task, call: PlannerCall, until: float | None = None) -> Any:
+        """The call's answer, the loop waiting for it (`planner_use.waited_ms`). Past `until` it is stopped and
+        PlannerError(stopped) is raised: a route that comes after the run's time is up is no use to that run."""
+        t0 = time.monotonic()
+        landed = call.wait(until)
+        call.waited = True
+        use = task.planner_use
+        use["waited_ms"] = int(use.get("waited_ms", 0)) + round((time.monotonic() - t0) * 1000)
+        if not landed:
+            call.cancel()
+            raise PlannerError("the run's time ran out before the planner answered", kind="stopped")
+        if call.error is not None:
+            raise call.error
+        return call.result
+
+    def _stop_planning(self, task: Task) -> None:
+        """Stop the call this task has running beside the loop, if it has one: a newer question replaces it, or
+        its run is over. The seconds it ran are the planner's work beside the loop (`planner_use.beside_ms`),
+        unless the loop sat waiting on it, when they were counted as waited already."""
+        scope = self._scopes.get(task.id)
+        call = scope.planning if scope is not None else None
+        if call is None:
+            return
+        scope.planning = scope.planning_asked = None
+        call.cancel()
+        if not call.waited:
+            use = task.planner_use
+            use["beside_ms"] = int(use.get("beside_ms", 0)) + round(call.seconds * 1000)
 
     def _brief(self, task: Task, ctx: Ctx | None, obs: Observation | None, affs: list[Affordance] | None = None,
                acting: bool = True) -> dict[str, Any]:
@@ -114,31 +229,53 @@ class ConsultMixin:
         ready_wait = pid is not None and pid not in ctx.scope.silent and self.allowance_left(task, "ready_waits")
         return why == "starting" or ready_wait or self.allowance_left(task, "waits")
 
-    def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str, affs: list[Affordance] | None = None) -> bool:
-        """Ask the planner for (new) sub-goals. False when there is none, or it has been asked enough."""
-        backend = self.planning_backend
-        if backend is None or self.cfg.get("planner.when", "auto") == "never":
-            return False
+    # ------------------------------------------------------------- asking for a route
+    def _nowhere(self, st: Step) -> bool:
+        """Did this step get the task nowhere? It could not be done, broke its promise, only led back to a screen
+        seen before it, or was judged below progress_bad on the look after it. What the no-progress rule counts,
+        and what a rethink waits for its route on."""
+        bad = float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
+        return not st.ok or st.kept is False or st.led_back or float(st.decision.get("progress_after", 1.0)) < bad
+
+    def _went_wrong(self, task: Task) -> bool:
+        return bool(task.steps) and self._nowhere(task.steps[-1])
+
+    def _may_ask_beside(self) -> bool:
+        """May a route be asked for while the loop goes on? `planner.beside` (the switch: off, a rethink with nothing
+        gone wrong waits for its route too) and a planner that may be asked so (`beside`: not one that answers
+        through the helper)."""
+        return bool(self.cfg.get("planner.beside", True)) and bool(getattr(self.planning_backend, "beside", False))
+
+    def _run_deadline(self, task: Task) -> float:
+        """When this run's time is up (engine.budget_s from its start): a route waited for is given up then."""
+        return task.run_started + float(self.cfg.get("engine.budget_s", 90))
+
+    def _asking(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
+                affs: list[Affordance] | None, kind: str) -> Asked | Route:
+        """The question to put to the planner, or why none is put: NONE, UNREADABLE, SPENT or ASKED. Nothing is
+        spent or remembered as asked here — that is done once an answer has come (`_adopt`) — and the brief is
+        built here, on the loop's thread, so the call itself can run on another."""
+        if self.planning_backend is None or self.cfg.get("planner.when", "auto") == "never":
+            return Route.NONE
         if obs is not None and self._may_still_wait(task, ctx, obs):
             # Before anything is spent or remembered as asked: the same question can be asked once the app
             # answers. 53 plans since 22ce357 were made right after a look the app had not answered.
             log.info("planner: not asked while the app cannot be read and can still be waited for")
-            return False
+            return Route.UNREADABLE
         # Two different reasons to think again, and they used to draw on one allowance. "I am not sure about
         # this screen" can be said before anything has been tried; "what I just did went wrong" comes with
         # evidence. A task spent its replans at steps 0 and 2 on the first kind, then typed a formula the app
         # rejected — the reason was written on the screen — and had none left for the one moment that called
-        # for it. Whether the last step went wrong is a judgement the decider already makes every step
-        # (`progress`), so a replan that follows one is counted on its own.
+        # for it. Whether the last step got nowhere is judged for every step (`_nowhere`, what the no-progress
+        # rule counts), so a replan that follows one is counted on its own.
+        went_wrong = self._went_wrong(task)
         last = task.steps[-1] if task.steps else None
-        went_wrong = last is not None and (not last.ok or float(last.decision.get("progress_after", 1.0))
-                                           < float(self.cfg.get("engine.thresholds.progress_bad", 0.2)))
         if went_wrong:
             if not self.allowance_left(task, "corrections"):
-                return False
+                return Route.SPENT
             problem = f"the last action did not do what it was for ({last.action[:80]}); what the screen says now is in the context. {problem}"
         elif not self.allowance_left(task, "replans"):
-            return False
+            return Route.SPENT
         # Asking the same question of the same screen gets the same answer, and this answer is not cheap:
         # measured on this Mac, one replan is 1.5-2.7s of local model, and one task spent 12 of its 21
         # seconds being told the same thing three times. What it was asked about is the screen and how far
@@ -146,28 +283,101 @@ class ConsultMixin:
         # …and "what I just did went wrong" is a different question from "I am not sure about this screen",
         # even on the same screen at the same point of the plan: keyed without it, a task stuck on one
         # screen had already used the key on the first kind, and the correction — the one the allowance
-        # above exists for — was refused as already asked.
-        here = (self._signature(ctx.app, obs) if ctx is not None and obs is not None else "", task.plan_i, len(task.steps) > 0, went_wrong)
-        if here in task.memory.consulted:
-            log.info("planner: already asked about this screen")
-            return False
-        task.memory.consulted.add(here)
-        planning = self._planning(task)
+        # above exists for — was refused as already asked. So is "the last three steps got nowhere" (`kind`).
+        # The screen is what it shows, not only its structure: keyed on the structure, aff49b2812ff's rethink
+        # on a calculator showing 「1」 was refused as already asked, because a plan had been made while it
+        # showed 「12+30×4」, and the task ended no_route there.
+        state = exact_state(self._signature(ctx.app, obs), obs.screen_text) if ctx is not None and obs is not None else ""
+        key = (state, task.plan_i, len(task.steps) > 0, went_wrong, kind)
+        if key in task.memory.consulted:
+            log.info("planner: this screen was already asked about, for this reason: that answer stands")
+            return Route.ASKED
+        # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
+        # terminal for a chip model, a file count, a deletion and a Safari version — each one a stop to ask
+        # the user (a command is `execute`) on a task that had a route through the apps' own windows.
+        # Beside the instructions rather than in the context: it is the same on every call, so it belongs
+        # in the part of the prompt a local server keeps.
+        return Asked(key=key, kind=kind, problem=problem, went_wrong=went_wrong, first=task.plan is None,
+                     steps_at=len(task.steps), plan_i_at=task.plan_i, brief=self._brief(task, ctx, obs, affs),
+                     asks_first=list(self.floor_categories().values()), done=[s.action for s in task.steps])
+
+    def _ask_route(self, task: Task, asked: Asked) -> Callable[[Planning, threading.Event], Any]:
+        goal = task.goal
+        if asked.first:
+            return lambda planning, stop: planning.plan(goal, asked.brief, asked.asks_first, stop=stop)
+        return lambda planning, stop: planning.replan(goal, asked.brief, asked.done, asked.problem, asked.asks_first, stop=stop)
+
+    def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
+                 affs: list[Affordance] | None = None, kind: str = "rethink", bounded: bool = True) -> Route:
+        """Ask the planner for a route, and wait for it — never past this run's time (`bounded`; the words an
+        ending is owed are not bounded). What it came to: NEW or BLOCKED, or why nothing new came (`Route`)."""
+        asked = self._asking(task, ctx, obs, problem, affs, kind)
+        if isinstance(asked, Route):
+            return asked
+        until = self._run_deadline(task) if bounded else None
+        if until is not None and time.monotonic() >= until:
+            return Route.LATE
         try:
-            ctx_brief = self._brief(task, ctx, obs, affs)
-            # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
-            # terminal for a chip model, a file count, a deletion and a Safari version — each one a stop to ask
-            # the user (a command is `execute`) on a task that had a route through the apps' own windows.
-            # Beside the instructions rather than in the context: it is the same on every call, so it belongs
-            # in the part of the prompt a local server keeps.
-            asks_first = list(self.floor_categories().values())
-            plan = planning.plan(task.goal, ctx_brief, asks_first) if task.plan is None else \
-                planning.replan(task.goal, ctx_brief, [s.action for s in task.steps], problem, asks_first)
+            plan = self._planner_wait(task, self._planner_call(task, self._ask_route(task, asked)), until=until)
         except PlannerError as exc:
             log.info("planner: %s", exc)
+            if exc.stopped:
+                return Route.LATE
             task.outputs.setdefault("planner_errors", []).append(str(exc)[:200])
-            return False
-        self.spend_allowance(task, "corrections" if went_wrong else "replans")
+            return Route.ERROR
+        return self._adopt(task, ctx, plan, asked)
+
+    def _consult_beside(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
+                        affs: list[Affordance] | None = None) -> Route:
+        """Ask for a route and do not wait for it: PENDING, and the answer is taken in at the first look after it
+        has landed (`_merge_beside`). Or, at once, why it is not asked: NONE, UNREADABLE, SPENT or ASKED."""
+        asked = self._asking(task, ctx, obs, problem, affs, "rethink")
+        if isinstance(asked, Route):
+            return asked
+        self._planner_call(task, self._ask_route(task, asked), beside=True)
+        self.scope(task.id).planning_asked = asked
+        return Route.PENDING
+
+    def _merge_beside(self, task: Task, ctx: Ctx | None) -> Route | None:
+        """The route asked for beside the loop, once it has landed, taken in as a waited one is (`_adopt`) less
+        what the task has done since it was asked; None while there is none to take in. Asked, it counts as the
+        rethink it answers: the same route, an empty answer or none is fruitless, and `blocked` is an opinion."""
+        scope = self._scopes.get(task.id)
+        call = scope.planning if scope is not None else None
+        if call is None or not call.done():
+            return None
+        stopped, asked = call.stopped, scope.planning_asked
+        self._stop_planning(task)              # landed: let go, and its seconds counted as run beside the loop
+        if stopped or asked is None:
+            return None
+        if call.error is not None:
+            log.info("planner, asked beside the loop: %s", call.error)
+            task.outputs.setdefault("planner_errors", []).append(str(call.error)[:200])
+            got = Route.ERROR
+        else:
+            got = self._adopt(task, ctx, call.result, asked)
+        if got is Route.BLOCKED:
+            self._planner_opinion(task)
+        if got in FRUITLESS:
+            self.spend_allowance(task, "fruitless")
+        return got
+
+    @staticmethod
+    def _planner_opinion(task: Task) -> None:
+        """The planner's word alone ended the task here. A real run ended `blocked` at step 0 because the planner,
+        shown a path as ~/…, decided it "did not know the real user name" — a text model's reading of a redacted
+        path, and the decider had said "find another route", not "blocked". Two independent judgements have to
+        agree: the planner's is kept as an opinion the decider sees, and only its own `blocked` ends the task
+        (with the planner's reason)."""
+        task.outputs["planner_thinks_blocked"] = task.blocked_reason
+        task.blocked_reason = ""
+
+    def _adopt(self, task: Task, ctx: Ctx | None, plan: dict[str, Any], asked: Asked) -> Route:
+        """An answer, taken in: what it adds, or why it adds nothing. Its allowance is spent and its question
+        remembered as asked here, once there is an answer: a question the planner never answered used to be
+        remembered all the same, and asked about again on that screen it was refused as already asked."""
+        self.spend_allowance(task, "corrections" if asked.went_wrong else "replans")
+        task.memory.consulted.add(asked.key)
         # Asked again, the planner may give the plan it gave last time. A real task was handed the same two
         # sub-goals three times running, 25-40 s apiece on this Mac's local model, and each time looked again
         # instead of acting. The same answer is no new route — which is what `max_fruitless_rethinks` counts,
@@ -175,23 +385,38 @@ class ConsultMixin:
         route = list(plan["steps"]) + [self._suggestion_label(t) for t in plan.get("try") or []]
         if route and route == task.memory.last_route and not plan.get("blocked"):
             log.info("planner: the same route as last time")
-            return False
-        task.memory.last_route = route
-        task.blocked_reason = plan.get("blocked") or ""
-        # Every try the planner gave. What did nothing is a fact about one exact screen, applied where the options
+            return Route.SAME
+        # Every try the planner gave, but what the task has done since it asked (an answer taken in beside the
+        # loop comes steps later). What did nothing is a fact about one exact screen, applied where the options
         # are built (`Memory.withheld_reason`): a suggestion that did nothing on this screen is withheld on it and
         # offered on any other. Dropped here, it was dropped from every screen.
-        task.tries = list(plan.get("try") or [])
-        if not plan["steps"] and not task.tries and not task.blocked_reason:
-            return False
-        if task.blocked_reason:
-            return True
+        since = [s.action for s in task.steps[asked.steps_at:]]
+        tries = [t for t in plan.get("try") or [] if not self._done_since(t, since)]
+        blocked = str(plan.get("blocked") or "")
+        if not plan["steps"] and not tries and not blocked:
+            # Nothing in it: the tries it gave before are still on offer. Answered this way, every try was
+            # taken away as well.
+            log.info("planner: an answer with nothing in it; the last one stands")
+            return Route.EMPTY
+        task.memory.last_route = route
+        task.blocked_reason, task.tries = blocked, tries
+        # Something new, a route or the planner's word that only the user can go on: the rethinks that came to
+        # nothing before it are behind the task (a rethink that got either reset the count, as before).
+        task.pace.fruitless = 0
+        if blocked:
+            return Route.BLOCKED
         if plan["steps"]:
             task.plan, task.plan_evidence = plan["steps"], list(plan.get("evidence") or [])
         task.plan, task.plan_i = (task.plan or []), 0
         self._plan_inputs(task, ctx, plan.get("inputs") or {})
-        self.audit.record("plan", task=task.id, steps=plan["steps"], problem=problem)
-        return True
+        self.audit.record("plan", task=task.id, steps=plan["steps"], problem=asked.problem)
+        return Route.NEW
+
+    def _done_since(self, t: dict[str, Any], since: list[str]) -> bool:
+        """Was this try taken among the steps `since`? By the label it is offered under, which for a key also
+        names the menu item it turns out to be ("press cmd+n (suggested by the planner) (menu File ▸ New)")."""
+        label = self._suggestion_label(t)
+        return bool(label) and any(a == label or a.startswith(label + " (") for a in since)
 
     def _write_answer(self, task: Task, ctx: Ctx | None, obs: Observation | None) -> None:
         """The goal asked for information: the planner states it from what the screen (and the web) showed.
@@ -206,8 +431,8 @@ class ConsultMixin:
             # last screen alone: a page whose title was in the window title came back as "not in the information
             # provided", and it is also what the answer is checked against afterwards.
             brief["seen_in_each_app"] = task.memory.facts.brief()
-        try:
-            answer = self._planning(task).answer(task.goal, brief)
+        try:     # waited for with no deadline: the task owes the caller its answer
+            answer = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.answer(task.goal, brief)))
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
@@ -281,8 +506,9 @@ class ConsultMixin:
         brief = self._brief(task, ctx, obs, acting=False)
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
-        try:
-            text = self._planning(task).fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief) or None
+        try:     # waited for with no deadline: the step cannot be taken without it
+            text = self._planner_wait(task, self._planner_call(
+                task, lambda planning, stop: planning.fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief))) or None
         except PlannerError as exc:
             log.info("planner fill: %s", exc)
             return None
@@ -364,6 +590,13 @@ class ConsultMixin:
             facts.record((obs.app or {}).get("name"), obs.window, obs.screen_text, len(task.steps))
         return facts.source_of(text)
 
+    @staticmethod
+    def _planners_own(look: Any, a: Affordance) -> bool:
+        """Is this one of the planner's current suggestions: a move it proposed (it carries the try it is), or an
+        action on screen it named (`Look.suggested`)? Known by what it is, not by an id prefix: the window's "read
+        all the text" option is t<n>, as the suggestions were."""
+        return "try" in a.target or a.label in look.suggested
+
     def _suggestion_label(self, t: dict[str, Any]) -> str:
         if t.get("keys"):
             return f"press {t['keys'].lower()} (suggested by the planner)"
@@ -394,7 +627,10 @@ class ConsultMixin:
         """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (its suggested
         labels are marked on the matching screen actions). The decider chooses; nothing runs unasked. A drag is
         offered only when both of its ends are found on the live screen, and text to type only once the goal, the
-        caller's inputs or a screen the task saw holds it word for word."""
+        caller's inputs or a screen the task saw holds it word for word.
+
+        Each is try<n> and carries which try it is (`target['try']`), and that marker is what the loop reads: the
+        window's "read all the text" option is t<n>, as the suggestions were, and one taken removed the other."""
         out: list[Affordance] = []
         # modifiers are fixed; the key itself is anything one character long or a name the helper knows —
         # a whitelist of US-ANSI punctuation here rejected "cmd+ö" and every non-ASCII layout's keys
@@ -406,9 +642,9 @@ class ConsultMixin:
                 # named by the app's own menu item where it has one: a bare combo is invisible to both the
                 # word list and the classifier, which is how a suggested cmd+s was released as an edit
                 named = named_combo(obs, t["keys"]) if obs is not None else None
-                out.append(Affordance(f"t{i}", "keys", "key",
+                out.append(Affordance(f"try{i}", "keys", "key",
                                       self._suggestion_label(t) + (f" ({named})" if named else ""),
-                                      {"combo": t["keys"].lower()}))
+                                      {"combo": t["keys"].lower(), "try": i}))
             elif t.get("type"):
                 # Only text the goal, the caller's inputs or a screen the task saw holds word for word, checked
                 # again on every look (no request): until then the move waits, and 391 is offered once a screen
@@ -424,8 +660,8 @@ class ConsultMixin:
                 # verdict is kept (`Memory.admitted`): the same text is not judged again, for that slot or another.
                 source = self._traced(task, obs, t["type"])
                 if source is not None:
-                    out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t),
-                                          {"text": t["type"], "source": source}))
+                    out.append(Affordance(f"try{i}", "keys", "type", self._suggestion_label(t),
+                                          {"text": t["type"], "source": source, "try": i}))
             elif t.get("open_url"):
                 # the planner sees this Mac's home as `~` (privacy.replace) and writes it back that way — a
                 # real run suggested `file://~/Library/...`, which nothing can open. Pseudonyms are restored
@@ -435,10 +671,11 @@ class ConsultMixin:
                     url = "file://" + os.path.expanduser(url[len("file://"):])
                 elif url.startswith("~/"):
                     url = os.path.expanduser(url)
-                out.append(Affordance(f"t{i}", "file", "open", self._suggestion_label({**t, "open_url": url}), {"path": "", "url": url}))
+                out.append(Affordance(f"try{i}", "file", "open", self._suggestion_label({**t, "open_url": url}),
+                                      {"path": "", "url": url, "try": i}))
             elif t.get("drag") and obs is not None:
                 a, b = (_where(obs, name) for name in t["drag"])
                 if a and b:
-                    out.append(Affordance(f"t{i}", "pointer", "drag", self._suggestion_label(t),
-                                          {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1]}))
+                    out.append(Affordance(f"try{i}", "pointer", "drag", self._suggestion_label(t),
+                                          {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1], "try": i}))
         return out

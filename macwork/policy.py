@@ -157,7 +157,12 @@ class PolicyMixin:
         backend = self.planning_backend
         if backend is None:
             return None
-        return Planning(self.cfg, backend, None, self.audit).floor_words(lang, meanings)
+        planning = Planning(self.cfg, backend, None, self.audit)
+        if not getattr(backend, "local", False):
+            return planning.floor_words(lang, meanings)
+        # No task's question and nothing to stop: it only waits its turn at a local server (consult._planner_call)
+        with self._planner_lock:
+            return planning.floor_words(lang, meanings)
 
     def _floor_key(self, ctx: Ctx, a: Affordance) -> str:
         """Per app *version*: an update can move a command or change what a label means.
