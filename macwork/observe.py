@@ -198,14 +198,31 @@ def apps(ctx: Ctx, obs: Observation) -> None:
 
 # ----------------------------------------------------------------------------- menu bar
 _MODS = [(1, "⇧"), (2, "⌥"), (4, "⌃")]
+# A key equivalent that prints nothing, as AppKit reports it (AXMenuItemCmdChar: an ASCII control, or one of
+# NSEvent's function-key characters, U+F700 on), shown the way the Mac's own menus show it. Apple's glyphs,
+# not names: the name "delete" in a label is a hit on the floor's own word for deleting.
+_KEY_GLYPHS = {"\x03": "⌤", "\x08": "⌫", "\t": "⇥", "\r": "↩", "\x19": "⇤", "\x1b": "⎋", " ": "␣", "\x7f": "⌫",
+               "\uf700": "↑", "\uf701": "↓", "\uf702": "←", "\uf703": "→", "\uf728": "⌦", "\uf729": "↖",
+               "\uf72b": "↘", "\uf72c": "⇞", "\uf72d": "⇟", "\uf739": "⌧",
+               **{chr(0xF704 + i): f"F{i + 1}" for i in range(35)}}
 
 
 def _shortcut(cmd: dict[str, Any] | None) -> str:
+    """The menu item's key equivalent as its menu shows it: 「 (⇧⌘S)」, 「 (⌘⌫)」.
+
+    What prints nothing was written as the raw character AppKit reports for it: 109 menu items in 11 apps of
+    this Mac's audit carried one into the labels the decider and the floor read ('menu 文件 ▸ 移到废纸篓
+    (⌘\\x08)'), ten of them bound to a delete key. One the Mac has no glyph for is left out rather than
+    written raw."""
     if not cmd or not cmd.get("char"):
+        return ""
+    ch = str(cmd["char"])
+    shown = _KEY_GLYPHS.get(ch, ch if ch.isprintable() else "")
+    if not shown:
         return ""
     m = int(cmd.get("mods") or 0)
     keys = "".join(sym for bit, sym in _MODS if m & bit) + ("" if m & 8 else "⌘")
-    return f" ({keys}{cmd['char']})"
+    return f" ({keys}{shown})"
 
 
 _COMBO_MODS = [(8, None), (4, "ctrl"), (2, "alt"), (1, "shift")]
