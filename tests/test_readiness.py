@@ -491,6 +491,10 @@ def test_a_sheet_the_tree_holds_is_not_a_window_it_does_not_describe(tmp_path):
     assert h.read_by_number() == [], "a window the tree holds was read by its number"
     eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["window", "windows"]}}), helper=h, decider=ScriptedDecider([]))
     assert not [k for k in eng.observe()["notes"] if k.startswith("_")], "what providers hand each other left the look"
+    # the frames it is told apart by are the ones window() read on the same look, before windows()
+    from macwork.config import Config
+    order = list(Config.load().get("observe.providers") or [])
+    assert order.index("window") < order.index("windows"), "the focused window's tree is read after its windows are matched"
 
 
 def test_a_window_with_the_same_title_is_not_listed_twice(tmp_path):

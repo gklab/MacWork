@@ -39,6 +39,8 @@ observe:
   providers: [window, sight, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
               focus, typing, apps, shortcuts, files, clipboard, skills, readall, wheel, controls, drag]
               # focus before typing: "type at the cursor" is labelled with where the cursor turned out to be
+              # window before windows: a sheet or popover the focused window's tree holds is a window of its own
+              #   to the window server, and is told from one the tree does not describe by the frames window() read
               # drag last: it needs the frames
   ax:
     max_nodes: 3000
