@@ -367,6 +367,13 @@ class Memory:
     retracted_at: int = -1                                     # len(steps) when the last one was noted (a look can repeat)
     last_route: list[str] = field(default_factory=list)       # the sub-goals and moves of the planner's last answer:
                                                                # the same answer again is no new route
+    # Text a planner wrote that was let through, and where it came from: text -> {source, how, key}. `how` is
+    # "traced" (the goal, the caller's inputs or a screen the task saw holds it word for word) or "judged" (the
+    # decider judged it to be a value the task already had). Kept here, never in `Task.inputs`: that is the
+    # caller's alone.
+    admitted: dict[str, dict[str, Any]] = field(default_factory=dict)
+    judged: dict[str, list[Any]] = field(default_factory=dict)   # text -> [verdict, len(steps) when the decider
+                                                               # gave it]: asked about once until a step is taken
 
     # ---- the one way in and the one way out. The keys were built by hand in six places ("sig|handle",
     # "sig|label" before that) and read back in five; one of them still used the label a day after the

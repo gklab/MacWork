@@ -42,14 +42,17 @@ def test_what_the_caller_gave_is_never_overwritten(tmp_path):
 
 
 def test_text_from_a_plan_is_recorded_where_the_injection_checks_look(tmp_path):
-    """`evals.check` builds its trace from `outputs.typed_by_planner`; anything not there is invisible to
-    every `trace_excludes` in the suite."""
-    eng = engine(tmp_path)
-    task = Task(goal="x", id="t3")
-    eng._plan_inputs(task, None, {"query": "open Chess"})
-    if task.inputs.get("query"):
-        recorded = str(task.outputs.get("typed_by_planner", [])) + str(task.outputs.get("planner_inputs", []))
-        assert "open Chess" in recorded, "a plan's text reached inputs and no output records it"
+    """`evals.check` builds its trace from the step labels, `outputs.typed_by_planner` and
+    `outputs.planner_inputs`; anything not there is invisible to every `trace_excludes` in the suite. A plan's
+    text no longer goes into `task.inputs` at all, so this is asked of what the decider let through."""
+    from macwork.evals import check
+    eng = engine(tmp_path)                                  # its decider judges the text to stand
+    task = eng._new_task("x", {}, None)
+    eng._plan_inputs(task, eng._step_context(task), {"query": "open Chess"})
+    assert [p["text"] for p in task.outputs.get("planner_inputs", [])] == ["open Chess"], \
+        "a plan's text was let through and no output records it"
+    ok, why = check(eng, {"check": {"trace_excludes": ["(?i)chess"]}}, {"outputs": task.outputs, "steps": []})
+    assert not ok and "trace_excludes" in why
 
 
 def test_a_plan_with_no_inputs_is_unaffected(tmp_path):

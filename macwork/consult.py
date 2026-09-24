@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import replace
 from typing import Any
 
 from .decider import DeciderError, noul
@@ -15,6 +16,8 @@ from .onscreen import unreadable
 from .planner import Planning, PlannerError, make_planner
 
 log = logging.getLogger(__name__)
+
+JUDGED = "judged to be what the task already had"   # the source of a text the decider let through
 
 
 def _where(obs: Observation, name: str) -> tuple[float, float] | None:
@@ -246,33 +249,29 @@ class ConsultMixin:
         return stands, answers
 
     def _plan_inputs(self, task: Task, ctx: Ctx | None, inputs: dict[str, Any]) -> None:
-        """Text a plan wants put into `task.inputs`.
+        """Text a plan gives, kept as the planner's (`Memory.admitted`) once `_admit_text` lets it through.
 
-        `inputs` is where the *caller's* text lives, and everything downstream treats it that way — it is
-        typed, saved and reported as something a person asked for. `_fill` puts a planner's text through a
-        provenance guard before it can be typed and records it where the injection checks look; this went
-        round all of it with a `setdefault`, so a planner asked for a plan could put anything there and it
-        became indistinguishable from what the caller supplied.
-
-        The same guard, then: a value the task has already seen, or one the decider judges to be what the
-        task already had, written another way. Anything else is refused and said so.
+        It went into `task.inputs`, where the *caller's* text lives, and everything downstream took it for the
+        caller's: the decider was shown it under state['inputs'] (344 looks in 28 tasks in the audit), beside an
+        instruction that only goal and inputs come from the user; `source_of` counted it as "the caller's
+        inputs", so any later text made of it traced to the user; and under the key 'text' it filled every text
+        slot — 450bbbdad38a typed the plan's 'hello' at the cursor where the goal wanted HELLO WORLD. It is still
+        recorded where the injection checks look (`outputs.planner_inputs`) and in the audit. What leaving
+        `task.inputs` costs was measured: in 19 tasks with a planner file or query input, the file options it
+        produced appeared in 8 and were never chosen.
         """
         for k, v in inputs.items():
-            if k in task.inputs:            # the caller's own words are never overwritten
+            if k in task.inputs:            # the caller gave this one: the plan's value for it is not taken
                 continue
             text = str(v)
-            source = task.memory.facts.source_of(text) if task.memory.facts else None
-            if source is None:
-                a = Affordance("plan", "keys", "type", f"the value the plan gives for 「{k}」", {})
-                if not self._text_stands(task, ctx, text, a):
-                    log.info("refused planned input %r: seen nowhere", text[:60])
-                    self.audit.record("refused_text", task=task.id, text=text[:120], into=f"inputs.{k}")
-                    task.outputs.setdefault("refused_text", []).append({"into": f"inputs.{k}", "text": text[:120]})
-                    continue
-                source = "judged to be what the task already had"
-            task.inputs[k] = text
-            task.outputs.setdefault("planner_inputs", []).append({"into": k, "text": text, "source": source})
-            self.audit.record("filled_text", task=task.id, into=f"inputs.{k}", source=source)
+            got = self._admit_text(task, ctx, text, f"the value the plan gives for 「{k}」")
+            if got is None:
+                log.info("refused planned input %r: seen nowhere", text[:60])
+                self._refuse_text(task, text, f"inputs.{k}")
+                continue
+            if self._hold_text(task, text, got, k):      # recorded once, however many plans give it again
+                task.outputs.setdefault("planner_inputs", []).append({"into": k, "text": text, "source": got[0]})
+                self.audit.record("filled_text", task=task.id, into=f"inputs.{k}", source=got[0])
 
     def _fill(self, task: Task, ctx: Ctx, obs: Observation | None, a: Affordance, slot: str) -> str | None:
         backend = self.planning_backend
@@ -287,34 +286,83 @@ class ConsultMixin:
         except PlannerError as exc:
             log.info("planner fill: %s", exc)
             return None
-        if text and task.memory.facts:
-            source = task.memory.facts.source_of(text)
-            if source is None:
-                # Not word for word — which a field often cannot take: a path typed into an address bar becomes
-                # file:///…, and that one extra word was enough to end a real task on the spot. So it is judged
-                # instead: the same value written another way is allowed, a value from nowhere is not.
-                if not self._text_stands(task, ctx, text, a):
-                    log.info("refused text not seen anywhere: %r", text[:60])
-                    self.audit.record("refused_text", task=task.id, text=text[:120], into=a.label)
-                    task.outputs.setdefault("refused_text", []).append({"into": a.label, "text": text[:120]})
-                    return None
-                source = "judged to be what the task already had"
-            self.audit.record("filled_text", task=task.id, into=a.label, source=source)
+        if not text:
+            return None
+        # Not word for word — which a field often cannot take: a path typed into an address bar becomes
+        # file:///…, and that one extra word was enough to end a real task on the spot. So it is judged
+        # instead: the same value written another way is allowed, a value from nowhere is not.
+        got = self._admit_text(task, ctx, text, a.label)
+        if got is None:
+            log.info("refused text not seen anywhere: %r", text[:60])
+            self._refuse_text(task, text, a.label)
+            return None
+        self._hold_text(task, text, got, slot)
+        self.audit.record("filled_text", task=task.id, into=a.label, source=got[0])
         return text
 
-    def _text_stands(self, task: Task, ctx: Ctx | None, text: str, a: Affordance) -> bool:
-        """Text no source holds word for word, judged against everything the task has to draw from."""
+    def _admit_text(self, task: Task, ctx: Ctx | None, text: str, into: str) -> tuple[str, str] | None:
+        """Where text a planner wrote for `into` comes from, as (source, how), or None: it may not be written.
+
+        The one guard for plan inputs and fills, in order: a place the task may draw from holds it word for word
+        (`Facts.source_of`: "traced"); it was let through before (`Memory.admitted`); the decider already gave a
+        verdict on it with the task where it is now, no step taken since (`Memory.judged`); else the decider
+        judges it (`_text_stands`: "judged"). Since plan inputs left `task.inputs`, the skip that kept a replan
+        from judging the same input again no longer covers them, and every judgement costs a request whose
+        verdict, near the cut, can come out the other way. Only a verdict the decider gave is remembered: with
+        none to be had it is refused this time, and asked about next time.
+        """
+        facts = task.memory.facts
+        source = facts.source_of(text) if facts is not None else None
+        if source is not None:
+            return source, "traced"
+        held = task.memory.admitted.get(text)
+        if held:
+            return str(held.get("source") or JUDGED), str(held.get("how") or "judged")
+        said = task.memory.judged.get(text)
+        if said and len(said) == 2 and said[1] == len(task.steps):
+            stands: bool | None = bool(said[0])
+        else:
+            stands = self._text_stands(task, ctx, text, into)
+            if stands is not None:
+                task.memory.judged[text] = [stands, len(task.steps)]
+        return (JUDGED, "judged") if stands else None
+
+    def _hold_text(self, task: Task, text: str, got: tuple[str, str], key: str) -> bool:
+        """Keep a planner's admitted text as the planner's, with where it came from. True when it is new."""
+        had = task.memory.admitted.get(text)
+        if had is None or (got[1] == "traced" and had.get("how") != "traced"):
+            task.memory.admitted[text] = {"source": got[0], "how": got[1], "key": key}
+        return had is None
+
+    def _refuse_text(self, task: Task, text: str, into: str) -> None:
+        self.audit.record("refused_text", task=task.id, text=text[:120], into=into)
+        task.outputs.setdefault("refused_text", []).append({"into": into, "text": text[:120]})
+
+    def _text_stands(self, task: Task, ctx: Ctx | None, text: str, into: str) -> bool | None:
+        """Text no source holds word for word, judged against everything the task has to draw from. None when
+        there was no decider to ask, or it did not answer: no verdict, which the caller takes as a refusal."""
         if ctx is None or ctx.gate is None:
-            return False
-        state = {"goal": task.goal, "inputs": dict(task.inputs), "text": text, "into": a.label,
-                 "seen_in_each_app": task.memory.facts.brief()}
+            return None
+        state = {"goal": task.goal, "inputs": dict(task.inputs), "text": text, "into": into,
+                 "seen_in_each_app": task.memory.facts.brief() if task.memory.facts is not None else {}}
         try:
             ans = ctx.gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("text_stands"))}, task=task.id)
         except DeciderError:
-            return False
+            return None
         stands = float(ans.get("stands", {}).get("noul", 0.0))
         log.info("text not traceable word for word; judged %.2f: %r", stands, text[:60])
         return stands >= float(self.cfg.get("engine.thresholds.text_stands", 0.75))
+
+    def _traced(self, task: Task, obs: Observation | None, text: str) -> str | None:
+        """What holds this text word for word — the goal, the caller's inputs or what an app showed, the screen
+        being looked at now included (`_look` records it in the facts only as the look ends) — or None."""
+        facts = task.memory.facts
+        if facts is None:
+            return None
+        if obs is not None:
+            facts = replace(facts, seen=dict(facts.seen))
+            facts.record((obs.app or {}).get("name"), obs.window, obs.screen_text, len(task.steps))
+        return facts.source_of(text)
 
     def _suggestion_label(self, t: dict[str, Any]) -> str:
         if t.get("keys"):
@@ -327,10 +375,26 @@ class ConsultMixin:
             return f"drag 「{t['drag'][0][:40]}」 onto 「{t['drag'][1][:40]}」 (suggested by the planner)"
         return str(t.get("action") or "")
 
+    @staticmethod
+    def _move_said(t: dict[str, Any]) -> str:
+        """A move as the decider is told of it, by what kind of move it is. Every move that was not text or an
+        action was said as a key press: a link or a drag read 'press None', on 42 looks in 16 tasks in the audit,
+        and a list of nothing but links and drags was not said at all (3 looks in 3 tasks)."""
+        if t.get("keys"):
+            return f"press {t['keys']}"
+        if t.get("type"):
+            return f"type {t['type']}"
+        if t.get("open_url"):
+            return f"open {t['open_url']}"
+        if t.get("drag"):
+            return f"drag {t['drag'][0]} onto {t['drag'][1]}"
+        return str(t.get("action") or "")
+
     def _suggested(self, task: Task, obs: Observation | None = None) -> list[Affordance]:
         """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (its suggested
         labels are marked on the matching screen actions). The decider chooses; nothing runs unasked. A drag is
-        offered only when both of its ends are found on the live screen."""
+        offered only when both of its ends are found on the live screen, and text to type only once the goal, the
+        caller's inputs or a screen the task saw holds it word for word."""
         out: list[Affordance] = []
         # modifiers are fixed; the key itself is anything one character long or a name the helper knows —
         # a whitelist of US-ANSI punctuation here rejected "cmd+ö" and every non-ASCII layout's keys
@@ -346,7 +410,20 @@ class ConsultMixin:
                                       self._suggestion_label(t) + (f" ({named})" if named else ""),
                                       {"combo": t["keys"].lower()}))
             elif t.get("type"):
-                out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t), {"text": t["type"]}))
+                # Only text the goal, the caller's inputs or a screen the task saw holds word for word, checked
+                # again on every look (no request): until then the move waits, and 391 is offered once a screen
+                # has shown 391. A move's text went to the keyboard with no check at all. 3ac98732a3d2 typed the
+                # planner's '17×23=391' before any screen had shown 391, and 7ffdee1b4ce3 refused 391 as a plan
+                # input and offered 'type 「391」' two seconds later; of the 139 typing moves chosen in the audit,
+                # 19 (in 9 tasks) typed text nothing the task had seen held — 391 before Calculator showed it, the
+                # planner's own definition of a word, a sysctl command. The decider's judgement is no substitute
+                # here: it let that definition through at 0.76 in 8b1a7646fc9f, when all the task had looked at
+                # was Finder with no window open, and scored 391 at 0.74 in 54d03f49a1e0, against a cut of 0.75.
+                # What it lets through fills only the slot it was judged for (`_fill`).
+                source = self._traced(task, obs, t["type"])
+                if source is not None:
+                    out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t),
+                                          {"text": t["type"], "source": source}))
             elif t.get("open_url"):
                 # the planner sees this Mac's home as `~` (privacy.replace) and writes it back that way — a
                 # real run suggested `file://~/Library/...`, which nothing can open. Pseudonyms are restored
