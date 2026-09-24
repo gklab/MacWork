@@ -55,15 +55,27 @@ def promise(a: Affordance, params: dict[str, Any]) -> str:
     return "changed"
 
 
-def _field_text(ctx: Ctx, ref: str) -> str | None:
+def _marked(said: dict[str, Any]) -> str:
+    """What an input method is still composing in an element, as the helper says when asked with marked=True
+    (protocol 0.2.0): the text of the element's marked range. "" when nothing is being composed, when the
+    element publishes no marked range (the focused cell of a single-line AppKit field does not), and when the
+    helper is older and says nothing — which reads the field as it was read before."""
+    marked = said.get("marked")
+    return marked if isinstance(marked, str) else ""
+
+
+def _field_text(ctx: Ctx, ref: str) -> tuple[str | None, str]:
+    """What the field holds (None when it cannot be read), and what of that is still being composed."""
     try:
-        return str(ctx.helper.call("ax.get", ref=ref, attribute="AXValue").get("value") or "")
+        got = ctx.helper.call("ax.get", ref=ref, attribute="AXValue", marked=True)
     except HelperError:
-        return None
+        return None, ""
+    return str(got.get("value") or ""), _marked(got)
 
 
-def _cursor_text(ctx: Ctx, limit: int) -> str | None:
-    """What the element with the keyboard focus holds, or None when it may not or cannot be read.
+def _cursor_text(ctx: Ctx, limit: int) -> tuple[str | None, str]:
+    """What the element with the keyboard focus holds, or None when it may not or cannot be read; and what of
+    it an input method is still composing.
 
     Typing at the cursor had no check at all: it goes wherever the system focus is, so there was no ref to read
     back and every such step came back "nothing to read back" — unverified, including the ones that went into
@@ -74,18 +86,18 @@ def _cursor_text(ctx: Ctx, limit: int) -> str | None:
     what kind of field this is.
     """
     try:
-        r = ctx.helper.call("ax.focused", max_text=limit)
+        r = ctx.helper.call("ax.focused", max_text=limit, marked=True)
     except HelperError:
-        return None
+        return None, ""
     if r.get("secure_input"):
-        return None
+        return None, ""
     node = r.get("focused")
     if not isinstance(node, dict):
-        return None
+        return None, ""
     # No AXValue at all is a canvas or a custom view — "cannot be read", not "reads as empty". An element
     # that does answer, with "", really is empty, and typing into it that leaves it empty did fail.
     text = node.get("selected_text") if node.get("selected_text") else node.get("value")
-    return str(text) if isinstance(text, str) else None
+    return (str(text), _marked(node)) if isinstance(text, str) else (None, "")
 
 
 def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list[str]) -> tuple[bool | None, str]:
@@ -111,9 +123,17 @@ def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list
         deadline = time.monotonic() + float(ctx.cfg.get("engine.verify.readback_ms", 800)) / 1000
         now = seen = None
         while True:
-            now = _field_text(ctx, ref) if ref else _cursor_text(ctx, limit)
+            now, marked = _field_text(ctx, ref) if ref else _cursor_text(ctx, limit)
             if now is None:
                 return None, f"{'the field' if ref else 'the focused element'} could not be read back"
+            # AXValue holds what an input method is still composing as well as what was typed, so reading it
+            # back passed 24 of the 26 recorded typing steps that left the end of their text composing. Those
+            # letters are not in the field yet: the input method holds them until it is told what to make of
+            # them, and an Escape at its panel deletes them ("hello" was left as "hel" or "hell" in 3 recorded
+            # tasks). Only an element that publishes its marked range can say so; one that does not is read as
+            # before.
+            if marked:
+                return False, f"「{marked[:24]}」 is still being composed by the input method: not yet in {where}"
             if text.strip() in now:
                 return True, f"the text is in {where}"
             if time.monotonic() >= deadline or now == seen:   # settled on something else: that is an answer

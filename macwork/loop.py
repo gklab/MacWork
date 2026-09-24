@@ -991,7 +991,8 @@ class LoopMixin:
         promised = promise(chosen, params)
         held, why = kept(ctx, chosen, params, out, events)   # the promises checked now; the rest at the next look
         if held is False:
-            out = Outcome(False, watch_pid=out.watch_pid, target=out.target, output=out.output, error=why, wait=False)
+            out = Outcome(False, watch_pid=out.watch_pid, target=out.target, output=out.output, error=why, wait=False,
+                          typed=out.typed)
             log.info("step %d did not keep its promise: %s", len(task.steps), why)
         decision = look.decision if look else {}
         if held is not None:
@@ -1014,7 +1015,8 @@ class LoopMixin:
                                  "app": {k: ctx.app.get(k) for k in ("pid", "name", "bundle_id")}})
         log.info("did  %d %s %s", len(task.steps) - 1, chosen.label[:48], {**(decision.get("timing") or {}),
                  "step_total": round((time.monotonic() - t0) * 1000)})
-        self._step_record(task, obs, chosen, out.ok, {**(decision.get("timing") or {}), **getattr(self, "last_timing", {})})
+        self._step_record(task, obs, chosen, out.ok, {**(decision.get("timing") or {}), **getattr(self, "last_timing", {})},
+                          typed=out.typed, kept=held)
         check_step(task, task.steps[-1], had_look=look is not None)
         task.prev = {"sig": sig, "label": chosen.label, "handle": chosen.handle(), "ok": out.ok, "events": events, "app": ctx.app,
                      "screen": obs.screen_text if obs else None, "window": obs.window if obs else None,
@@ -1044,14 +1046,20 @@ class LoopMixin:
         return None
 
     # ------------------------------------------------------------------ where the time went
-    def _step_record(self, task: Task, obs: Observation | None, chosen: Affordance, ok: bool, timing: dict[str, Any]) -> None:
+    def _step_record(self, task: Task, obs: Observation | None, chosen: Affordance, ok: bool, timing: dict[str, Any],
+                     typed: dict[str, Any] | None = None, kept: bool | None = None) -> None:
         """One audit record per step, numbers and enums only: which step, how many looks it took, its wall time
         since the last record (or the run's start), each stage's ms from the step's own timing, each provider
         of the deciding look that took 5 ms or more, and what the planner and the decider were asked meanwhile.
 
         `macwork profile` read the stage timings of the task store, which keeps a task 30 minutes after it ends
         (engine.tasks_ttl_s): the store it read had no tasks left, and planner and provider time had never been
-        recorded anywhere. The audit keeps them, rotated, and each report row keeps its task's totals."""
+        recorded anywhere. The audit keeps them, rotated, and each report row keeps its task's totals.
+
+        A step that typed keys (`typed`, the helper's reply) also says how the keyboard was handed back and
+        whether the text was then read back where it went (`kept`): typed_landed read, settled, unreadable,
+        timeout or no_switch, typed_handback_ms, typed_switched, typed_kept. A helper older than protocol 0.2.0
+        says none of the first three, and they are null. Never the text, and never the reason."""
         providers = [str(x) for x in self.cfg.get("observe.providers") or []]
         notes = obs.notes if obs is not None else {}
         rec: dict[str, Any] = {"n": len(task.steps) - 1, "channel": chosen.channel, "verb": chosen.verb, "ok": bool(ok),
@@ -1060,6 +1068,15 @@ class LoopMixin:
                                "wait_ms": int(timing.get("wait") or 0), "ready_wait_ms": int(timing.get("ready_wait") or 0),
                                "providers": {name: int(notes[f"{name}_ms"]) for name in providers
                                              if isinstance(notes.get(f"{name}_ms"), (int, float)) and notes[f"{name}_ms"] >= 5}}
+        if typed is not None:
+            # 21 of 265 typing steps on 09-20..23 left the end of their text composing in an input method, which
+            # nothing recorded: the next look's candidate panel was the only trace. The hand-back is the fix,
+            # and this is how its cost and any step it did not save are counted afterwards.
+            landed, ms, switched = typed.get("landed"), typed.get("handback_ms"), typed.get("switched")
+            rec.update(typed_landed=landed if isinstance(landed, str) else None,
+                       typed_handback_ms=int(ms) if isinstance(ms, (int, float)) and not isinstance(ms, bool) else None,
+                       typed_switched=switched if isinstance(switched, bool) else None,
+                       typed_kept=kept)
         self._clock_out(task, rec)
 
     def _clock_out(self, task: Task, rec: dict[str, Any]) -> None:

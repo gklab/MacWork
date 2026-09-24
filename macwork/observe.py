@@ -26,7 +26,7 @@ from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
 from .model import Affordance, Observation, Slot, clip, with_state, TaskScope
-from .onscreen import app_windows, still_launching
+from .onscreen import app_windows, input_method_panel, still_launching
 
 log = logging.getLogger(__name__)
 
@@ -857,8 +857,16 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
     order = sorted(range(len(wins)), key=lambda i: (_window_id(wins[i]) in seen, i))
     for i in order:
         w = wins[i]
-        # one entry per *window*: keyed on the process, a second dialog from the same one was invisible
-        if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] \
+        # one entry per *window*: keyed on the process, a second dialog from the same one was invisible.
+        # An input method's own floating windows — its candidate panel, its status bar, the tip it shows on a
+        # change of mode — are no prompt, and nothing on them is a task's to answer, press or read: they get no
+        # snapshot, no read by sight and no entry here. Taken for a prompt, the candidate panel was in
+        # covered_by on 48 looks in 27 tasks on 09-20..23: 168 candidates offered as options, 4 reports that it
+        # was left for the person to answer, and Escapes pressed at it that deleted the letters it was composing
+        # ("hello" left as "hel" or "hell", in 3 tasks). On 16 of those looks the candidates were for letters
+        # the task had not typed, the person's own typing in another window, and went to the decider as a
+        # prompt. Its window at the ordinary level (its settings) is read like any other.
+        if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] or input_method_panel(w) \
            or any(o["window"] == _window_id(w) for o in found):
             continue
         over = i < front and any(_overlap(w["frame"], f) for f in frames)
