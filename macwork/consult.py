@@ -373,6 +373,21 @@ class ConsultMixin:
             return f"drag 「{t['drag'][0][:40]}」 onto 「{t['drag'][1][:40]}」 (suggested by the planner)"
         return str(t.get("action") or "")
 
+    @staticmethod
+    def _move_said(t: dict[str, Any]) -> str:
+        """A move as the decider is told of it, by what kind of move it is. Every move that was not text or an
+        action was said as a key press: a link or a drag read 'press None', on 42 looks in 16 tasks in the audit,
+        and a list of nothing but links and drags was not said at all (3 looks in 3 tasks)."""
+        if t.get("keys"):
+            return f"press {t['keys']}"
+        if t.get("type"):
+            return f"type {t['type']}"
+        if t.get("open_url"):
+            return f"open {t['open_url']}"
+        if t.get("drag"):
+            return f"drag {t['drag'][0]} onto {t['drag'][1]}"
+        return str(t.get("action") or "")
+
     def _suggested(self, task: Task, obs: Observation | None = None) -> list[Affordance]:
         """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (its suggested
         labels are marked on the matching screen actions). The decider chooses; nothing runs unasked. A drag is

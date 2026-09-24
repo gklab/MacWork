@@ -481,9 +481,8 @@ class LoopMixin:
         last, run = self._run_length(task)
         if run >= int(self.cfg.get("engine.repeat_notice", 3)):
             state["done_over_and_over"] = f"{last} — {run} times in a row now, with the goal still not reached"
-        if suggested or any(t.get("keys") or t.get("type") for t in task.tries):
-            state["planner_suggests"] = [t.get("action") or f"press {t.get('keys')}" if not t.get("type") else f"type {t['type']}"
-                                         for t in task.tries][:8]
+        if task.tries:
+            state["planner_suggests"] = [self._move_said(t) for t in task.tries][:8]
         learned = self.models.hints(ctx.app, sig, set(a.label for a in flat))
         if learned:
             state["learned"] = learned

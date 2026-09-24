@@ -190,3 +190,18 @@ def test_an_admitted_text_is_not_judged_again(tmp_path):
 
     eng._plan_inputs(task, None, {"note": "asked of nobody"})   # no decider to ask: refused, and nothing remembered
     assert "asked of nobody" not in task.memory.judged and task.outputs["refused_text"][-1]["text"] == "asked of nobody"
+
+
+def test_every_kind_of_move_is_said_as_what_it_is(tmp_path):
+    """Every move that was not text or an action was said as a key press: a link or a drag read 'press None',
+    on 42 looks in 16 tasks. A list of nothing but links and drags was not said at all (3 looks in 3 tasks)."""
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = eng._new_task("put the photo in the archive", {}, None)
+    task.tries = [{"open_url": "https://example.com/a"}, {"drag": ["photo.png", "Archive"]}]
+    look = eng._look(task, eng._step_context(task))
+    assert look.state.get("planner_suggests") == ["open https://example.com/a", "drag photo.png onto Archive"]
+
+    task.tries = [{"keys": "cmd+s"}, {"type": "hello"}, {"action": "menu File ▸ New Document (⌘N)"}, *task.tries]
+    look = eng._look(task, eng._step_context(task))
+    assert look.state["planner_suggests"] == ["press cmd+s", "type hello", "menu File ▸ New Document (⌘N)",
+                                              "open https://example.com/a", "drag photo.png onto Archive"]
