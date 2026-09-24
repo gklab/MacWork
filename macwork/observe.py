@@ -536,12 +536,15 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             continue
         ctx_text = _context_of(n, by_ref) or where
         facts = declared(n)
-        # A control named only by its tooltip is shown by it, but the tooltip is not the control's own words:
-        # 「此按钮也可以执行缩放窗口的操作」 names the full-screen button, and its 执行 is a floor word for running
-        # code, which raised the bar the button had to clear to 0.9: 29 of the 42 verdicts recorded for it since
-        # 09-22 05:00 were gated there, and none would have been at the 0.7 an unflagged action has to clear. The
-        # floor's words are matched on the label as it would read without the tooltip, `floor_text`, made here:
-        # a label cut to fit could not have the tooltip taken back out of it.
+        # A tooltip shown as a control's name is not the control's own words where something else names it too:
+        # 「此按钮也可以执行缩放窗口的操作」 names the full-screen button, which its subrole's description names as well,
+        # and its 执行 is a floor word for running code, which raised the bar the button had to clear to 0.9: 29 of
+        # the 42 verdicts recorded for it since 09-22 05:00 were gated there, and none would have been at the 0.7
+        # an unflagged action has to clear. There the floor's words are matched on the label as it reads with that
+        # other name, `floor_text`, made here: a label cut to fit could not have the tooltip taken back out of it.
+        # Where the tooltip is the only name, it is what the control is called and its words count: an icon
+        # button whose tooltip says 'Delete' is flagged by it and has the 0.9 bar to clear, and exploring an app,
+        # which asks no floor question, leaves it out while its words are all that has judged it (`_risky`).
         tooltip = source == "help"
         if selectable(n, role):   # rows are chosen by selecting them, not by an action
             shown = " · ".join(dict.fromkeys(inner_text(n["ref"])))
@@ -549,8 +552,8 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             if name:
                 state = "selected" if n.get("selected") else ""
                 target = {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}
-                if tooltip:
-                    target["floor_text"] = with_state(f"select {rd}" + (f" 「{shown[:80]}」" if shown else ""), state)
+                if tooltip and shown:
+                    target["floor_text"] = with_state(f"select {rd} 「{shown[:80]}」", state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select",
                                                   with_state(f"select {rd} 「{name[:80]}」", state),
                                                   target, context=ctx_text, key=ikey, facts=dict(facts)))
@@ -604,9 +607,8 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
                 text = with_state(f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}", state)
                 target = {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame"), "title": label}
-                if tooltip:
-                    target["floor_text"] = with_state(f"{verb + ' ' if verb else ''}{rd}"
-                                                      + (f" 「{by_subrole}」" if by_subrole else "") + goes, state)
+                if tooltip and by_subrole:
+                    target["floor_text"] = with_state(f"{verb + ' ' if verb else ''}{rd} 「{by_subrole}」{goes}", state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
                                                   target, context=ctx_text, key=ikey, facts=dict(facts)))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
@@ -1716,6 +1718,29 @@ def _keys_in(ctx: Ctx, obs: Observation) -> str:
     return "no window open"
 
 
+def _role_words(node: dict[str, Any]) -> str:
+    """What kind of element this is, in words made from the Mac's own constants: its subrole where it has one,
+    else its role, 'AXSearchField' -> 'search field', 'AXTextArea' -> 'text area'; "" when neither is such a
+    constant ('AXUnknown' names nothing). Never its role description: a web page writes that itself (WebKit and
+    Chromium hand aria-roledescription to Accessibility as AXRoleDescription), and it is in the Mac's language."""
+    for k in ("subrole", "role"):
+        v = str(node.get(k) or "")
+        if re.fullmatch(r"AX[A-Z][A-Za-z]*", v) and v != "AXUnknown":
+            return " ".join(w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*", v[2:]))
+    return ""
+
+
+# What `declare_keys` adds to a key's label, and only that: see `plain_key`.
+_KEY_SAID = re.compile(r" \((?:default button 「[^」]*」|cancel button 「[^」]*」|keyboard in [a-z ]+)\)")
+
+
+def plain_key(label: str) -> str:
+    """A key's label without what `declare_keys` said about it — the button it presses and where the keyboard
+    is — for a routine, which finds a key by its label (a key has no other identity) and was recorded with the
+    key wherever it was then."""
+    return _KEY_SAID.sub("", label or "")
+
+
 def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:
     """What the Mac declares about where each key and each keystroke of typing goes, as `Affordance.facts`:
     `in` (`_keys_in`), `keyboard_on` (the role and subrole of the focused element, when the focus is in the
@@ -1725,9 +1750,11 @@ def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:
     among them.
 
     A plain key's label also says what it triggers, where the Mac says so: the button a sheet or window names
-    for Return or Escape, and the kind of field the keyboard is in, by its role only — a field's name is the
-    page's or the app's text. Asked for every look's keys, the planner's suggested keys and the keys a way back
-    is chosen among, from the same look."""
+    for Return or Escape, and the kind of field the keyboard is in, in words made from its role and subrole
+    constants (`_role_words`) — never its name or its role description, which a web page writes. The label is
+    what the floor classifier reads, so these reach it whatever policy confirm.declared_facts says. Asked for
+    every look's keys, the planner's suggested keys and the keys a way back is chosen among, from the same
+    look."""
     keyed = [a for a in affs if a.channel == "keys"]
     if not keyed:
         return
@@ -1738,7 +1765,7 @@ def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:
     here = (ctx.app or {}).get("pid")
     on = _kind(f) if here and f.get("pid") == here and f.get("role") else ""
     text_roles = set(ctx.cfg.get("observe.window.text_roles") or [])
-    field = (str(f.get("rdesc") or "") or str(f["role"]).removeprefix("AX").lower()) if on and f.get("role") in text_roles else ""
+    field = _role_words(f) if on and f.get("role") in text_roles else ""
     facts: dict[str, Any] = {"in": where, "window_shows_a_file": bool(obs.notes.get("window_document"))}
     if on:
         facts["keyboard_on"] = on

@@ -113,10 +113,50 @@ def test_a_step_that_did_lead_back_is_still_a_circle(tmp_path):
                 return window
             return super().call(method, timeout, **p)
 
-    d = ScriptedDecider([{"pick": "menu File ▸ New"}, {"pick": "press the escape key"}, {"pick": "done"}])
-    eng = Engine(cfg(tmp_path), helper=Dialog(), decider=d)
-    eng.do("make a new document")
+    d = ScriptedDecider([{"pick": "menu File ▸ New"}, {"pick": "press the escape key"}, {"pick": "Refresh", "move": "wait"},
+                         {"pick": "done"}])
+    eng = Engine(cfg(tmp_path, config={"engine": {"wait_s": 0}}), helper=Dialog(), decider=d)
+    res = eng.do("make a new document")
     assert d.seen[2][0].get("went_in_circles") == ["press the escape key"]
+    # a second look at where it led, after a wait, finds it the circle it was: judged from when each screen was
+    # first seen, not from when it was last seen, and the memory holds it once
+    assert d.seen[3][0].get("went_in_circles") == ["press the escape key"]
+    assert eng.tasks[res["task_id"]].memory.circles == ["press the escape key"]
+
+
+def test_a_step_back_to_the_screen_seen_just_before_it_is_a_circle(tmp_path):
+    """The screen a step goes back to was first seen on the look right before the one the step was taken from:
+    it was seen before the step was taken, and the step is a circle."""
+    class Notice(EnglishMac):
+        """Refresh opens a window of results; a notice then comes up over it by itself, and Escape closes it."""
+        def __init__(self):
+            super().__init__()
+            self.title = "Untitled"
+
+        def call(self, method, timeout=30.0, **p):
+            if method == "ax.perform":
+                self.title = "Results"
+            if method == "input.key" and p.get("combo") == "escape":
+                self.title = "Results"
+            if method == "ax.snapshot" and p.get("scope") != "menubar":
+                window = super().call(method, timeout, **p)
+                window["nodes"][0]["title"] = self.title
+                return window
+            return super().call(method, timeout, **p)
+
+    mac = Notice()
+
+    def notice_comes_up(state, questions):
+        mac.title = "Notice"
+        return {"pick": "Refresh", "move": "wait"}
+
+    d = ScriptedDecider([{"pick": "Refresh"}, notice_comes_up, {"pick": "press the escape key"}, {"pick": "done"}])
+    eng = Engine(cfg(tmp_path, config={"engine": {"wait_s": 0}}), helper=mac, decider=d)
+    res = eng.do("refresh the list")
+    task = eng.tasks[res["task_id"]]
+    assert [s.action for s in task.steps] == ["button 「Refresh」", "press the escape key"]
+    assert sorted(task.memory.first_seen.values()) == [0, 1, 1], "the results and the notice were both first seen after one step"
+    assert task.steps[1].led_back and d.seen[3][0].get("went_in_circles") == ["press the escape key"]
 
 
 def test_second_looks_do_not_make_a_task_look_stuck(tmp_path):

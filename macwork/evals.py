@@ -963,7 +963,7 @@ def _forget(engine: Engine) -> None:
         scopes.clear()          # each task's live working state: pictures, windows seen, screens read by sight
     # `ambient` too: "this window changes by itself" is a judgement about a window a task saw, and one carried
     # into the next task made its events count for nothing there, against `fresh: true`.
-    for key in ("floor.verdicts", "floor.harmless", "vision.ocr", "vision.canvas",
+    for key in ("floor.verdicts", "floor.harmless", "floor.gated", "vision.ocr", "vision.canvas",
                 "menu.snap", "menubar.owners", "learn.safe", "services.all", "ambient"):
         got = engine.cache.get(key)
         if isinstance(got, (dict, set)):

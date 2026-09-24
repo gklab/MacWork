@@ -419,7 +419,9 @@ class ConsultMixin:
                 # planner's own definition of a word, a sysctl command. The decider's judgement is no substitute
                 # here: it let that definition through at 0.76 in 8b1a7646fc9f, when all the task had looked at
                 # was Finder with no window open, and scored 391 at 0.74 in 54d03f49a1e0, against a cut of 0.75.
-                # What it lets through fills only the slot it was judged for (`_fill`).
+                # Text it lets through is never a move on offer: it goes only into a slot a plan's fill gives it
+                # for (`_fill`), and typing it there is judged by the floor again with the text in its label. The
+                # verdict is kept (`Memory.admitted`): the same text is not judged again, for that slot or another.
                 source = self._traced(task, obs, t["type"])
                 if source is not None:
                     out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t),

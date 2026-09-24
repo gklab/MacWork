@@ -33,8 +33,8 @@ def test_what_forgetting_covers():
     """Anything the engine carries from one task to the next that stands in for having seen the screen."""
     class Engine:
         def __init__(self):
-            self.cache = {"floor.verdicts": {"a": 1}, "floor.harmless": {"a": True}, "ambient": {"42|Clock"},
-                          "vision.ocr": {"a": 1}, "apps.installed": (0, ["Mail"]), "entities": {"x": []}}
+            self.cache = {"floor.verdicts": {"a": 1}, "floor.harmless": {"a": True}, "floor.gated": {"a": ["delete"]},
+                          "ambient": {"42|Clock"}, "vision.ocr": {"a": 1}, "apps.installed": (0, ["Mail"]), "entities": {"x": []}}
             self.cfg = __import__("macwork.config", fromlist=["Config"]).Config.load()
             self.models = None
 
@@ -42,6 +42,7 @@ def test_what_forgetting_covers():
     evals._forget(eng)
     assert not eng.cache["floor.verdicts"], "a classification from an earlier task was kept"
     assert not eng.cache["floor.harmless"]
+    assert not eng.cache["floor.gated"], "a gate from an earlier task held its question gated in the next"
     assert not eng.cache["vision.ocr"], "a screen read in an earlier task was kept"
     assert not eng.cache.get("ambient"), "a window judged to change by itself in an earlier task stayed judged so"
     # not recall: what is installed is a fact about the Mac, and re-reading it costs 1.8 s a task

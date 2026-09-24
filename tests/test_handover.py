@@ -8,7 +8,8 @@ checks only through its step's label, which keeps 40 characters of it.
 
 What stands now: a move's text is offered only once the goal, the caller's inputs or a screen the task saw holds
 it word for word, checked again on every look, so a figure the planner worked out is offered once a screen shows
-it. Text the decider judged (a value written the way a field needs it) fills the one slot it was written for. A
+it. Text the decider judged (a value written the way a field needs it) is never offered as a move: it goes only
+into a slot a plan's fill gives it for, and once let through it is not judged again, for that slot or another. A
 plan's text is the planner's, kept apart from the caller's. The recorded runs these stand in for: 7ffdee1b4ce3
 (391 refused as a plan input, then offered as a move), 8b1a7646fc9f (the planner's definition of a word let
 through at 0.76 with nothing seen), 450bbbdad38a (the plan's 'hello' typed where HELLO WORLD was wanted).

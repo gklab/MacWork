@@ -34,7 +34,13 @@ confirm:
   # classifier's input, and how it scores with them is not measured yet: that takes a floor benchmark with
   # this on and off, and the owner's go-ahead, before it is turned on. Keying cached verdicts on those facts
   # is on regardless, because it is a safety property: a key judged in one kind of window is judged again
-  # in another, and a verdict formed while the window could not be read never serves one that can be.
+  # in another, and a verdict formed while the window could not be read never serves one that can be. What
+  # the classifier gated stays gated for the same question under facts it is not told (policy._question).
+  # This switch covers `the_mac_declares` alone. The action's label reaches the classifier either way, and it
+  # says more than it did: a plain key's label names the button a sheet or window says Return or Escape
+  # presses and the kind of field the keyboard is in, by role and subrole, and a menu item's key equivalent
+  # that prints nothing is shown by its glyph. How the classifier scores those is not measured either, so a
+  # benchmark of this switch carries such labels in both of its arms.
   declared_facts: false
   other: it does something else irreversible or outward-facing
   navigate: >-

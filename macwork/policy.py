@@ -133,8 +133,9 @@ class PolicyMixin:
         to be.
         """
         conf = self.cfg.policy.get("confirm", {}) or {}
-        # the label as it reads without a tooltip that is a control's only name (`floor_text`, observe.py): the
-        # action's own verb and title still count, the tooltip's sentence about it does not
+        # the label as it reads with the control's other name in place of the tooltip it is shown by, where it has
+        # one (`floor_text`, observe.py): the action's own verb and title still count, the tooltip's sentence about
+        # it does not. A control whose only name is its tooltip has no other words, and is matched on those.
         text = f"{a.verb} {a.target.get('floor_text', a.label)} {a.context}"
         derived = self._floor_words()
         hits = [name for name, c in (conf.get("categories") or {}).items()
@@ -173,13 +174,34 @@ class PolicyMixin:
         # elsewhere, and a verdict formed blind serves only looks that are as blind
         return key + "|" + json.dumps(a.facts, sort_keys=True, ensure_ascii=False, default=str) if a.facts else key
 
+    def _question(self, ctx: Ctx, a: Affordance, window: str | None) -> str:
+        """The question the floor classifier is asked about an action, as far as its answer can turn on it: the
+        app (by version, as in the verdict key), the window it is told of, the action's kind, name and place, and
+        what it is told the Mac declares (`_declared`). Verdict keys that differ only in facts it is not told
+        (`_floor_key`) are one question to it."""
+        app = ctx.app or {}
+        return json.dumps([self.models.key(app) or app.get("bundle_id"), window, a.channel, a.verb, a.name(), a.context,
+                           self._declared(a)], sort_keys=True, ensure_ascii=False, default=str)
+
+    def _gated_as_asked(self, ctx: Ctx, a: Affordance, window: str | None, gated: list[str]) -> list[str]:
+        """The floor gated `a` on a classifier's answer: kept for the question it was asked (`_question`), so the
+        same question asked again under facts the classifier is not told cannot release it (see `_floor`)."""
+        self.cache.setdefault("floor.gated", {}).setdefault(self._question(ctx, a, window), list(gated))
+        return gated
+
     def _declared(self, a: Affordance) -> dict[str, Any]:
         """`the_mac_declares` for a floor question's state, or nothing (policy confirm.declared_facts).
 
         Off by default: it changes the classifier's input, and how the classifier scores with it has not been
         measured. When on, only what native structure owns: the window or sheet the action is in, the
         control's role and subrole, a menu item's identifier. Nothing about an element of a web page, whose
-        roles and identifiers the page writes, and not where the keyboard is, which may be such an element."""
+        roles and identifiers the page writes, and never `keyboard_on`, the focused element, which may be one.
+
+        The switch covers this field alone. The classifier also reads the action's label, the one the decider
+        reads, and that says more than it did whatever the switch is set to: a plain key's label names the
+        button a sheet or window says Return or Escape presses and the kind of field the keyboard is in, by
+        role and subrole (`observe.declare_keys`), and a key equivalent that prints nothing is shown by its
+        glyph (`observe._shortcut`). How the classifier scores those is not measured either."""
         conf = self.cfg.policy.get("confirm", {}) or {}
         if not conf.get("declared_facts", False) or a.facts.get("_web_content"):
             return {}
@@ -414,7 +436,8 @@ class PolicyMixin:
         # plain yes or no about this action — and the ceiling still keeps it from releasing what the words
         # flagged. See `_uncalibrated_release`.
         if top not in self._releases(a):
-            return hits or [top]
+            return self._gated_as_asked(ctx, a, window, hits or [top])
+        judged = True             # a gate below is the classifier's answer, not a question nobody could ask it
         if self._calibrated():
             # Two bars, and which applies is decided by the words — not because a word list may set how
             # sure a classifier has to be, but because a hit *is* evidence of risk and evidence is
@@ -430,14 +453,28 @@ class PolicyMixin:
             sure = nav >= float(conf.get(bar, 0.9 if hits else 0.7))
         else:
             sure = not hits and self._uncalibrated_release(task_id, ctx, a, window, ask)
+            judged = f"noul|{self._floor_key(ctx, a)}" in (self.cache.get("floor.harmless") or {})
         if sure:
+            # A verdict is keyed on what the Mac declares about the action (`_floor_key`), and with
+            # confirm.declared_facts off the classifier is told none of it: a key judged again only because the
+            # focus moved from a button to a table, or because a sheet naming no button came up over a window of
+            # the same title, is the same question asked again (`_question`). A second answer to it differs only
+            # by chance, and taking whichever answer releases would sample a verdict near the bar until it
+            # passed — the reason a blind look is not asked again but takes the verdict an earlier blind look
+            # formed. So a question the floor gated stays gated under every fact it is not told; one it
+            # released may be asked again, and then gated.
+            before = (self.cache.get("floor.gated") or {}).get(self._question(ctx, a, window))
+            if before is not None:
+                log.info("floor: %r was gated as the same question under other facts: %s", a.label[:60], before)
+                return list(before)
             self.audit.record("floor", task=task_id, action=a.label, released=True,
                               navigate=round(nav, 3), words=hits, verdict=top,
                               calibrated=self._calibrated())
             return []
         # Gated, but not under the name of a release: "because: ['navigate']" is not a reason to show
         # anyone. The words' own categories if they had any, else that nobody could vouch for it.
-        return hits or ["unclassified"]
+        gated = hits or ["unclassified"]
+        return self._gated_as_asked(ctx, a, window, gated) if judged else gated
 
     def _risky(self, a: Affordance, ctx: Ctx | None = None) -> bool:
         """A cheap read for the places that filter a whole pool of actions before a decider question picks one
