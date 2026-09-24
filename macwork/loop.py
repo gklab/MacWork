@@ -19,14 +19,14 @@ from typing import Any, Callable, NamedTuple
 
 from .appmodel import signature
 from .contract import DEFERRED, kept, kept_by_change, promise
-from .invariants import check_look, check_step
+from .invariants import check_look, check_options, check_step
 from .decider import DeciderError, choice, noul
 from .privacy import RedactionError
 from .act import Outcome
 from .onscreen import unreadable
 from . import sight
 from .model import Affordance, Change, Observation, Step, Task
-from .observe import Ctx, arrange, get_provider, group_of, observe
+from .observe import SCREEN, Ctx, arrange, get_provider, observe, page_anchor, page_members
 from .skills import Skills
 
 log = logging.getLogger(__name__)
@@ -123,6 +123,7 @@ class Look:
     floor_questions: dict[str, Any] = field(default_factory=dict)
     floor_state: dict[str, Any] = field(default_factory=dict)    # no screen text: the floor is judged on the action alone
     aside: Affordance | None = None           # a control that sets an interruption aside: taken before the goal is asked about
+    pinned: set[str] = field(default_factory=set)   # ids offered on their own for the planner: in no group's pages
 
     @property
     def by_id(self) -> dict[str, Affordance]:
@@ -161,6 +162,7 @@ class LoopMixin:
                     return look
                 last_look = look
                 check_look(task, look.affs, look.sig, look.ctx.app)
+                check_options(task, look.affs, look.flat, look.folded)
                 if task.plan is None and not task.steps and self.cfg.get("planner.when", "auto") == "always":
                     # The plan that sets the whole trajectory was written before the first look — with no
                     # app, no screen and no running apps in the brief, while every later plan saw all three.
@@ -361,7 +363,8 @@ class LoopMixin:
                 where = f"; the plan is still at sub-goal {task.plan_i + 1} 「{str(task.plan[task.plan_i])[:60]}」, so a different way to it is needed, not the same one again"
             self._consult(task, ctx, obs, f"the last {len(stuck)} actions got the task nowhere: "
                           + "; ".join(st.action[:40] for st in stuck[-3:]) + where, obs.affordances)
-        affs = [a for a in obs.affordances + self._suggested(task, obs) if not self._denied(a, ctx.app)]
+        offered_by_planner = self._suggested(task, obs)
+        affs = [a for a in obs.affordances + offered_by_planner if not self._denied(a, ctx.app)]
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
         # Keyed on what an action *is* (its identity, else its steady name), not on what it says right now.
         # Facts about this screen — did nothing here, could not be done here, came back from here — take the
@@ -383,8 +386,17 @@ class LoopMixin:
 
         suggested = {t.get("action") for t in task.tries if t.get("action")}
         took_back = set(self._retracted_here(task, here))
-        pinned = task.memory.expanded | {group_of(a)[0] for a in affs if a.label in suggested or a.id.startswith("t")}
-        flat, folded = arrange(affs, int(e.get("max_options", 200)) - 1, pinned, fold_over=int(e.get("fold_groups_over", 60)))
+        # What the planner suggested is offered on its own, wherever it lives: its own options and the actions
+        # it named, by id, never their whole groups. A named action pinned its group: in a real task 'type into
+        # 文本输入区' pinned TextEdit's whole area of 63 controls, and an id starting with "t" also caught
+        # read-all's t{n}, which pinned the app's area. Pinned groups went first in the order they were found,
+        # so the planner's own options, appended after every provider, were what the budget cut: in that task,
+        # on each of the 11 looks that had one.
+        pinned = {a.id for a in offered_by_planner} | {a.id for a in affs if a.label in suggested}
+        opened = self._opened_here(task, ctx, obs)
+        fold_over = int(e.get("fold_groups_over", 60))   # also the least of an opened group shown at a time
+        flat, folded = arrange(affs, int(e.get("max_options", 200)) - 1, {opened["group"]: opened["start"]} if opened else {},
+                               fold_over=fold_over, pinned=pinned, min_page=fold_over)
         left_out = len(affs) - len(flat) - sum(len(v[1]) for v in folded.values())
         if left_out > 0:
             look_note = f"{left_out} more actions did not fit and are not listed"
@@ -438,7 +450,7 @@ class LoopMixin:
             state["seen_in_each_app"] = task.memory.facts.brief()
         look = Look(ctx, obs, sig, locked, affs, flat, folded, groups, options, state, questions, fp_seen, dead_before, timing)
         look.floor_map, look.floor_questions, look.floor_state = floor_map, floor_q, floor_state
-        look.aside = aside
+        look.aside, look.pinned = aside, pinned
         return look
 
     def _state(self, task: Task, ctx: Ctx, obs: Observation, sig: str, flat: list[Affordance], dead_here: set[str],
@@ -710,11 +722,30 @@ class LoopMixin:
         return self._pick(task, look, key, move, ranked, risky_screen, progress)
 
     def _open_group(self, task: Task, look: Look, key: str, progress: Progress) -> bool:
+        """Open a folded group, or the next page of one, for the looks that follow (`_opened_here`). It
+        replaces whatever was open: one group is open at a time, like a menu."""
         if not self.spend_allowance(task, "looks"):
             return False
-        task.memory.expanded.add(look.groups[key])
-        progress(f"look into {look.folded[look.groups[key]][0].split(' (')[0].removeprefix('look into ')}")
+        group = look.groups[key]
+        label, members = look.folded[group]
+        start = page_anchor(page_members(look.affs, group, look.pinned), members[0]) if members else None
+        look.ctx.scope.opened = {"group": group, "start": start, "where": ((look.ctx.app or {}).get("pid"), look.obs.window),
+                                 "steps": len(task.steps)}
+        progress(label.split(" (")[0])
         return True
+
+    def _opened_here(self, task: Task, ctx: Ctx, obs: Observation) -> dict[str, Any] | None:
+        """The group the decider opened, while it still applies: in the same app and window, and, for any group
+        but the rest of the screen in front, with no step taken since. Otherwise it is closed.
+
+        The rest of the screen stays open across steps on the same window. It is where the work is, not a
+        menu: closed after every step, a form whose fields sit in its tail would cost a decider request and
+        one of the run's `engine.max_looks` looks for each field."""
+        opened = ctx.scope.opened
+        if opened and (opened["where"] != ((ctx.app or {}).get("pid"), obs.window)
+                       or (opened["group"] != SCREEN and opened["steps"] != len(task.steps))):
+            ctx.scope.opened = opened = None
+        return opened
 
     def _on_done(self, task: Task, look: Look, move: str, key: str, probs: dict[str, float], progress: Progress):
         """The decider says done. Final, so: on a settled screen, and confirmed by the stricter question; if not

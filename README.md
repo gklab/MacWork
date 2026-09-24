@@ -178,8 +178,8 @@ browser is an app. The cost is stated honestly: Chrome puts no page content in t
    engine compares what the window looked like before and after, without knowing what the picture is of.
 5. **Arithmetic stays in code.** Option labels state measured facts ("returns all 17 lines at once; the
    window shows only part"); the decider interprets facts, it does not compute them.
-6. **Fold, don't rank.** Above 255 options the largest groups become one "look into …" entry each, opened
-   the way a person opens a menu. Nothing is dropped by a relevance guess.
+6. **Fold, don't rank.** Above 200 options the screen in front comes first and the largest groups become one
+   "look into …" entry each, opened like a menu. What does not fit is a page away, never cut or guessed away.
 7. **Callers own language.** Text to type, queries and file names come from the caller; a task that needs
    them stops with `need_input` rather than inventing them.
 

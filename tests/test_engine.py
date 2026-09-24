@@ -635,9 +635,10 @@ def test_the_screen_in_front_is_never_folded_behind_the_menus():
     flat, folded = arrange(menus + window, 150, set(), fold_over=60)
     assert {a.id for a in flat} >= {a.id for a in window}, "the screen was folded"
     assert flat[0].id == "w0" and all(k.startswith("menu:") for k in folded), (flat[:3], list(folded))
-    # and a screen alone over the budget is cut at the tail, and nothing else is folded for it
+    # and a screen alone over the budget is not cut: its first part is shown, and the rest is one look away
     flat, folded = arrange(window, 100, set(), fold_over=60)
-    assert len(flat) == 100 and not folded
+    assert len(flat) == 99 and list(folded) == ["screen"] and folded["screen"][0].startswith("look into the rest of the window (24 more")
+    assert {a.id for a in flat} | {a.id for a in folded["screen"][1]} == {a.id for a in window}, "an action was lost"
 
 
 def test_the_decider_can_open_a_folded_group_before_acting(tmp_path):
