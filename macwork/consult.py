@@ -3,17 +3,20 @@ turning its concrete suggestions into options for the decider."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
+import threading
+import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from .decider import DeciderError, noul
 from .model import Affordance, Observation, Task
 from .observe import Ctx, named_combo
 from .onscreen import unreadable
-from .planner import Planning, PlannerError, make_planner
+from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, make_planner
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +58,70 @@ class ConsultMixin:
         backend = self.planning_backend
         if backend is None:
             return None
-        return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=task.planner_use)
+        # Every key there is, before an ask can be counted from a thread of its own (`Planning._count`): the
+        # task is read and written to disk on the loop's thread meanwhile, and a dict must not grow under that.
+        use = task.planner_use
+        for key in ("calls", "answered", "failed", "ms", "waited_ms", "beside_ms"):
+            use.setdefault(key, 0)
+        use.setdefault("errors", {k: 0 for k in ERROR_KINDS})
+        use.setdefault("by", {})
+        return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=use)
+
+    # ------------------------------------------------------------- one planner call at a time
+    def _planner_call(self, task: Task, ask: Callable[[Planning, threading.Event], Any], beside: bool = False) -> PlannerCall:
+        """Every question this task puts to its planner goes out through here, on a thread of its own
+        (`PlannerCall`). `ask(planning, stop)` is the question; `beside`: it runs while the loop goes on, as the
+        task's one call in flight (`TaskScope.planning`), and is taken in at a later look.
+
+        Whatever this task still has running beside the loop is stopped first: a newer question replaces it. A
+        local server asked twice at once works on both answers — one plan took 87 s that takes 11 s on its own
+        (`OpenAICompatPlanner._stream`) — so a call to a local planner is sent only once the one before it has
+        let go (`engine._planner_lock`), which a stopped call does at its next line. A call to one that is not on
+        this Mac does not wait for it: the doubling is a local server's, and a cloud planner asked without a
+        stream (deepseek's endpoint, Anthropic) cannot be stopped, so the next question would sit out an answer
+        that is dropped anyway. Nothing is sent once the call has been stopped."""
+        self._stop_planning(task)
+        planning = self._planning(task)
+        lock = self._planner_lock if getattr(self.planning_backend, "local", False) else contextlib.nullcontext()
+
+        def run(stop: threading.Event) -> Any:
+            with lock:
+                if stop.is_set():
+                    raise PlannerError("stopped before it was sent", kind="stopped")
+                return ask(planning, stop)
+        call = PlannerCall(run)
+        if beside:
+            self.scope(task.id).planning = call
+        return call
+
+    def _planner_wait(self, task: Task, call: PlannerCall, until: float | None = None) -> Any:
+        """The call's answer, the loop waiting for it (`planner_use.waited_ms`). Past `until` it is stopped and
+        PlannerError(stopped) is raised: a route that comes after the run's time is up is no use to that run."""
+        t0 = time.monotonic()
+        landed = call.wait(until)
+        call.waited = True
+        use = task.planner_use
+        use["waited_ms"] = int(use.get("waited_ms", 0)) + round((time.monotonic() - t0) * 1000)
+        if not landed:
+            call.cancel()
+            raise PlannerError("the run's time ran out before the planner answered", kind="stopped")
+        if call.error is not None:
+            raise call.error
+        return call.result
+
+    def _stop_planning(self, task: Task) -> None:
+        """Stop the call this task has running beside the loop, if it has one: a newer question replaces it, or
+        its run is over. The seconds it ran are the planner's work beside the loop (`planner_use.beside_ms`),
+        unless the loop sat waiting on it, when they were counted as waited already."""
+        scope = self._scopes.get(task.id)
+        call = scope.planning if scope is not None else None
+        if call is None:
+            return
+        scope.planning = scope.planning_asked = None
+        call.cancel()
+        if not call.waited:
+            use = task.planner_use
+            use["beside_ms"] = int(use.get("beside_ms", 0)) + round(call.seconds * 1000)
 
     def _brief(self, task: Task, ctx: Ctx | None, obs: Observation | None, affs: list[Affordance] | None = None,
                acting: bool = True) -> dict[str, Any]:
@@ -152,7 +218,6 @@ class ConsultMixin:
             log.info("planner: already asked about this screen")
             return False
         task.memory.consulted.add(here)
-        planning = self._planning(task)
         try:
             ctx_brief = self._brief(task, ctx, obs, affs)
             # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
@@ -161,8 +226,11 @@ class ConsultMixin:
             # Beside the instructions rather than in the context: it is the same on every call, so it belongs
             # in the part of the prompt a local server keeps.
             asks_first = list(self.floor_categories().values())
-            plan = planning.plan(task.goal, ctx_brief, asks_first) if task.plan is None else \
-                planning.replan(task.goal, ctx_brief, [s.action for s in task.steps], problem, asks_first)
+            done = [s.action for s in task.steps]
+            first = task.plan is None
+            plan = self._planner_wait(task, self._planner_call(
+                task, lambda planning, stop: planning.plan(task.goal, ctx_brief, asks_first, stop=stop) if first
+                else planning.replan(task.goal, ctx_brief, done, problem, asks_first, stop=stop)))
         except PlannerError as exc:
             log.info("planner: %s", exc)
             task.outputs.setdefault("planner_errors", []).append(str(exc)[:200])
@@ -206,8 +274,8 @@ class ConsultMixin:
             # last screen alone: a page whose title was in the window title came back as "not in the information
             # provided", and it is also what the answer is checked against afterwards.
             brief["seen_in_each_app"] = task.memory.facts.brief()
-        try:
-            answer = self._planning(task).answer(task.goal, brief)
+        try:     # waited for with no deadline: the task owes the caller its answer
+            answer = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.answer(task.goal, brief)))
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
@@ -281,8 +349,9 @@ class ConsultMixin:
         brief = self._brief(task, ctx, obs, acting=False)
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
-        try:
-            text = self._planning(task).fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief) or None
+        try:     # waited for with no deadline: the step cannot be taken without it
+            text = self._planner_wait(task, self._planner_call(
+                task, lambda planning, stop: planning.fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief))) or None
         except PlannerError as exc:
             log.info("planner fill: %s", exc)
             return None

@@ -63,6 +63,12 @@ class BudgetMixin:
         out["total_steps"] = {"used": len(task.steps), "of": int(e.get("total_steps", CEILINGS["total_steps"][1]))}
         out["seconds"] = {"used": round(task.working_s - task.spent_s, 1), "of": float(e.get("budget_s", CEILINGS["seconds"][1]))}
         out["total_seconds"] = {"used": round(task.working_s, 1), "of": float(e.get("total_budget_s", CEILINGS["total_seconds"][1]))}
+        # The planner's time, this run's like `seconds`, in a line of its own: on the two key tasks of 09-23 the loop
+        # waited on it for 28.8 of 44.3 s and 27.3 of about 35 s, and inside `seconds` none of that showed.
+        # `waited` is part of `seconds`; `beside` ran while the loop looked and acted.
+        use = task.planner_use or {}
+        out["planner_seconds"] = {"waited": round((int(use.get("waited_ms", 0)) - task.run_waited_ms0) / 1000, 1),
+                                  "beside": round((int(use.get("beside_ms", 0)) - task.run_beside_ms0) / 1000, 1)}
         if decider is not None:
             out["decisions"] = {"used": decider.calls - task.run_calls0, "of": int(e.get("max_decisions", CEILINGS["decisions"][1]))}
             out["cost_usd"] = {"used": round(decider.cost_usd - task.run_cost0, 5), "of": float(e.get("max_cost_usd", CEILINGS["cost_usd"][1]))}

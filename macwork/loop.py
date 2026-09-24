@@ -822,8 +822,9 @@ class LoopMixin:
             return ""
         if not self.spend_allowance(task, "done_opinions"):
             return ""
-        try:
-            agrees, why = self._planning(task).judge_done(task.goal, self._brief(task, look.ctx, look.obs, look.affs, acting=False))
+        try:     # waited for with no deadline: it is what a "done" is checked against, owed before the task ends
+            brief = self._brief(task, look.ctx, look.obs, look.affs, acting=False)
+            agrees, why = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.judge_done(task.goal, brief)))
         except Exception as exc:  # noqa: BLE001  (an opinion that could not be had is no opinion; it never fails the task)
             log.info("second opinion on done: %s", exc)
             return ""
@@ -1115,29 +1116,38 @@ class LoopMixin:
         if scope.last_step_at is None:            # not inside a run: nothing was clocked
             return
         now = time.monotonic()
-        use = task.planner_use or {}
         calls = int(getattr(self._decider, "calls", 0) or 0) if self._decider is not None else 0
+        mark = self._planner_mark(task)
+        # How much of the planner's time the loop sat waiting on (planner_waited_ms) and how much ran beside it
+        # (planner_beside_ms): planner_ms is when its answers came back, and says neither.
         rec = {"task": task.id, "observe_ms": 0, "decide_ms": 0, "decide_net_ms": 0, "act_ms": 0, "wait_ms": 0,
                "ready_wait_ms": 0, **rec,
                "looks": scope.looks, "wall_ms": round((now - scope.last_step_at) * 1000),
-               "planner_ms": int(use.get("ms", 0)) - scope.planner_mark[1],
-               "planner_calls": int(use.get("calls", 0)) - scope.planner_mark[0],
+               "planner_ms": mark[1] - scope.planner_mark[1],
+               "planner_calls": mark[0] - scope.planner_mark[0],
+               "planner_waited_ms": mark[2] - scope.planner_mark[2],
+               "planner_beside_ms": mark[3] - scope.planner_mark[3],
                "decisions": calls - scope.decisions_mark}
         self.audit.record("step", **rec)
         totals = task.timing
         totals["steps"] = int(totals.get("steps", 0)) + ("end" not in rec)
         for key in ("looks", "wall_ms", "observe_ms", "decide_ms", "decide_net_ms", "act_ms", "wait_ms", "ready_wait_ms",
-                    "planner_ms", "planner_calls", "decisions"):
+                    "planner_ms", "planner_calls", "planner_waited_ms", "planner_beside_ms", "decisions"):
             totals[key] = int(totals.get(key, 0)) + int(rec.get(key) or 0)
         scope.looks, scope.last_step_at = 0, now
-        scope.planner_mark, scope.decisions_mark = (int(use.get("calls", 0)), int(use.get("ms", 0))), calls
+        scope.planner_mark, scope.decisions_mark = mark, calls
+
+    @staticmethod
+    def _planner_mark(task: Task) -> tuple[int, int, int, int]:
+        """The task's planner counts now: calls, ms, waited_ms, beside_ms (`planner_use`)."""
+        use = task.planner_use or {}
+        return (int(use.get("calls", 0)), int(use.get("ms", 0)), int(use.get("waited_ms", 0)), int(use.get("beside_ms", 0)))
 
     def _start_clock(self, task: Task) -> None:
         """A run starts its own clock: the caller's pause between runs is not step time."""
         scope = self.scope(task.id)
-        use = task.planner_use or {}
         scope.looks, scope.last_step_at = 0, time.monotonic()
-        scope.planner_mark = (int(use.get("calls", 0)), int(use.get("ms", 0)))
+        scope.planner_mark = self._planner_mark(task)
         scope.decisions_mark = int(getattr(self._decider, "calls", 0) or 0) if self._decider is not None else 0
 
     # ------------------------------------------------------------------ facts
