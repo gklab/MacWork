@@ -1028,8 +1028,11 @@ class LoopMixin:
         return True
 
     def _planner_writes(self, task: Task, chosen: Affordance) -> bool:
-        """Will carrying this action out ask the planner to write its text first (`_fill`): a slot it needs that
-        nothing the caller or the planner's move gave fills?"""
+        """May carrying this action out ask the planner to write its text (`_fill`): a slot it needs that nothing the
+        caller or the planner's move gave fills? A slot a text the task holds may fill is one too: which text, if
+        any, the decider chooses only as the step is taken (`_which_text`, "none" unless one plainly is), and after
+        "none" the planner is asked. Not counted, a rethink on such a field went beside the loop and, the decider
+        choosing none, the question for the text stopped its route before it was taken in (offline, with fakes)."""
         return bool(self._params(task, chosen)[1]) and bool(self.cfg.get("planner.fill_inputs", True))
 
     @staticmethod
