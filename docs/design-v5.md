@@ -178,17 +178,23 @@ until it asks again and says whether an app is still launching:
 * **A look waits for the app first** (`EffectsMixin._await_app`): it asks at once every `engine.ready_poll_ms`
   until the app answers, for at most `engine.open_front_s`, each wait one of the ledger's `ready_waits`. An app
   that stays silent that long is not waited for again until it answers, and a helper older than 0.2.0, which
-  cannot be asked at once, is not polled.
+  cannot be asked at once, is not polled. The helper says `not_answering` only on a call it skips: the call whose
+  own question timed out replies with nothing, as for an app with no window, so an empty reply is asked for again
+  at once (`onscreen.app_readiness`).
 * **What such an app has on screen is asked of the window server** (`observe.windows`), which needs no answer
   from it. No empty window list is written for it, and no reopen is offered to an app that has not answered or is
   still starting. A launch counts as starting only within `engine.open_front_s` of its start: some processes
   never report finished launching.
 * **The decider and the planner are told the same thing**: it is still starting, or busy; it does not answer
   Accessibility yet; its window is, or is not, on screen.
-* **Nothing is judged on such a look.** No sub-goal advances. A rethink, ask-user, blocked or impossible vote
-  first spends one of the decider's waits; after that a rethink takes the chosen option without a planner call,
-  and the others end as before, with cause `app_not_answering` and a reason naming the app. The planner is not
-  asked while a wait is still possible.
+* **Such a look advances nothing, and a vote about the route, the user or the goal waits first.** No sub-goal
+  advances on it. A rethink, ask-user, blocked or impossible vote first spends one of the decider's waits; after
+  that a rethink takes the chosen option without a planner call, and the others end as before, with cause
+  `app_not_answering` and a reason naming the app. `_consult` does not ask the planner while a wait is still
+  possible. Two votes are still taken as on any look: done, behind the verify and second-opinion gates (the
+  second opinion asks the planner's judge about that look), and a low progress vote, which marks the step before
+  it as having had no effect on the screen it was taken from, and as having gone wrong when the planner is next
+  asked.
 
 Reading the windows Accessibility does not describe — by window number, by sight — waits for a read-only survey
 of how often such windows are phantoms.

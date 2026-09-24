@@ -863,9 +863,13 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
         # snapshot, no read by sight and no entry here. Taken for a prompt, the candidate panel was in
         # covered_by on 48 looks in 27 tasks on 09-20..23: 168 candidates offered as options, 4 reports that it
         # was left for the person to answer, and Escapes pressed at it that deleted the letters it was composing
-        # ("hello" left as "hel" or "hell", in 3 tasks). On 16 of those looks the candidates were for letters
-        # the task had not typed, the person's own typing in another window, and went to the decider as a
-        # prompt. Its window at the ordinary level (its settings) is read like any other.
+        # ("hello" left as "hel" or "hell", in 3 tasks). On 19 of those looks the candidates were for letters
+        # no text of the task had typed: on 3, at a task's first look, what the task before it had left
+        # composing; on the other 16, which match no text any task typed, 7 of them whole words, the person's
+        # own typing in another window, and they went to the decider as a prompt. (Recounted so; 8f63d5d gave
+        # 16 looks of 9 words and 7 single characters, counting some of the task's own composing as the
+        # person's.)
+        # Its window at the ordinary level (its settings) is read like any other.
         if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] or input_method_panel(w) \
            or any(o["window"] == _window_id(w) for o in found):
             continue

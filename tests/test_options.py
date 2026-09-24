@@ -115,6 +115,19 @@ def test_the_planner_pins_what_it_suggested_and_nothing_else(tmp_path):
     assert not any(v.startswith("menu File ▸ Delete Document") for v in offered), "the whole menu came with it"
 
 
+def test_the_loop_says_when_more_places_than_options_leave_an_action_out(tmp_path):
+    """Every place keeps an entry of its own, so only more places than there are options can leave an action
+    out, and the loop checks every look for that (`invariants.check_options`). Here the places alone fill the
+    budget, and the planner's suggestion, offered on its own, is the action left out: the run says so."""
+    c = cfg(tmp_path, config={"engine": {"max_options": 4}, "planner": {"when": "always"}})
+    eng = Engine(c, helper=FakeHelper(), decider=ScriptedDecider([{"pick": "done"}]))
+    eng._planner = FakeBackend([{"steps": ["write it"], "inputs": {}, "try": [{"type": "hello"}]}])
+    res = eng.do("write hello")
+    said = res["outputs"].get("invariants_broken") or []
+    assert any(x.startswith("1 action(s) neither offered nor inside a group") and "type 「hello」" in x for x in said), \
+        f"an action left out of the options went unsaid: {said}"
+
+
 def test_an_opened_group_closes_once_a_step_is_taken(tmp_path):
     c = cfg(tmp_path, config={"engine": {"max_options": 30, "fold_groups_over": 10}})
     d = ScriptedDecider([{"pick": "look into keys"}, {"pick": "New Document"}, {"pick": "done"}])

@@ -85,9 +85,10 @@ def still_launching(said: dict[str, Any], running: list[dict[str, Any]] | None, 
 
 def app_readiness(helper: Any, pid: int, running: list[dict[str, Any]] | None, ask_now: bool = False,
                   launch_bound_s: float = 6.0, min_size: tuple[int, int] = (100, 60)) -> dict[str, Any]:
-    """Can this app be read now? One question, of its windows alone: nothing is read of them.
+    """Can this app be read now? A question of its windows alone, asked twice when the first reply is empty:
+    nothing is read of them.
 
-    - answering: it answered Accessibility, and the helper did not report `not_answering`;
+    - answering: it answered Accessibility: the helper did not report `not_answering`;
     - launching: it is still starting (`still_launching`);
     - windows: how many windows it has: Accessibility's count, or, while it is launching, the window
       server's (`app_windows`), since an app that answers while it starts may list no window yet;
@@ -96,10 +97,22 @@ def app_readiness(helper: Any, pid: int, running: list[dict[str, Any]] | None, a
       not-answering reply and honours `ask_now`; an older one says neither and keeps its 20 s cooldown
       whatever it is asked.
 
+    The helper (0.1.0 and 0.2.0 alike) says `not_answering` only on a call it skips, for an app it had
+    already marked. The call whose own question times out marks the app and replies as for an app with no
+    window: nothing, and no `not_answering`. Read as an answer, that made a busy app ready: a look whose first
+    question it was did not wait, and the decider was asked about a look the app had not answered; and in a
+    wait, a question asked again that the app answered, then a window list that timed out, ended the wait as
+    answered at once, with the next look blind. So an empty reply is asked for once more at once, without
+    `ask_now`: an app the first call marked is skipped and says so, and one that has no window answers again
+    in milliseconds.
+
     A helper that cannot be asked reads as ready: not being able to tell is no reason to wait."""
     try:
         said = helper.call("ax.snapshot", pid=pid, scope="windows", max_depth=0, max_nodes=10, actions=False,
                            ask_now=ask_now)
+        if not said.get("nodes") and not said.get("not_answering"):
+            said = helper.call("ax.snapshot", pid=pid, scope="windows", max_depth=0, max_nodes=10, actions=False,
+                               ask_now=False)
     except HelperError:
         return {"answering": True, "launching": False, "windows": 0, "ready": True, "can_ask_now": False}
     answering = not said.get("not_answering")
@@ -112,8 +125,11 @@ def app_readiness(helper: Any, pid: int, running: list[dict[str, Any]] | None, a
 def unreadable(obs: Any) -> str:
     """Why this look could read nothing of the app, or "" when it could: 'starting' or 'busy' when the app
     did not answer Accessibility, and 'starting' when it answered while still launching with no window open
-    yet. Nothing on such a look is evidence about the app: not a window it lacks, not a route that is not
-    there, not a sub-goal done."""
+    yet. What such a look lacks is not evidence about the app, and this is what its readers do with it: the
+    decider is not told that the app has no window (observe.windows), no sub-goal advances on it, a rethink,
+    ask-user, blocked or impossible vote on it waits first (loop._judge), and the planner is not asked about
+    it while a wait is still possible (consult._consult). A done vote and a progress vote made on it are taken
+    as on any other look."""
     notes = obs.notes
     if notes.get("window_not_answering"):
         return "starting" if notes.get("app_launching") else "busy"

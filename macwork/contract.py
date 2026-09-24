@@ -127,11 +127,11 @@ def kept(ctx: Ctx, a: Affordance, params: dict[str, Any], out: Any, events: list
             if now is None:
                 return None, f"{'the field' if ref else 'the focused element'} could not be read back"
             # AXValue holds what an input method is still composing as well as what was typed, so reading it
-            # back passed 24 of the 26 recorded typing steps that left the end of their text composing. Those
-            # letters are not in the field yet: the input method holds them until it is told what to make of
-            # them, and an Escape at its panel deletes them ("hello" was left as "hel" or "hell" in 3 recorded
-            # tasks). Only an element that publishes its marked range can say so; one that does not is read as
-            # before.
+            # back passed 19 of the 21 typing steps on 09-20..23 that left the end of their text composing; the
+            # other 2 failed because the input method's syllable separator changed the text. Those letters are
+            # not in the field yet: the input method holds them until it is told what to make of them, and an
+            # Escape at its panel deletes them ("hello" was left as "hel" or "hell" in 3 recorded tasks). Only an
+            # element that publishes its marked range can say so; one that does not is read as before.
             if marked:
                 return False, f"「{marked[:24]}」 is still being composed by the input method: not yet in {where}"
             if text.strip() in now:

@@ -3,7 +3,7 @@
 The helper types through an ASCII keyboard layout, so that an input method cannot compose the keys, and it gave
 the person's own input source back as soon as the last key was posted. An app still a few keys behind then read
 the last of them through the input method: 21 of 265 typing steps on 09-20..23 left the end of their text
-composing. Reading the field back passed them, because the value holds the composition too, and the next look
+composing. Reading the field back passed 19 of them, because the value holds the composition too, and the next look
 took the input method's candidate panel for a prompt in front of the app: 48 looks in 27 tasks, 168 candidates
 offered as options, 4 reports that it was left for the person to answer.
 
