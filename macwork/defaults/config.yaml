@@ -260,6 +260,11 @@ planner:
                                  # and says whether it agrees; a "no" sends the decider back with "done" off the
                                  # table. Real runs ended done with the Open dialog up, or 144 still on the display
   max_done_opinions: 2           # per run; past this the decider's own verdict stands
+  beside: true                   # a rethink with nothing gone wrong, on an action the floor lets through and a screen
+                                 # not judged risky, takes that action and asks for the route while it is carried out;
+                                 # the route is taken in at a later look. false: such a rethink waits for its route and
+                                 # decides again with it, as every rethink did. A planner that answers through the helper
+                                 # (foundation) is always waited for; the planner's own suggestion is taken unasked either way
   fill_inputs: true              # let the planner write text a step needs instead of asking the caller
   trust_on_device: true          # on-device planners see unredacted text; cloud planners never do
   endpoints:                     # any OpenAI-compatible chat API
@@ -352,7 +357,11 @@ engine:
   quit_wait_ms: 3000             # how long a polite quit may take before the app is assumed to be asking something
   carry_chars: 600               # what each app showed, carried along so a later step uses real values, not guesses
   result_chars: 800              # the last screen text kept in the result (so closing an app loses no answer)
-  max_fruitless_rethinks: 2      # "rethink" twice with no new route from the planner: diagnose and stop
+  max_fruitless_rethinks: 2      # rethinks that brought no new route — asked, and the same route, nothing or no answer
+                                 # came, or there was no planner or allowance to ask — this many, and the task says why
+                                 # it is stuck and stops. A question refused as asked already on this exact screen, a
+                                 # look that could not be read, and an answer too late or still on its way never count.
+                                 # A new route, or the planner's word that only the user can go on, resets it
   min_steps_before_giving_up: 4  # …but not while the screen still offers things this task has never tried
   max_answer_tries: 2            # a goal asking for information keeps looking this many times before it gives up
   open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front,
@@ -382,8 +391,9 @@ engine:
                                  # is judged to show that evidence too: one number moved the plan on before
     done_veto: 0.35              # after acting, the stricter done check overrules only below this
     progress_bad: 0.2            # a step judged below this got the task nowhere: it counts toward the no-progress rule
-                                 # (max_no_progress), and the planner is told the step went wrong. A judgement, not a
-                                 # measurement: nothing is withheld on it alone
+                                 # (max_no_progress), a rethink right after it waits for its route (planner.beside), and
+                                 # the planner is told the step went wrong. A judgement, not a measurement: nothing is
+                                 # withheld on it alone
     risky_screen: 0.6
     backs_out: 0.8               # on a risky screen, an action judged to only back out goes ahead without asking
     wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done

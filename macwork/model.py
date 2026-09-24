@@ -324,7 +324,12 @@ class Pace:
     settled_leave: bool = False                                # the app was let finish before the task left it
     settled_done: bool = False                                 # the screen was let settle before judging "done"
     redo: int = 0                                              # decisions discarded because the screen moved meanwhile
-    fruitless: int = 0                                         # "rethink" asked with no new route to be had
+    fruitless: int = 0                                         # rethinks that brought no new route: asked and got
+                                                               # the same, nothing or no answer, or found no planner
+                                                               # or allowance to ask. A question refused as asked
+                                                               # already, and an answer late or still on its way,
+                                                               # never count (consult.FRUITLESS). A new route, or the
+                                                               # planner's word that only the user can go on, resets it
     answer_tries: int = 0                                      # times a goal asking for information ended with none
     done_opinions: int = 0                                     # second opinions asked on "done" (budget: planner.max_done_opinions)
     ready_waits: int = 0                                       # looks that waited for the app to answer first
@@ -350,6 +355,9 @@ class Memory:
     screen_notes: dict[str, str] = field(default_factory=dict)  # distinct screens seen (signature -> short text)
     circles: list[str] = field(default_factory=list)           # handles of the steps that only led back to a screen
                                                                # already seen (`Step.led_back`), once each
+    stuck_at: str = ""                                         # "steps:length" of the stretch that got nowhere the
+                                                               # planner was last asked about, or whose route had
+                                                               # just landed: one stretch is asked about once
     facts: Any = None                                          # facts.Facts: what this task has actually seen
     serves: dict[str, bool] = field(default_factory=dict)      # "does leaving for X serve the goal", asked once per action
     declined: set[str] = field(default_factory=set)            # floor actions the decider judged the goal never asked for

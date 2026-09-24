@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, NamedTuple
 
 from .appmodel import signature
+from .consult import FRUITLESS, Route
 from .contract import DEFERRED, kept, kept_by_change, promise
 from .invariants import check_look, check_options, check_step
 from .decider import DeciderError, choice, noul
@@ -115,6 +116,8 @@ class Look:
     floor_state: dict[str, Any] = field(default_factory=dict)    # no screen text: the floor is judged on the action alone
     aside: Affordance | None = None           # a control that sets an interruption aside: taken before the goal is asked about
     pinned: set[str] = field(default_factory=set)   # ids offered on their own for the planner: in no group's pages
+    suggested: set[str] = field(default_factory=set)   # the labels of the actions on screen the planner named
+    consulted: bool = False                   # the planner was asked at this look: nothing asks it again here
 
     @property
     def by_id(self) -> dict[str, Affordance]:
@@ -151,6 +154,8 @@ class LoopMixin:
                 look = self._look(task, ctx)
                 if isinstance(look, dict):
                     return look
+                if look is AGAIN:                 # the run's time ran out while the planner was asked
+                    continue
                 last_look = look
                 check_look(task, look.affs, look.sig, look.ctx.app)
                 check_options(task, look.affs, look.flat, look.folded)
@@ -158,8 +163,10 @@ class LoopMixin:
                     # The plan that sets the whole trajectory was written before the first look — with no
                     # app, no screen and no running apps in the brief, while every later plan saw all three.
                     # It is written after the first look now, and the look is taken again with the plan in
-                    # the state (one observation, once per task).
-                    if self._consult(task, look.ctx, look.obs, "", look.affs):
+                    # the state (one observation, once per task). Too late for this run, the loop's own
+                    # budget check says what happens next, as for any route that came too late.
+                    got = self._consult(task, look.ctx, look.obs, "", look.affs, kind="first")
+                    if got or got is Route.LATE:
                         continue
                 if look.aside is not None:        # something in the way that can simply be dismissed: do that first.
                     # No decision is asked for it — the floor already judged that it only backs out, which is
@@ -297,7 +304,7 @@ class LoopMixin:
         return ctx
 
     # ------------------------------------------------------------------ look
-    def _look(self, task: Task, ctx: Ctx) -> Look | dict[str, Any]:
+    def _look(self, task: Task, ctx: Ctx) -> Look | dict[str, Any] | _Again:
         e = self.cfg.section("engine")
         ctx.scope.looks += 1                      # how many looks this step took (see _step_record)
         locked = bool(self.helper.call("session.state").get("screen_locked"))
@@ -337,6 +344,10 @@ class LoopMixin:
         window_key = f"{(ctx.app or {}).get('pid')}|{obs.window}"
         fp_seen = self._fingerprint(ctx) if (task.steps and self.allowance_left(task, "redo")
                                              and window_key not in self.cache.setdefault("ambient", set())) else None
+        # A route asked for beside the loop is taken in once it has landed, before anything else is asked of the
+        # planner here: landing on the look where a stretch that got nowhere is found, it would be replaced by the
+        # answer to that stretch's question, about steps taken before the route existed, before the decider saw it.
+        merged = self._merge_beside(task, ctx)
 
         # One rule for a task going nowhere, in place of three counts (the same action four times from one
         # screen, an action leading back three times, three actions on one unchanged screen): a step got the
@@ -346,15 +357,28 @@ class LoopMixin:
         # the decider is told. Each of the three counts was a guess at what "stuck" looks like from one
         # angle; this is what it is.
         stuck = self._no_progress_run(task)
+        mark = f"{len(task.steps)}:{len(stuck)}"      # this stretch: steps taken, and how many of them got nowhere
+        if merged:                                    # the route that just landed is tried before it is asked again
+            task.memory.stuck_at = mark
+        consulted = False
         if len(stuck) >= int(self.cfg.get("engine.max_no_progress", 3)):
             for st in stuck:
                 if st.before:
                     task.memory.note_no_progress(st.before.split(":")[0], st.handle)
-            where = ""
-            if task.plan and task.plan_i < len(task.plan):   # the planner is told which sub-goal they failed to reach
-                where = f"; the plan is still at sub-goal {task.plan_i + 1} 「{str(task.plan[task.plan_i])[:60]}」, so a different way to it is needed, not the same one again"
-            self._consult(task, ctx, obs, f"the last {len(stuck)} actions got the task nowhere: "
-                          + "; ".join(st.action[:40] for st in stuck[-3:]) + where, obs.affordances)
+            # Asked once per stretch, not once per look: the same stretch seen again after a look into a group, a
+            # wait or a sub-goal ticked off is the question already asked, and a stretch one step longer is a new
+            # one. Its answer spends nothing and ends nothing; what a rethink vote brings is counted there.
+            if task.memory.stuck_at != mark:
+                where = ""
+                if task.plan and task.plan_i < len(task.plan):   # the planner is told which sub-goal they failed to reach
+                    where = f"; the plan is still at sub-goal {task.plan_i + 1} 「{str(task.plan[task.plan_i])[:60]}」, so a different way to it is needed, not the same one again"
+                got = self._consult(task, ctx, obs, f"the last {len(stuck)} actions got the task nowhere: "
+                                    + "; ".join(st.action[:40] for st in stuck[-3:]) + where, obs.affordances, kind="stuck")
+                if got is Route.LATE:
+                    return AGAIN                  # the run's time is up: the loop's own budget check says what next
+                if got is not Route.UNREADABLE:   # a look nobody could read asks again once the app answers
+                    task.memory.stuck_at = mark
+                consulted = got not in (Route.NONE, Route.UNREADABLE, Route.SPENT, Route.ASKED)
         offered_by_planner = self._suggested(task, obs)
         declare_keys(ctx, obs, offered_by_planner)   # a suggested key goes where this look's keys go
         affs = [a for a in obs.affordances + offered_by_planner if not self._denied(a, ctx.app)]
@@ -453,6 +477,7 @@ class LoopMixin:
         look = Look(ctx, obs, sig, locked, affs, flat, folded, groups, options, state, questions, fp_seen, dead_before, timing)
         look.floor_map, look.floor_questions, look.floor_state = floor_map, floor_q, floor_state
         look.aside, look.pinned = aside, pinned
+        look.suggested, look.consulted = {x for x in suggested if x}, consulted
         return look
 
     def _judge_led_back(self, task: Task, sig: str) -> None:
@@ -552,9 +577,9 @@ class LoopMixin:
         return last, run
 
     def _no_progress_run(self, task: Task) -> list[Step]:
-        """The trailing steps that got the task nowhere: could not be done, broke their promise, were judged
-        no progress by the decider, or only led back to a screen already seen. Oldest first."""
-        bad = float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
+        """The trailing steps that got the task nowhere (`_nowhere`: could not be done, broke their promise, were
+        judged no progress by the decider, or only led back to a screen already seen). Oldest first. The same
+        judgement, of the last step alone, is what a rethink waits for its route on (`_went_wrong`)."""
         run: list[Step] = []
         for st in reversed(task.steps):
             if st is task.steps[-1] and "progress_after" not in st.decision and st.ok and st.kept is not False and not st.led_back:
@@ -562,9 +587,7 @@ class LoopMixin:
                 # not yet known either way, so it neither counts nor ends the run. Counted as "somewhere", it
                 # ended every run at length zero, and no task was ever found to be going nowhere by this rule.
                 continue
-            nowhere = (not st.ok or st.kept is False or st.led_back
-                       or float(st.decision.get("progress_after", 1.0)) < bad)
-            if not nowhere:
+            if not self._nowhere(st):
                 break
             run.append(st)
         return list(reversed(run))
@@ -728,16 +751,17 @@ class LoopMixin:
             # goal itself is unclear here. This fell through and acted, so "ask the user" with one candidate
             # meant "do it anyway". The planner gets its say first (it may know a route, or that only the
             # user can continue); failing that, the caller is asked to say more, and the answer comes back
-            # as an input — the one channel besides the goal that comes from the user.
-            r = self._on_rethink(task, look)
-            if r is not None:
-                return r
+            # as an input — the one channel besides the goal that comes from the user. Waited for: there is
+            # nothing to act on meanwhile.
+            got = self._rethink_now(task, look)
+            if got or got is Route.LATE:
+                return AGAIN
             reason, cause = self._ending(look.obs, "the goal can be read more than one way on this screen: say more precisely what is wanted")
             return self._finish(task, "need_input", reason,
                                 {"inputs": {"clarification": "what the goal means here, in a sentence"},
                                  "screen": (look.obs.window, look.obs.screen_text[:300])}, cause=cause)
         if move == "rethink":
-            r = self._on_rethink(task, look)
+            r = self._on_rethink(task, look, key, risky_screen)
             if r is not None:
                 return r
         return self._pick(task, look, key, move, ranked, risky_screen, progress)
@@ -840,7 +864,10 @@ class LoopMixin:
         tried = [s.action for s in task.steps]
         problem = ("only the user seems able to continue here" if move == "blocked" else "the goal looks unreachable here") + \
             (": tried " + "; ".join(tried[-6:]) if tried else "")
-        if self._consult(task, look.ctx, look.obs, problem, look.affs) and not task.blocked_reason:
+        got = self._consult(task, look.ctx, look.obs, problem, look.affs, kind=move)
+        if got is Route.LATE:
+            return AGAIN      # the run's time ran out first: the loop's own budget check says what happens next
+        if got and not task.blocked_reason:
             return AGAIN
         if task.blocked_reason or move == "blocked":
             reason, cause = self._ending(look.obs, task.blocked_reason or task.outputs.get("planner_thinks_blocked")
@@ -850,22 +877,54 @@ class LoopMixin:
         reason, cause = self._ending(look.obs, "judged unreachable on this Mac", "unreachable")
         return self._finish(task, "failed", reason, {"tried": tried[-8:]}, cause=cause)
 
-    def _on_rethink(self, task: Task, look: Look) -> _Again | dict[str, Any] | None:
-        """Another route, from the planner. None: no new route this time (the chosen action is taken instead)."""
-        tried = [s.action for s in task.steps]
-        problem = "the actions on screen do not lead toward the goal" + (": tried " + "; ".join(tried[-6:]) if tried else "")
-        if self._consult(task, look.ctx, look.obs, problem, look.affs):
-            task.pace.fruitless = 0
-            if task.blocked_reason:
-                # The planner's word alone ended the task here. A real run ended `blocked` at step 0 because
-                # the planner, shown a path as ~/…, decided it "did not know the real user name" — a text
-                # model's reading of a redacted path, and the decider had said "find another route", not
-                # "blocked". Two independent judgements have to agree: the planner's is kept as an opinion
-                # the decider sees, and only its own `blocked` ends the task (with the planner's reason).
-                task.outputs["planner_thinks_blocked"] = task.blocked_reason
-                task.blocked_reason = ""
+    def _on_rethink(self, task: Task, look: Look, key: str, risky_screen: float) -> _Again | dict[str, Any] | None:
+        """The decider wants another route. Whether the loop waits for one is a question of evidence.
+
+        A rethink vote stopped the task for a planner call, and when a route came the action chosen with it was
+        dropped. On 09-22..23 (62 tasks, held-out goals left out), 23 rethink looks chose one of the planner's own
+        suggestions and 7 of them waited for a call, 57 s in all — among them both of 09-23's key tasks, whose
+        replans no longer held the 「type 17」 and 「type serendipity」 they had chosen. 96 chose an action on offer
+        with nothing gone wrong and waited for 60 calls, 575 s, and after 24 of those the next look chose the same
+        action again. On 20 of the 96 the floor's last verdict on the chosen action stopped for it, and no screen
+        was judged risky (0.09 at most). So:
+
+        * the planner's own suggestion is taken as it stands, with no question asked and nothing counted;
+        * with nothing gone wrong and an action on offer the floor lets through, on a screen not judged risky, the
+          route is asked for beside the loop, the action goes through every gate as before, and the route is taken
+          in at a later look (`_consult_beside`, `_merge_beside`);
+        * otherwise the route is waited for (`_rethink_now`): a step that got nowhere, nothing to act on, an action
+          the floor stops for or a screen judged risky — taken, it would stop at the confirmation rather than be
+          thought over — a planner that cannot be asked beside the loop (`planner.beside` off, or one that answers
+          through the helper), a call still on its way, the planner already asked at this look, or no fruitless
+          rethink left, when what this one brings decides whether the task ends here (the ending below reads a
+          count a pending answer would leave untouched).
+
+        A rethink that asked and brought nothing new, or had no planner or allowance to ask, counts toward
+        `engine.max_fruitless_rethinks` (`consult.FRUITLESS`); one refused as asked already on this exact screen,
+        or still on its way, does not. The ending is the one it always was. None: the chosen action is taken."""
+        chosen = look.by_id.get(key)
+        if chosen is not None and self._planners_own(look, chosen):
+            return None
+        if self._merge_beside(task, look.ctx):
+            # The route asked for beside the loop landed while the decider was deciding: the decision is made again
+            # with it, and it is tried before the stretch is asked about (`_look`). Left where it was, the next
+            # question would have stopped the call it came in on, and the answer would have been lost with it.
+            task.memory.stuck_at = f"{len(task.steps)}:{len(self._no_progress_run(task))}"
             return AGAIN
-        self.spend_allowance(task, "fruitless")                  # no new route to be had: after a second time, say why instead of wandering
+        th = float(self.cfg.get("engine.thresholds.risky_screen", 0.6))
+        # the floor's verdict last: it may be a request, and it is the one `_pick` reads next, from the same cache
+        beside = (chosen is not None and not self._went_wrong(task) and self._may_ask_beside()
+                  and self.scope(task.id).planning is None and not look.consulted and self.allowance_left(task, "fruitless")
+                  and risky_screen < th and not self._floor(task.id, look.ctx, chosen, look.obs.window))
+        if beside:
+            got = self._consult_beside(task, look.ctx, look.obs, self._rethink_problem(task), look.affs)
+        else:
+            got = self._rethink_now(task, look)
+            if got or got is Route.LATE:
+                return AGAIN
+        # (A look nobody could read never gets here: `_judge` waits on it, or takes the chosen option, first.)
+        if got in FRUITLESS:
+            self.spend_allowance(task, "fruitless")      # no new route to be had: after a second time, say why instead of wandering
         # …but not before the screen itself has been given a fair try. A real task gave up after two steps,
         # with the very action it needed sitting in the options, because the planner had nothing to add. The
         # planner having no route is not the same as there being none.
@@ -876,6 +935,23 @@ class LoopMixin:
             return self._diagnose(task, look.ctx, look.obs, look.state, reason="no route to the goal was found", cause="no_route")
         return None
 
+    def _rethink_now(self, task: Task, look: Look) -> Route:
+        """A route, waited for, never past the run's time. NEW, BLOCKED (the planner's `blocked` becomes an opinion
+        the decider sees) and LATE mean deciding again; anything else, that the last answer stands. The planner is
+        asked once a look: when the no-progress rule has asked it here, that answer stands (ASKED)."""
+        if look.consulted:
+            return Route.ASKED
+        look.consulted = True
+        got = self._consult(task, look.ctx, look.obs, self._rethink_problem(task), look.affs)
+        if got is Route.BLOCKED:
+            self._planner_opinion(task)
+        return got
+
+    @staticmethod
+    def _rethink_problem(task: Task) -> str:
+        tried = [s.action for s in task.steps]
+        return "the actions on screen do not lead toward the goal" + (": tried " + "; ".join(tried[-6:]) if tried else "")
+
     def _pick(self, task: Task, look: Look, key: str, move: str, ranked: Callable[[], list[str]], risky_screen: float,
               progress: Progress) -> Affordance | _Again | dict[str, Any]:
         """The action to take, through the gates: reading the screen on request, floor actions the goal never asked
@@ -884,9 +960,11 @@ class LoopMixin:
         if key not in by_id:
             key = next(iter(ranked()), "")
             if not key:                           # nothing to act on: a different route, if there is one, else say so
-                if move != "rethink" and self._consult(task, look.ctx, look.obs, "nothing left to try on this screen", look.affs) \
-                        and not task.blocked_reason:
-                    return AGAIN
+                if move != "rethink" and not look.consulted:
+                    look.consulted = True
+                    got = self._consult(task, look.ctx, look.obs, "nothing left to try on this screen", look.affs, kind="nothing_left")
+                    if got is Route.LATE or (got and not task.blocked_reason):
+                        return AGAIN
                 reason, cause = self._ending(look.obs, "no action left to take on this screen", "no_actions")
                 return self._finish(task, "failed", reason, {"tried": [s.action for s in task.steps][-8:]}, cause=cause)
         chosen = by_id[key]
@@ -960,7 +1038,7 @@ class LoopMixin:
                                     self._confirm_pending(chosen.public(), gated, offer))
         params = {k: task.inputs[k] for k in chosen.slots if k in task.inputs}
         for carried in ("text", "url"):   # a planner suggestion carries its own text or link
-            if carried in chosen.target and chosen.id.startswith("t"):
+            if carried in chosen.target and "try" in chosen.target:
                 params[carried] = chosen.target[carried]
         missing = {k: s.desc for k, s in chosen.slots.items() if s.required and k not in params}
         for k in list(missing):                   # Jev writes no text: the planner may, before we bother the caller
@@ -995,18 +1073,19 @@ class LoopMixin:
                     task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
                     return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
                                         self._confirm_pending({**chosen.public(), "text": text[:200]}, floor, offer))
-        if "text" in chosen.target and chosen.id.startswith("t"):
+        if "text" in chosen.target and "try" in chosen.target:
             # Where the injection checks look: `evals.check` builds its trace from the step labels and
             # typed_by_planner. Text typed from a move reached it only through its label, which keeps 40
             # characters of it, and 24 of the 139 typing moves chosen in the audit typed more than that. Written
             # here, once the floor has passed the move with its text in it: text it held was not typed.
             task.outputs.setdefault("typed_by_planner", []).append(
                 {"into": chosen.label, "text": chosen.target["text"], "source": chosen.target.get("source", "")})
-        # by its id, not its label: a key suggestion is labelled with the menu item it turns out to be
+        # by the try it is, not its label: a key suggestion is labelled with the menu item it turns out to be
         # ("press cmd+shift+g (suggested by the planner) (menu Go ▸ Go to Folder…)"), so matching on the
-        # bare suggestion never removed it and a real task pressed cmd+shift+g on four steps out of eight
+        # bare suggestion never removed it and a real task pressed cmd+shift+g on four steps out of eight. Nor
+        # by an id: "read all the text" is t<n>, as the suggestions were, and taking it took one of them away
         task.tries = [t for i, t in enumerate(task.tries)
-                      if chosen.id != f"t{i}" and self._suggestion_label(t) != chosen.label]
+                      if chosen.target.get("try") != i and self._suggestion_label(t) != chosen.label]
         task.pace.redo = 0
         progress(chosen.label)
         t0 = time.monotonic()

@@ -22,7 +22,7 @@ ALLOWANCES: dict[str, tuple[str, int, int]] = {
     "looks": ("engine.max_looks", 6, 0),                  # looking into a folded group, or reading the screen
     "waits": ("engine.max_waits", 4, 0),                  # "the app is still busy": wait and look again
     "answer_tries": ("engine.max_answer_tries", 2, 0),    # done, but the question is not answered yet: look again
-    "fruitless": ("engine.max_fruitless_rethinks", 2, 0), # rethinks that found no new route
+    "fruitless": ("engine.max_fruitless_rethinks", 2, 0), # rethinks that brought no new route (consult.FRUITLESS)
     "replans": ("planner.max_replans", 2, 1),             # plans after the first: the first is not a re-plan
     "corrections": ("planner.max_corrections", 3, 0),     # replans that followed a step judged to have gone wrong
     "done_opinions": ("planner.max_done_opinions", 2, 0), # second opinions on "done"

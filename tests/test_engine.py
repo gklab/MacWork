@@ -1055,7 +1055,7 @@ def test_a_drag_suggestion_is_offered_only_when_both_ends_are_on_screen(tmp_path
     task = Task(goal="x", tries=[{"drag": ["photo.png", "Archive"]}, {"drag": ["photo.png", "Nowhere"]}])
     offered = eng._suggested(task, obs)
     assert len(offered) == 1 and offered[0].verb == "drag"
-    assert offered[0].target == {"x1": 10.0, "y1": 10.0, "x2": 120.0, "y2": 120.0}
+    assert offered[0].target == {"x1": 10.0, "y1": 10.0, "x2": 120.0, "y2": 120.0, "try": 0}
 
 
 def test_the_app_the_engine_runs_under_is_never_touched(tmp_path):

@@ -59,8 +59,9 @@ class JudgeMixin:
             except DeciderError:
                 pass
         if why == "blocked":   # the planner already had its turns during the run: here it only words the reason
-            if not task.blocked_reason:
-                self._consult(task, ctx, obs, f"{reason}; only the user seems able to continue: tried " + "; ".join(tried))
+            if not task.blocked_reason:     # owed however late it is: the ending is being written
+                self._consult(task, ctx, obs, f"{reason}; only the user seems able to continue: tried " + "; ".join(tried),
+                              kind="blocked", bounded=False)
             return self._finish(task, "blocked", f"{reason}; " + (task.blocked_reason or self.cfg.question("blocked_reason")),
                                 {"tried": tried, "screen": screen, "screens_seen": list(task.memory.screen_notes.values())[-6:]}, cause=cause or "needs_user")
         if why == "impossible":
