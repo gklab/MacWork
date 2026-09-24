@@ -275,3 +275,37 @@ Stopping a local call is not free. mlx_lm 0.31.3 notices a closed connection at 
 per 2048-token chunk of prompt it reads, and the client closes it at the next line it reads: measured on this Mac,
 a recorded replan sent right after another was stopped 3 s into its prefill had its first token 11.5-19.3 s after
 the stop (31.4 s once, the stopped prompt two recorded ones long), against 4.9-7.2 s on an idle server.
+
+## The planner's protocol: what it is told, and what is taken from it (2026-09-24)
+
+Read out of this Mac's audit (09-19..23, sealed held-out goals left out, read only). The planner's brief was the
+first 40 option labels, the window's first: after c632ed9 made it 40, none of the 97 plan and replan prompts held
+an item of the app's own menus, while 1,145 of their 3,742 labels were the Apple menu's (965 its Recent Items). A
+replan was told the goal, what had been done and the problem, never the plan, and whatever it answered replaced
+the plan and put the task back at sub-goal 1 (59 of 773 answers came while the plan was past it). Its moves were
+matched to options by the whole label or a key pattern: of 251 key moves, 73 carried the planner's mark (127 were a
+named key alone, 37 a combination written another way, 14 no key), and what could not be used was dropped without
+a word. Of the fills whose text the audit keeps (21 of 54 since c0e7011), 11 wrote a text the task already held.
+
+* **Each place has its share of the brief** (`macwork/brief.py`, `planner.brief`): the apps the goal names; the
+  app's own window (`on_screen`: every window or pointer option that names no other process, one per name, a long
+  run of rows or cells as one entry, never a keypad's buttons); one line per menu, items with a key equivalent
+  first, a long submenu as one entry (`menu_entries` 17: 74 of the 75 menu items chosen since c632ed9 are within
+  it, 38 within 6); and `elsewhere`, a line per other process and one for the Services.
+* **A move names an option by what it is** (`consult.find_named`): its label, else its name as the planner was
+  shown it (`observe.plain_name`), else a menu item's place. A key is read as the keyboard reads it
+  (`canonical_combo`), and a named key alone is the keys provider's key. The planner's mark and the pinned
+  options go by id (`Look.moves`).
+* **What could not be used is told back** (`moves_that_could_not_be_used`): "never repeat" only for a key that is
+  no key or an option's name put into type; a text no screen has shown yet or an option not on screen yet is "not
+  available when suggested", and leaves the list once it is.
+* **A replan is told the plan** (`Plan:` after `Goal:`, each sub-goal done, now or next, with what the screen was to
+  show for the one it is at) and its answer is the rest of it, spliced in where the plan stood when it was asked;
+  an answer with moves only leaves the plan where it is, and one that lands after the plan moved brings its moves
+  only. The sub-goals keep `{goal, evidence}`. A sub-goal with no evidence is ticked off at most once per step taken
+  since the plan last moved.
+* **An empty field takes a text the task holds before the planner is asked** (`which_text`, the decider choosing
+  among the caller's inputs, the paths the goal names and the planner's own text a screen or the goal holds word
+  for word), only where the floor judges the step again with the value in it. Typing at the cursor is offered for
+  such texts where a field of the app has the keyboard. No planner prompt carries the caller's inputs, nor a text
+  of the planner's that traces to them.
