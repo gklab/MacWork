@@ -26,7 +26,7 @@ from .act import Outcome
 from .onscreen import unreadable
 from . import sight
 from .model import Affordance, Change, Observation, Step, Task
-from .observe import SCREEN, Ctx, arrange, get_provider, observe, page_anchor, page_members
+from .observe import SCREEN, Ctx, arrange, declare_keys, get_provider, observe, page_anchor, page_members
 from .skills import Skills
 
 log = logging.getLogger(__name__)
@@ -364,6 +364,7 @@ class LoopMixin:
             self._consult(task, ctx, obs, f"the last {len(stuck)} actions got the task nowhere: "
                           + "; ".join(st.action[:40] for st in stuck[-3:]) + where, obs.affordances)
         offered_by_planner = self._suggested(task, obs)
+        declare_keys(ctx, obs, offered_by_planner)   # a suggested key goes where this look's keys go
         affs = [a for a in obs.affordances + offered_by_planner if not self._denied(a, ctx.app)]
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
         # Keyed on what an action *is* (its identity, else its steady name), not on what it says right now.
@@ -957,7 +958,7 @@ class LoopMixin:
         if text and (chosen.verb in ("type", "type_submit") or "url" in params):
             doing = "typing" if params.get("text") else "opening"
             typed = Affordance(chosen.id, chosen.channel, chosen.verb, f"{chosen.label} — {doing} 「{text[:120]}」", chosen.target,
-                               context=chosen.context)
+                               context=chosen.context, facts=dict(chosen.facts))   # judged where it will be typed
             floor = self._floor(task.id, ctx, typed, obs.window if obs else None)
             # keyed on the action *with its text*, not on the base label: "type at the cursor" is the same
             # label every time, so one confirmation used to release everything typed after it

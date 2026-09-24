@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -132,7 +133,9 @@ class PolicyMixin:
         to be.
         """
         conf = self.cfg.policy.get("confirm", {}) or {}
-        text = f"{a.verb} {a.label} {a.context}"
+        # the label as it reads without a tooltip that is a control's only name (`floor_text`, observe.py): the
+        # action's own verb and title still count, the tooltip's sentence about it does not
+        text = f"{a.verb} {a.target.get('floor_text', a.label)} {a.context}"
         derived = self._floor_words()
         hits = [name for name, c in (conf.get("categories") or {}).items()
                 if any(re.search(rx, text) for rx in list((c or {}).get("patterns") or []) + derived.get(name, []))]
@@ -164,7 +167,24 @@ class PolicyMixin:
         run. What an action *does* is the same whatever is in the field, which is what is being classified.
         """
         app = ctx.app or {}
-        return f"{self.models.key(app) or app.get('bundle_id')}|{a.name()}|{a.context}"
+        key = f"{self.models.key(app) or app.get('bundle_id')}|{a.name()}|{a.context}"
+        # ...and what the Mac declares about it (`Affordance.facts`): a key in a sheet, in a text field, in a
+        # window read only in part or in one that could not be read is another question from the same key
+        # elsewhere, and a verdict formed blind serves only looks that are as blind
+        return key + "|" + json.dumps(a.facts, sort_keys=True, ensure_ascii=False, default=str) if a.facts else key
+
+    def _declared(self, a: Affordance) -> dict[str, Any]:
+        """`the_mac_declares` for a floor question's state, or nothing (policy confirm.declared_facts).
+
+        Off by default: it changes the classifier's input, and how the classifier scores with it has not been
+        measured. When on, only what native structure owns: the window or sheet the action is in, the
+        control's role and subrole, a menu item's identifier. Nothing about an element of a web page, whose
+        roles and identifiers the page writes, and not where the keyboard is, which may be such an element."""
+        conf = self.cfg.policy.get("confirm", {}) or {}
+        if not conf.get("declared_facts", False) or a.facts.get("_web_content"):
+            return {}
+        told = {k: v for k, v in a.facts.items() if k in ("in", "control") or (k == "identifier" and a.channel == "menu")}
+        return {"the_mac_declares": told} if told else {}
 
     def _releases(self, a: Affordance | None = None) -> dict[str, str]:
         """The verdicts that let an action through, named by policy rather than written into the code: what a
@@ -249,7 +269,7 @@ class PolicyMixin:
         if not ask or getattr(ctx, "gate", None) is None:
             return False
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
-                 "where": a.context, "kind": f"{a.channel} {a.verb}"}
+                 "where": a.context, "kind": f"{a.channel} {a.verb}", **self._declared(a)}
         q, fills = self.cfg.question("floor_harmless"), {"action": a.label}
         try:
             ans = ctx.gate.decide(self.redactor(task_id), state, {"harmless": noul(q, fills=fills)}, task=task_id)
@@ -314,7 +334,7 @@ class PolicyMixin:
             qid = f"floor{len(questions)}"
             questions[qid] = choice(self.cfg.question("floor_what"), self._floor_options(a, hits), fills={"action": a.label})
             mapping[qid] = key
-            actions.append({"action": a.label, "where": a.context, "kind": f"{a.channel} {a.verb}"})
+            actions.append({"action": a.label, "where": a.context, "kind": f"{a.channel} {a.verb}", **self._declared(a)})
         state = {"app": (ctx.app or {}).get("name"), "window": window, "actions": actions}
         return questions, state, mapping
 
@@ -342,7 +362,7 @@ class PolicyMixin:
         if not ask or getattr(ctx, "gate", None) is None:
             return None
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
-                 "where": a.context, "kind": f"{a.channel} {a.verb}"}
+                 "where": a.context, "kind": f"{a.channel} {a.verb}", **self._declared(a)}
         q, fills = self.cfg.question("floor_what"), {"action": a.label}
         try:
             ans = ctx.gate.decide(self.redactor(task_id), state, {"what": choice(q, self._floor_options(a, hits), fills=fills)}, task=task_id)
@@ -542,11 +562,17 @@ class PolicyMixin:
         icon in a Finder window. A menu item or a control whose own name is the name of another app on this
         Mac opens that app; the Mac's list of apps says which names those are.
         """
+        here = (ctx.app or {}).get("bundle_id")
         if a.channel in ("app", "shortcut"):
+            # Bringing back the main window of the app in front, or switching to it, stays in it: 34 of 125
+            # serves_goal questions in this Mac's audit asked that, and one was declined (0.22), so Finder, with
+            # no window open, was not given one back. Only by bundle, and only where the app in front has one: a
+            # Shortcut carries none, and neither does every app.
+            if here and a.target.get("bundle_id") == here:
+                return None
             return str(a.target.get("name") or "")
         if a.channel == "service":      # content handed to another app, which usually comes to the front with it
             return ""
-        here = (ctx.app or {}).get("bundle_id")
         if a.channel == "file" and a.verb in ("open", "reveal"):
             # whoever the system hands a file or a link to comes to the front — for a web link, the browser
             return None if here and a.target.get("bundle_id") == here else ""
