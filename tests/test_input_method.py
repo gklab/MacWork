@@ -17,11 +17,12 @@ import json
 from typing import Any
 
 from macwork.act import Outcome, get_channel
+from macwork.config import Config
 from macwork.contract import kept
 from macwork.engine import Engine
 from macwork.helper import HelperError
-from macwork.model import Affordance
-from macwork.observe import Ctx
+from macwork.model import Affordance, Observation
+from macwork.observe import Ctx, get_provider
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg
 
 INTO_FIELD = Affordance("w3", "window", "type", "type into text field 「Recipient」", {"ref": "g2.3", "pid": 42})
@@ -159,3 +160,91 @@ def test_committed_text_is_still_typed(tmp_path):
         for a in (INTO_FIELD, AT_CURSOR):
             held, why = kept(ctx_of(tmp_path, Composing(marked)), a, {"text": "hello"}, Outcome(True), [])
             assert held is True and why.startswith("the text is in"), (marked, a.channel, why)
+
+
+# ----------------------------------------------------------------- an input method's panel is no prompt
+
+APP_WINDOW = {"id": 10, "pid": 42, "owner": "TextEdit", "layer": 0, "frame": [100, 100, 600, 400], "regular": True,
+              "alpha": 1, "on_screen": True, "ordinary": True, "input_method": False}
+# as helper 0.2.0 lists an input method's candidate panel: another process, above the normal window level, flagged
+PANEL = {"id": 333, "pid": 77, "owner": "Example Input", "layer": 24, "frame": [300, 300, 340, 120], "regular": False,
+         "alpha": 1, "on_screen": True, "ordinary": False, "input_method": True}
+CANDIDATES = [{"ref": "c0", "pid": 77, "role": "AXStaticText", "value": "lo"},
+              {"ref": "c1", "pid": 77, "role": "AXButton", "title": "1 lo", "actions": ["AXPress"], "frame": [310, 330, 40, 20]}]
+
+
+class Windows:
+    """The window server and the trees of other processes, for the overlays provider alone."""
+    mode = "fake"
+
+    def __init__(self, windows: list[dict[str, Any]], trees: dict[int, list[dict[str, Any]]]) -> None:
+        self.windows, self.trees, self.snapshots = windows, trees, []
+
+    def call(self, method: str, timeout: float = 30.0, **p: Any) -> Any:
+        if method == "screen.windows":
+            return self.windows
+        if method == "ax.snapshot":
+            self.snapshots.append(p["pid"])
+            return {"nodes": self.trees.get(p["pid"], [])}
+        if method == "screen.ocr":
+            return {"boxes": [], "frame": p.get("near"), "ms": 1}
+        raise AssertionError(method)
+
+
+def overlays(helper: Windows) -> Observation:
+    ctx = Ctx(cfg=Config.load(), helper=helper, app={"pid": 42, "name": "TextEdit"}, goal="", inputs={}, task="t",
+              gate=None, cache={})
+    obs = Observation(app=ctx.app, window="Untitled", affordances=[])
+    get_provider("overlays")(ctx, obs)
+    return obs
+
+
+def test_an_input_method_panel_over_the_app_is_not_a_prompt():
+    h = Windows([PANEL, APP_WINDOW], {77: CANDIDATES})
+    obs = overlays(h)
+    assert not obs.notes.get("covered_by") and not obs.notes.get("interruptions")
+    assert obs.affordances == [], "a candidate is not an option"
+    assert "1 lo" not in obs.screen_text and "Example Input" not in obs.screen_text
+    assert 77 not in h.snapshots, "nothing of it is read"
+
+
+def test_an_input_method_window_at_the_ordinary_level_is_still_read():
+    """Its settings window is a window like any other: a task may have opened it, or be about it."""
+    settings = {**PANEL, "id": 334, "layer": 0, "ordinary": True, "frame": [200, 150, 500, 300]}
+    h = Windows([settings, APP_WINDOW], {77: [{"ref": "s1", "pid": 77, "role": "AXCheckBox", "title": "Show candidates",
+                                               "actions": ["AXPress"], "frame": [220, 200, 120, 20]}]})
+    obs = overlays(h)
+    assert [c["from"] for c in obs.notes["covered_by"]] == ["Example Input"]
+    assert any("Show candidates" in a.label for a in obs.affordances) and 77 in h.snapshots
+
+
+class ComposingOverTheApp(FakeHelper):
+    """TextEdit's window, and over it the candidate panel of an input method still composing the last two letters
+    of what was typed: the field reads "hello", and "lo" of it is marked."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.screen = [PANEL, APP_WINDOW]
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "ax.snapshot" and p.get("pid") == PANEL["pid"]:
+            self.calls.append((method, p))
+            return {"nodes": CANDIDATES, "ms": 1}
+        if method == "ax.get" and p.get("marked"):
+            self.calls.append((method, p))
+            return {"value": self.typed, "marked": "lo"}
+        return super().call(method, timeout, **p)
+
+
+def test_a_typing_step_that_leaves_its_end_composing_fails_and_leaves_nothing_for_you(tmp_path):
+    d = ScriptedDecider([{"pick": "Recipient"}] + [{"pick": "done"}] * 4)
+    c = cfg(tmp_path, config={"observe": {"providers": ["apps", "menu", "window", "keys", "overlays"]}})
+    eng = Engine(c, helper=ComposingOverTheApp(), decider=d)
+    res = eng.do("fill in the recipient", {"text": "hello"}, app="TextEdit")
+    step = eng.tasks[res["task_id"]].steps[0]
+    assert step.ok is False and "input method" in (step.error or ""), step.error
+    assert "left_for_you" not in res["outputs"]
+    states = [s for s, _ in d.seen + d.side]
+    assert states and not any(isinstance(s, dict) and "covered_by" in s for s in states)
+    assert not any("about" in q for _, q in d.side), "nobody was asked whether the goal is about it"
+    assert PANEL["pid"] not in [p.get("pid") for p in eng.helper.did("ax.snapshot")]
