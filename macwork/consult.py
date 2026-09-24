@@ -175,8 +175,10 @@ class ConsultMixin:
             return False
         task.memory.last_route = route
         task.blocked_reason = plan.get("blocked") or ""
-        dead = task.memory.no_effect_handles()
-        task.tries = [t for t in plan.get("try") or [] if self._suggestion_label(t) not in dead]   # facts beat suggestions
+        # Every try the planner gave. What did nothing is a fact about one exact screen, applied where the options
+        # are built (`Memory.withheld_reason`): a suggestion that did nothing on this screen is withheld on it and
+        # offered on any other. Dropped here, it was dropped from every screen.
+        task.tries = list(plan.get("try") or [])
         if not plan["steps"] and not task.tries and not task.blocked_reason:
             return False
         if task.blocked_reason:

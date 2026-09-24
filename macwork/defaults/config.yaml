@@ -381,7 +381,9 @@ engine:
     step_evidence: 0.6           # …and a sub-goal the planner gave evidence for advances only when the screen
                                  # is judged to show that evidence too: one number moved the plan on before
     done_veto: 0.35              # after acting, the stricter done check overrules only below this
-    progress_bad: 0.2            # the last step is recorded as having had no effect
+    progress_bad: 0.2            # a step judged below this got the task nowhere: it counts toward the no-progress rule
+                                 # (max_no_progress), and the planner is told the step went wrong. A judgement, not a
+                                 # measurement: nothing is withheld on it alone
     risky_screen: 0.6
     backs_out: 0.8               # on a risky screen, an action judged to only back out goes ahead without asking
     wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done
