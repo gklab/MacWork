@@ -10,6 +10,7 @@ from typing import Any
 from .decider import DeciderError, choice
 from .model import Affordance, Observation, Task
 from .observe import Ctx
+from .onscreen import unreadable
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ class JudgeMixin:
         screen was — a window most of which nothing could read is one, and it says so before "no route"."""
         tried = [s.action for s in task.steps][-12:]
         screen = (obs.window, obs.screen_text[:300])
+        unanswered = self._unanswered(obs)
+        if unanswered:        # nothing of the app was read on its last screen: that is what stopped it
+            return self._finish(task, "failed", f"{reason}; {unanswered}", {"tried": tried, "screen": screen},
+                                cause="app_not_answering")
         unreadable = obs.notes.get("window_unreadable")
         if unreadable:
             return self._finish(task, "failed", f"{reason}; most of the window 「{obs.window or ''}」 ({int(float(unreadable) * 100)}%) could not be "
@@ -65,6 +70,22 @@ class JudgeMixin:
             return self._finish(task, "failed", f"{reason}; the goal is unclear on this screen — say more precisely what is wanted", {"tried": tried, "screen": screen},
                                 cause=cause or "unclear_goal")
         return self._finish(task, "failed", reason, {"tried": tried, "screen": screen}, cause=cause or "unfinished")
+
+    def _unanswered(self, obs: Observation | None) -> str:
+        """Why nothing of the app could be read on this look, naming the app, or "" when it answered."""
+        why = unreadable(obs) if obs is not None else ""
+        if not why:
+            return ""
+        name = (obs.app or {}).get("name") or "the app"
+        return f"{name} {'is still starting' if why == 'starting' else 'is busy'} and did not answer Accessibility, " \
+               "so nothing of its window could be read"
+
+    def _ending(self, obs: Observation | None, reason: str, cause: str = "") -> tuple[str, str]:
+        """The reason and cause of an ending on this look: as given — unless the app did not answer the look,
+        which is then the cause, named in the reason. 16 tasks since 22ce357 ended on such a look, 12 of the
+        67 no_route endings among them, and no reason said that the app had not answered."""
+        unanswered = self._unanswered(obs)
+        return (f"{reason}; {unanswered}", "app_not_answering") if unanswered else (reason, cause)
 
     def _alternatives(self, probs: dict[str, float], by_id: dict[str, Affordance]) -> list[dict[str, Any]]:
         """The ways the goal could be read here, for the caller to choose between. The top k by rank — which

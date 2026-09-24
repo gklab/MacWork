@@ -158,3 +158,31 @@ Result: the same task, failed twice before, done in 33 s — the empty crossing 
 * **Another interface language, measured.** The floor's words are now derived once per interface language
   the Mac uses (`words.py`), so the higher bar applies to a German or Japanese delete as it does to an
   English one; what the planner answers for a language nobody here reads is unverified.
+
+## An app that is starting or busy is waited for, not read blind (2026-09-24)
+
+Since the helper's 20 s cooldown (22ce357), a look taken while the app did not answer Accessibility was still
+treated as a look at it. The windows provider wrote `open_windows: []`, so the decider read "none: the app has no
+window open" beside "nothing of its window can be read", and was offered "bring back the main window". All 10
+in-loop opens since then were followed by such a look. Of 158 such looks the decider voted rethink on 144 and
+wait on none, and chose reopen on 45 (49 of 2,338 answering looks); 53 plans were made right after one, and 16
+tasks ended on one, 12 of the 67 `no_route` endings among them. With helper 0.2.0, which believes a timeout only
+until it asks again and says whether an app is still launching:
+
+* **A look waits for the app first** (`EffectsMixin._await_app`): it asks at once every `engine.ready_poll_ms`
+  until the app answers, for at most `engine.open_front_s`, each wait one of the ledger's `ready_waits`. An app
+  that stays silent that long is not waited for again until it answers, and a helper older than 0.2.0, which
+  cannot be asked at once, is not polled.
+* **What such an app has on screen is asked of the window server** (`observe.windows`), which needs no answer
+  from it. No empty window list is written for it, and no reopen is offered to an app that has not answered or is
+  still starting. A launch counts as starting only within `engine.open_front_s` of its start: some processes
+  never report finished launching.
+* **The decider and the planner are told the same thing**: it is still starting, or busy; it does not answer
+  Accessibility yet; its window is, or is not, on screen.
+* **Nothing is judged on such a look.** No sub-goal advances. A rethink, ask-user, blocked or impossible vote
+  first spends one of the decider's waits; after that a rethink takes the chosen option without a planner call,
+  and the others end as before, with cause `app_not_answering` and a reason naming the app. The planner is not
+  asked while a wait is still possible.
+
+Reading the windows Accessibility does not describe — by window number, by sight — waits for a read-only survey
+of how often such windows are phantoms.

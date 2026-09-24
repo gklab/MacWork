@@ -23,6 +23,7 @@ from .invariants import check_look, check_step
 from .decider import DeciderError, choice, noul
 from .privacy import RedactionError
 from .act import Outcome
+from .onscreen import unreadable
 from . import sight
 from .model import Affordance, Change, Observation, Step, Task
 from .observe import Ctx, arrange, get_provider, group_of, observe
@@ -306,10 +307,13 @@ class LoopMixin:
     def _look(self, task: Task, ctx: Ctx) -> Look | dict[str, Any]:
         e = self.cfg.section("engine")
         ctx.scope.looks += 1                      # how many looks this step took (see _step_record)
-        t_obs = time.monotonic()
         locked = bool(self.helper.call("session.state").get("screen_locked"))
+        waited = None if locked else self._await_app(task, ctx)   # an app starting or busy is not read blind
+        t_obs = time.monotonic()
         obs = observe(ctx)
         timing = {"observe": round((time.monotonic() - t_obs) * 1000)}
+        if waited is not None:
+            timing["ready_wait"] = waited["ms"]
         sig = self._signature(ctx.app, obs)
         dead_before = set(task.memory.no_effect)
         self._learn_from_prev(task, ctx.app, sig, obs)
@@ -659,19 +663,34 @@ class LoopMixin:
         # step being taken. Where the planner said what the screen shows once the step is done, the screen
         # has to be judged to show it too: the expected evidence against the observed screen.
         evidence_ok = "step_evidence" not in d or d["step_evidence"] >= float(th.get("step_evidence", 0.6))
-        if task.steps and task.plan and d.get("step_done", 0.0) >= float(th.get("done", 0.8)) and evidence_ok:
+        blind = unreadable(look.obs)              # the app answered nothing on this look: it shows no evidence
+        if task.steps and task.plan and d.get("step_done", 0.0) >= float(th.get("done", 0.8)) and evidence_ok and not blind:
             task.plan_i += 1                      # a sub-goal is done; only "done" ends the task
             progress(f"sub-goal done: {task.plan[task.plan_i - 1]}")
             return AGAIN
         if look.locked and move in ("blocked", "impossible", "rethink", "ask_user"):
             return self._finish(task, "blocked", "the screen is locked: unlock the Mac and run the task again", cause="screen_locked")
+        if blind and move in ("rethink", "ask_user", "blocked", "impossible"):
+            # A vote about the route, the user or the goal, made on a look the app did not answer, was made on
+            # nothing. Since 22ce357, 144 of the 158 such looks voted rethink and none voted wait, and 12 of
+            # the 67 no_route endings came on one. While the decider has waits left, one is spent here: wait
+            # and look again. Waiting never acts. Once they are gone, a rethink takes the chosen option, as
+            # one that finds no new route always did, without asking a planner about a screen nobody could
+            # read or counting it fruitless; the others keep their handling, with an ending that says why.
+            if self.spend_allowance(task, "waits"):
+                progress("wait for the app to answer")
+                time.sleep(float(self.cfg.get("engine.wait_s", 1.5)))
+                return AGAIN
+            if move == "rethink":
+                return self._pick(task, look, key, move, ranked, risky_screen, progress)
         if move in ("blocked", "impossible"):
             return self._on_blocked(task, look, move)
         if move == "ask_user":
             alts = self._alternatives(probs, look.by_id)
             if len(alts) >= 2:
                 task.options = {x["id"]: look.by_id[x["id"]] for x in alts}
-                return self._finish(task, "ambiguous", "several different outcomes fit the goal", {"choose_one_of": alts})
+                reason, cause = self._ending(look.obs, "several different outcomes fit the goal")
+                return self._finish(task, "ambiguous", reason, {"choose_one_of": alts}, cause=cause)
             # The decider says the user must choose, and there is no second option to choose between: the
             # goal itself is unclear here. This fell through and acted, so "ask the user" with one candidate
             # meant "do it anyway". The planner gets its say first (it may know a route, or that only the
@@ -680,9 +699,10 @@ class LoopMixin:
             r = self._on_rethink(task, look)
             if r is not None:
                 return r
-            return self._finish(task, "need_input", "the goal can be read more than one way on this screen: say more precisely what is wanted",
+            reason, cause = self._ending(look.obs, "the goal can be read more than one way on this screen: say more precisely what is wanted")
+            return self._finish(task, "need_input", reason,
                                 {"inputs": {"clarification": "what the goal means here, in a sentence"},
-                                 "screen": (look.obs.window, look.obs.screen_text[:300])})
+                                 "screen": (look.obs.window, look.obs.screen_text[:300])}, cause=cause)
         if move == "rethink":
             r = self._on_rethink(task, look)
             if r is not None:
@@ -770,9 +790,12 @@ class LoopMixin:
         if self._consult(task, look.ctx, look.obs, problem, look.affs) and not task.blocked_reason:
             return AGAIN
         if task.blocked_reason or move == "blocked":
-            return self._finish(task, "blocked", task.blocked_reason or task.outputs.get("planner_thinks_blocked") or self.cfg.question("blocked_reason"),
-                                {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]}, cause="needs_user")
-        return self._finish(task, "failed", "judged unreachable on this Mac", {"tried": tried[-8:]}, cause="unreachable")
+            reason, cause = self._ending(look.obs, task.blocked_reason or task.outputs.get("planner_thinks_blocked")
+                                         or self.cfg.question("blocked_reason"), "needs_user")
+            return self._finish(task, "blocked", reason, {"screen": (look.obs.window, look.obs.screen_text[:300]), "tried": tried[-8:]},
+                                cause=cause)
+        reason, cause = self._ending(look.obs, "judged unreachable on this Mac", "unreachable")
+        return self._finish(task, "failed", reason, {"tried": tried[-8:]}, cause=cause)
 
     def _on_rethink(self, task: Task, look: Look) -> _Again | dict[str, Any] | None:
         """Another route, from the planner. None: no new route this time (the chosen action is taken instead)."""
@@ -811,7 +834,8 @@ class LoopMixin:
                 if move != "rethink" and self._consult(task, look.ctx, look.obs, "nothing left to try on this screen", look.affs) \
                         and not task.blocked_reason:
                     return AGAIN
-                return self._finish(task, "failed", "no action left to take on this screen", {"tried": [s.action for s in task.steps][-8:]}, cause="no_actions")
+                reason, cause = self._ending(look.obs, "no action left to take on this screen", "no_actions")
+                return self._finish(task, "failed", reason, {"tried": [s.action for s in task.steps][-8:]}, cause=cause)
         chosen = by_id[key]
         if (chosen.channel == "app" or chosen.verb == "activate") and task.steps and not task.pace.settled_leave and self._still_moving(look.ctx):
             task.pace.settled_leave = True             # the app being left may still be working (a result appearing)
@@ -1002,7 +1026,7 @@ class LoopMixin:
         rec: dict[str, Any] = {"n": len(task.steps) - 1, "channel": chosen.channel, "verb": chosen.verb, "ok": bool(ok),
                                "observe_ms": int(timing.get("observe") or 0), "decide_ms": int(timing.get("decide") or 0),
                                "decide_net_ms": int(timing.get("decide_net") or 0), "act_ms": int(timing.get("act") or 0),
-                               "wait_ms": int(timing.get("wait") or 0),
+                               "wait_ms": int(timing.get("wait") or 0), "ready_wait_ms": int(timing.get("ready_wait") or 0),
                                "providers": {name: int(notes[f"{name}_ms"]) for name in providers
                                              if isinstance(notes.get(f"{name}_ms"), (int, float)) and notes[f"{name}_ms"] >= 5}}
         self._clock_out(task, rec)
@@ -1016,7 +1040,8 @@ class LoopMixin:
         now = time.monotonic()
         use = task.planner_use or {}
         calls = int(getattr(self._decider, "calls", 0) or 0) if self._decider is not None else 0
-        rec = {"task": task.id, "observe_ms": 0, "decide_ms": 0, "decide_net_ms": 0, "act_ms": 0, "wait_ms": 0, **rec,
+        rec = {"task": task.id, "observe_ms": 0, "decide_ms": 0, "decide_net_ms": 0, "act_ms": 0, "wait_ms": 0,
+               "ready_wait_ms": 0, **rec,
                "looks": scope.looks, "wall_ms": round((now - scope.last_step_at) * 1000),
                "planner_ms": int(use.get("ms", 0)) - scope.planner_mark[1],
                "planner_calls": int(use.get("calls", 0)) - scope.planner_mark[0],
@@ -1024,8 +1049,8 @@ class LoopMixin:
         self.audit.record("step", **rec)
         totals = task.timing
         totals["steps"] = int(totals.get("steps", 0)) + ("end" not in rec)
-        for key in ("looks", "wall_ms", "observe_ms", "decide_ms", "decide_net_ms", "act_ms", "wait_ms", "planner_ms",
-                    "planner_calls", "decisions"):
+        for key in ("looks", "wall_ms", "observe_ms", "decide_ms", "decide_net_ms", "act_ms", "wait_ms", "ready_wait_ms",
+                    "planner_ms", "planner_calls", "decisions"):
             totals[key] = int(totals.get(key, 0)) + int(rec.get(key) or 0)
         scope.looks, scope.last_step_at = 0, now
         scope.planner_mark, scope.decisions_mark = (int(use.get("calls", 0)), int(use.get("ms", 0))), calls
@@ -1056,7 +1081,8 @@ class LoopMixin:
         if obs.notes.get("fields"):
             out["field_contents"] = obs.notes["fields"][: int(ev.get("fields", 12))]
         if "open_windows" in obs.notes:           # an empty list is a fact too: the app is running with no window open
-            out["open_windows"] = obs.notes["open_windows"][:10] or "none: the app has no window open"
+            out["open_windows"] = obs.notes["open_windows"][:10] or \
+                ("none yet: the app is still starting" if obs.notes.get("app_launching") else "none: the app has no window open")
         if obs.notes.get("covered_by"):           # a prompt from another process sits over the app (e.g. a permission request)
             out["covered_by"] = obs.notes["covered_by"]
         if obs.notes.get("clipboard"):            # what a "paste" would put there, by shape (contents stay here)
@@ -1068,7 +1094,16 @@ class LoopMixin:
         if obs.notes.get("typing_withheld"):
             out["typing"] = obs.notes["typing_withheld"]
         if obs.notes.get("window_not_answering"):
-            out["app_not_answering"] = "this app is not answering Accessibility; nothing of its window can be read"
+            # Said beside open_windows, it read as two facts that contradict each other: "none: the app has no
+            # window open" and "nothing of its window can be read". Whether it is starting or busy is the
+            # helper's to say, and whether a window of it is on screen the window server's (observe.windows).
+            said = ("it is still starting" if unreadable(obs) == "starting" else "it is busy") + \
+                ": it does not answer Accessibility yet, so its controls and menus cannot be read"
+            if "window_stand_in" in obs.notes:    # the window server was asked
+                stand = obs.notes["window_stand_in"]
+                said += (f"; its window 「{stand['title']}」 is on screen" if stand and stand.get("title")
+                         else "; a window of it is on screen" if stand else "; none of its windows is on screen yet")
+            out["app_not_answering"] = said
         return out
 
     def _signature(self, app: dict[str, Any] | None, obs: Observation) -> str:

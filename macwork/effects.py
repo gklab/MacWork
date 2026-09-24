@@ -9,13 +9,68 @@ from typing import Any
 
 from .act import NotInFront, Outcome, get_channel
 from .helper import HelperError
-from .model import Affordance, Observation
+from .model import Affordance, Observation, Task
 from .observe import Ctx
+from .onscreen import app_readiness
 
 log = logging.getLogger(__name__)
 
 
 class EffectsMixin:
+    def _await_app(self, task: Task, ctx: Ctx) -> dict[str, Any] | None:
+        """Before a look: wait for an app that is starting or busy to answer, rather than read it blind.
+
+        'open app' returns once the process is listed and the wait after an action ends at the first event,
+        so the look after an open came while the app could not be read: all 10 in-loop opens since 22ce357
+        were followed by a blind look. A blind look was asked about all the same: of 158, the decider voted
+        rethink on 144 and wait on none, and 53 plans were made right after one — on 09-23 three of them
+        began by opening Calculator's or Dictionary's window.
+
+        The first question is asked as any look asks it (the helper does not ask an app it has marked silent
+        again within its wait); only when the app is not ready does the look wait, asking now (`ask_now`)
+        every `engine.ready_poll_ms`, until it is ready, the task is cancelled, or `engine.open_front_s` has
+        passed. Ready is answering, and launched or showing a window. An app that stays silent that long is
+        not waited for again until it answers once (`TaskScope.silent`), and each wait is one of the ledger's
+        `ready_waits`, apart from the decider's own waits. A helper older than 0.2.0 cannot be asked at once
+        and keeps its 20 s cooldown whatever it is asked: polling it would only add open_front_s to every
+        launch, so there is no wait at all. {why: starting | busy, ms, answered}, or None: no wait."""
+        pid = (ctx.app or {}).get("pid")
+        if not pid:
+            return None
+        bound = float(self.cfg.get("engine.open_front_s", 6))
+        size = self.cfg.get("observe.windows.min_size") or [100, 60]
+
+        def readiness(now: bool) -> dict[str, Any]:
+            return app_readiness(self.helper, pid, ctx.running, ask_now=now, launch_bound_s=bound,
+                                 min_size=(int(size[0]), int(size[1])))
+        state, silent = readiness(False), ctx.scope.silent
+        if state["ready"]:
+            silent.discard(pid)
+            return None
+        if pid in silent:
+            return None
+        if not state["can_ask_now"]:
+            silent.add(pid)          # the older helper: nothing to wait for until its cooldown lets the app answer
+            return None
+        if not self.spend_allowance(task, "ready_waits"):
+            return None
+        why = "starting" if state["launching"] else "busy"
+        poll = max(0.0, float(self.cfg.get("engine.ready_poll_ms", 200)) / 1000)
+        t0, answered = time.monotonic(), False
+        while task.id not in self._cancelled:
+            if readiness(True)["ready"]:
+                answered = True
+                break
+            if time.monotonic() - t0 >= bound:
+                silent.add(pid)
+                break
+            time.sleep(poll)
+        ms = round((time.monotonic() - t0) * 1000)
+        name = ctx.app.get("name") or ctx.app.get("bundle_id") or pid
+        log.info("waited %d ms for %s (%s) to answer: %s", ms, name, why, "it did" if answered else "it did not")
+        self.audit.record("ready_wait", task=task.id, app=ctx.app.get("bundle_id"), why=why, ms=ms, answered=answered)
+        return {"why": why, "ms": ms, "answered": answered}
+
     def _execute(self, ctx: Ctx, a: Affordance, params: dict[str, Any]) -> tuple[Outcome, list[str]]:
         ch = get_channel(a.channel)
         if ch is None:

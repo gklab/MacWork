@@ -313,6 +313,8 @@ class Pace:
     fruitless: int = 0                                         # "rethink" asked with no new route to be had
     answer_tries: int = 0                                      # times a goal asking for information ended with none
     done_opinions: int = 0                                     # second opinions asked on "done" (budget: planner.max_done_opinions)
+    ready_waits: int = 0                                       # looks that waited for the app to answer first
+                                                               # (budget: engine.max_ready_waits)
 
 
 @dataclass
@@ -405,6 +407,9 @@ class TaskScope:
     pictures: dict[str, Any] = field(default_factory=dict)     # exact state -> what it looked like the first time
     vision_wanted: set[str] = field(default_factory=set)       # windows this task asked to read by sight
     windows_seen: set[Any] = field(default_factory=set)        # window ids seen so far: a new one is read first
+    silent: set[int] = field(default_factory=set)              # apps (pids) a look will not wait for again until
+                                                               # they answer once: a wait ran out on them, or the
+                                                               # helper is too old to be asked again at once
     # The clock of the step being made (loop._step_record): set at the start of each run, moved on at every step.
     looks: int = 0                                             # looks since the last step
     last_step_at: float | None = None                          # monotonic time of the last step, or of the run's start

@@ -107,6 +107,10 @@ observe:
     content_roles: [AXRow, AXCell, AXImage, AXStaticText, AXLink, AXHeading, AXList, AXOutline, AXTable, AXWebArea, AXGroup, AXMenuItem]
     field_chars: 300             # how much of a text field's contents is shown as evidence
     screen_text_chars: 1500
+  windows:                       # the app's windows as the window server lists them, which needs no answer from
+                                 # the app: asked when it does not answer Accessibility (starting, or busy)
+    min_size: [100, 60]          # smaller is not one of its windows: the harness's own floor, set after it counted
+                                 # toolbar strips, tooltips and unrealised panels at [0, 0, 100, 30] as windows
   apps:
     # launchservices: Spotlight finds the bundles, LaunchServices says which copy it would open for each
     #   bundle id — that copy is the one reported. Finds apps wherever they are (405 here against 146 by
@@ -351,7 +355,12 @@ engine:
   max_fruitless_rethinks: 2      # "rethink" twice with no new route from the planner: diagnose and stop
   min_steps_before_giving_up: 4  # …but not while the screen still offers things this task has never tried
   max_answer_tries: 2            # a goal asking for information keeps looking this many times before it gives up
-  open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front
+  open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front,
+                                 # and a look waits this long for an app that is starting or busy to answer
+  max_ready_waits: 6             # looks per run that may first wait for the app to answer (the ledger's ready_waits),
+                                 # apart from the decider's own `max_waits`: a launch does not use up its "wait"
+  ready_poll_ms: 200             # the pause between questions while waiting; a question to an app that does not
+                                 # answer already takes the helper's 0.5 s messaging timeout
   service_front_s: 1.5           # a service that brings its app forward does it quickly, or it does not do it
   repeat_notice: 3               # the same action three times running is put in front of the decider as a fact
   interruptions:

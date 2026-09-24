@@ -8,6 +8,7 @@ which ones an input method floats over it, and when two frames are one window.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .helper import HelperError
@@ -66,3 +67,56 @@ def app_windows(helper: Any, pid: int, min_size: tuple[int, int] = (100, 60),
             continue
         out.append({"id": w.get("id"), "title": str(w.get("title") or ""), "frame": list(f), "layer": _layer(w)})
     return out
+
+
+def still_launching(said: dict[str, Any], running: list[dict[str, Any]] | None, pid: int, bound_s: float) -> bool:
+    """Is this app still starting? The helper says whether it has finished launching (`launching`, from a
+    0.2.0 helper), and the answer is believed only while its launch is recent: Apple documents that some
+    processes never report finished launching, and one that never does is not starting for ever. How recent
+    is `bound_s` (engine.open_front_s), counted from the launch time `apps.running` gives for it."""
+    if not said.get("launching"):
+        return False
+    launched = next((a.get("launched") for a in running or [] if a.get("pid") == pid), None)
+    try:
+        return time.time() - float(launched) <= bound_s
+    except (TypeError, ValueError):
+        return False
+
+
+def app_readiness(helper: Any, pid: int, running: list[dict[str, Any]] | None, ask_now: bool = False,
+                  launch_bound_s: float = 6.0, min_size: tuple[int, int] = (100, 60)) -> dict[str, Any]:
+    """Can this app be read now? One question, of its windows alone: nothing is read of them.
+
+    - answering: it answered Accessibility, and the helper did not report `not_answering`;
+    - launching: it is still starting (`still_launching`);
+    - windows: how many windows it has: Accessibility's count, or, while it is launching, the window
+      server's (`app_windows`), since an app that answers while it starts may list no window yet;
+    - ready: answering, and launched or showing a window;
+    - can_ask_now: the helper said whether the app is launching at all. A 0.2.0 helper always does on a
+      not-answering reply and honours `ask_now`; an older one says neither and keeps its 20 s cooldown
+      whatever it is asked.
+
+    A helper that cannot be asked reads as ready: not being able to tell is no reason to wait."""
+    try:
+        said = helper.call("ax.snapshot", pid=pid, scope="windows", max_depth=0, max_nodes=10, actions=False,
+                           ask_now=ask_now)
+    except HelperError:
+        return {"answering": True, "launching": False, "windows": 0, "ready": True, "can_ask_now": False}
+    answering = not said.get("not_answering")
+    launching = still_launching(said, running, pid, launch_bound_s)
+    windows = len(app_windows(helper, pid, min_size)) if launching else len(said.get("nodes") or [])
+    return {"answering": answering, "launching": launching, "windows": windows,
+            "ready": answering and (not launching or windows > 0), "can_ask_now": "launching" in said}
+
+
+def unreadable(obs: Any) -> str:
+    """Why this look could read nothing of the app, or "" when it could: 'starting' or 'busy' when the app
+    did not answer Accessibility, and 'starting' when it answered while still launching with no window open
+    yet. Nothing on such a look is evidence about the app: not a window it lacks, not a route that is not
+    there, not a sub-goal done."""
+    notes = obs.notes
+    if notes.get("window_not_answering"):
+        return "starting" if notes.get("app_launching") else "busy"
+    if notes.get("app_launching") and not (notes.get("open_windows") or notes.get("window_frame") or obs.window):
+        return "starting"
+    return ""
