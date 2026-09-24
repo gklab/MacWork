@@ -88,10 +88,11 @@ class of bug rather than one instance.
   nowhere if it failed, broke its promise, led back or moved nothing; a run of those is the one thing
   consulted about and the one thing that ends the task.
 * **Invariants checked where they must hold** (`invariants.py`). After every look: options can be told
-  apart and remembered; after every step: it says where it was taken from and what it promised, and a
-  broken promise is never an ok step; at every ending: the status is one the callers know and a stop
-  short says why. A violation is the engine's own bug, recorded as a fact in `outputs.invariants_broken`
-  and counted per run in every eval report — never an exception, never something to dig out of a trace.
+  apart and remembered, and every action the look found is an option or inside an entry that names it;
+  after every step: it says where it was taken from and what it promised, and a broken promise is never
+  an ok step; at every ending: the status is one the callers know and a stop short says why. A violation
+  is the engine's own bug, recorded as a fact in `outputs.invariants_broken` and counted per run in every
+  eval report — never an exception, never something to dig out of a trace.
 
 ## What a spreadsheet in a Qt app taught (2026-09-22, WPS, two runs, both failed)
 
@@ -125,7 +126,12 @@ the trace named five more things, each general and each measured:
   cell came back as Latin noise; reversed, every cell read. Neither order is right for a screen with both.
 * **The screen in front is never folded.** 123 on-screen options were one "look into the window" behind
   Format ▸ Rows ▸ Hide shown in full, because the on-screen group was over `fold_groups_over` like the
-  list of every installed app.
+  list of every installed app. Nor is it cut: when it alone is more than one choice holds, its first part
+  is shown and the rest is one "look into the rest of the window" away, open while the task stays in that
+  window. A group the decider opens gets the room the screen leaves, at least `fold_groups_over` of it at
+  a time (all of it when smaller), until the next step or another window; kept open for the whole task,
+  one look into the 535 installed apps had held all of Calculator's controls out of the options for nine
+  looks.
 * **A formula is made of what is on screen.** The planner wrote `=SUM(B2:B4)` and the judge that keeps
   invented values out refused it as a computed figure; the second opinion on done doubted 2388's provenance.
 
