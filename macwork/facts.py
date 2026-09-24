@@ -16,6 +16,7 @@ from typing import Any
 # every language it does not know. Ideographs stay one piece each (they carry no word boundaries); every other
 # script is taken in runs.
 _WORD = re.compile(r"\d+(?:[.,]\d+)*|[㐀-鿿]|[^\W\d_]+")
+CALLERS = "the caller's inputs"      # what `source_of` calls them: a text traced there is the caller's, not to be told on
 
 
 def pieces(text: str) -> list[str]:
@@ -56,7 +57,7 @@ class Facts:
         want = pieces(text)
         if not want:
             return "no value"
-        haystacks = {"the goal": self.goal, "the caller's inputs": " ".join(str(v) for v in self.inputs.values())}
+        haystacks = {"the goal": self.goal, CALLERS: " ".join(str(v) for v in self.inputs.values())}
         haystacks |= {f"{app} ({f.window})" if f.window else app: f.text for app, f in self.seen.items()}
         for name, hay in haystacks.items():
             if not hay:

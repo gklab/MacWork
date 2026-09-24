@@ -81,8 +81,8 @@ def test_an_app_the_goal_names_is_offered_in_plain_sight_and_to_the_planner(tmp_
     assert any("open another app" in name for name, _members in folded.values())
 
     brief = eng._brief(eng._new_task(goal, {}, None), ctx, obs)
-    assert brief["actions_available"][0] == "open app Dictionary", "the planner is never shown the other apps"
-    assert not any(label.startswith("open app Filler") for label in brief["actions_available"])
+    assert brief.get("apps_the_goal_names") == ["open app Dictionary"], "the planner is never shown the other apps"
+    assert "Filler" not in json.dumps(brief, ensure_ascii=False)
 
 
 def test_which_apps_the_goal_names_is_part_of_what_the_leaving_question_sees(tmp_path):
@@ -177,3 +177,85 @@ def test_an_option_for_one_kind_of_link_opens_no_other(tmp_path, monkeypatch):
 
     done = act.CHANNELS["file"](ctx, link, {"url": "THINGS:///add?title=milk"})
     assert done.ok and opened == [["open", "THINGS:///add?title=milk"]], "a scheme is the same scheme in any case"
+
+
+class Declares:
+    """Stands in for AppModels: TextEdit declares a URL scheme of its own in its Info.plist."""
+
+    def get(self, app):
+        return {"url_schemes": ["x-text"] if (app or {}).get("bundle_id") == "com.apple.TextEdit" else []}
+
+
+def test_the_working_apps_own_link_is_asked_about_like_any_other_way_out(tmp_path, monkeypatch):
+    """「open a 「x-text:」 link with TextEdit」 is opened with a plain `open`, and LaunchServices hands a link to
+    the scheme's handler, which need not be the app that declares it: a browser that is not the default one
+    declares https: too. Naming the declaring app on the option, so that the host's own links are charged to
+    the host, also made the link count as staying in the app, and whether leaving served the goal went unasked."""
+    opened = []
+    real = act.subprocess.run
+    monkeypatch.setattr(act.subprocess, "run", lambda args, *a, **k: opened.append(args) or real(["true"], *a, **k))
+    d = ScriptedDecider([{"pick": "x-text:"}, {"pick": "New Document"}, {"pick": "done"}])
+    d.serves = 0.05
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["menu", "schemes"]}}), helper=Mac(), decider=d)
+    eng.cache["appmodels"] = Declares()
+    res = eng.do("make a new document")
+
+    assert res["status"] == "done" and res["steps"] == ["menu File ▸ New Document (⌘N)"], res
+    asked = next(s for s, q in d.side if "serves" in q)
+    assert "open a 「x-text:」 link with TextEdit" in asked["action"]
+    assert not [args for args in opened if args[0] == "open"], "the link was opened"
+
+
+class Windowless(Mac):
+    """TextEdit in front with no window open: its windows are listed as none, and its focused window is empty."""
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "ax.snapshot" and p.get("scope") in ("windows", "focused_window"):
+            self.calls.append((method, p))
+            return {"nodes": [], "ms": 1, "truncated": False}
+        return super().call(method, timeout, **p)
+
+
+def test_bringing_back_the_window_of_the_app_in_front_is_not_leaving(tmp_path, monkeypatch):
+    """34 of the 125 serves_goal questions in this Mac's audit were about bringing back the main window of the
+    app already in front, and one was declined (0.22): Finder, with no window open, was not given one back."""
+    opened = []
+    real = act.subprocess.run
+    monkeypatch.setattr(act.subprocess, "run", lambda args, *a, **k: opened.append(args) or real(["true"], *a, **k))
+    c = cfg(tmp_path, config={"observe": {"providers": ["windows", "apps", "keys"]}})
+    eng = Engine(c, helper=Windowless(), decider=ScriptedDecider([]))
+    ctx = eng._ctx("", {}, None, "t")
+    obs = observe(ctx)
+    reopen = next(a for a in obs.affordances if a.verb == "reopen")
+    assert reopen.label == "bring back the main window of TextEdit"
+    assert eng._leaves_for(ctx, reopen) is None
+    assert eng._leaves_for(ctx, next(a for a in obs.affordances if a.label == "switch to app Finder")) == "Finder"
+
+    d = ScriptedDecider([{"pick": "bring back the main window"}, {"pick": "done"}])
+    d.serves = 0.05
+    res = Engine(c, helper=Windowless(), decider=d).do("write a note")
+    assert res["steps"] == ["bring back the main window of TextEdit"], res
+    assert not [q for _, q in d.side if "serves" in q], "asked whether staying in the app serves the goal"
+    assert [args for args in opened if args[0] == "open"] == [["open", "-a", "/System/Applications/TextEdit.app"]]
+
+    # An app in front with no bundle id: a Shortcut has none either, and neither need the app it switches to
+    nameless = Ctx(eng.cfg, eng.helper, app={"pid": 9, "name": "a tool with no bundle id"})
+    assert eng._leaves_for(nameless, Affordance("s0", "shortcut", "run", "run shortcut 「Make PDF」", {"name": "Make PDF"})) == "Make PDF"
+    assert eng._leaves_for(nameless, Affordance("a1", "app", "activate", "switch to app Finder", {"pid": 7, "name": "Finder"})) == "Finder"
+
+
+def test_an_ellipsis_does_not_make_a_command_an_app(tmp_path):
+    """Guard for a proposal left out: dropping a trailing ellipsis before matching app names would read Edit ▸
+    Find… as an app called Find (on this Mac, the Find My app's Chinese name is the Find command's without its
+    ellipsis, and that command was chosen 11 times)."""
+    class WithFind(Mac):
+        def call(self, method, timeout=30.0, **p):
+            if method == "apps.installed":
+                self.calls.append((method, p))
+                return FILLERS + ELSEWHERE + [{"name": "Find", "file": "Find", "path": "/Applications/Find.app", "bundle_id": "test.find"}]
+            return super().call(method, timeout, **p)
+
+    eng = Engine(cfg(tmp_path), helper=WithFind(), decider=ScriptedDecider([]))
+    ctx = eng._ctx("", {}, None, "t")
+    assert eng._leaves_for(ctx, Affordance("m1", "menu", "press", "menu Edit ▸ Find…", {"title": "Find…"})) is None
+    assert eng._leaves_for(ctx, Affordance("m2", "menu", "press", "menu Window ▸ Find", {"title": "Find"})) == "Find"

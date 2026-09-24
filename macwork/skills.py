@@ -19,6 +19,7 @@ from typing import Any
 
 from .config import Config, expand
 from .model import Affordance, Observation, Task, steady
+from .observe import plain_key
 
 
 def _norm(s: str) -> str:
@@ -106,7 +107,13 @@ class Skills:
             by_identity = [a for a in kind if a.identity() == step["key"]]
             if by_identity:
                 return by_identity[0]
-        same = [a for a in kind if _norm(a.label) == step["label"]]
+        if step["channel"] == "keys":
+            # A key has no identity but its label, and its label says the button it presses and where the keyboard
+            # is (`plain_key`): 'press the return key' recorded in one place is the same key with the keyboard in
+            # a field. Replaying it is judged by the floor on the label as it reads here.
+            same = [a for a in kind if _norm(plain_key(a.label)) == _norm(plain_key(step["label"]))]
+        else:
+            same = [a for a in kind if _norm(a.label) == step["label"]]
         if len(same) > 1 and step.get("context"):
             same = [a for a in same if a.context == step["context"]] or same
         return same[0] if same else None

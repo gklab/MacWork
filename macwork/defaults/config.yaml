@@ -39,6 +39,8 @@ observe:
   providers: [window, sight, overlays, popups, windows, vision, menu, menubar_extras, sdef, schemes, services, keys,
               focus, typing, apps, shortcuts, files, clipboard, skills, readall, wheel, controls, drag]
               # focus before typing: "type at the cursor" is labelled with where the cursor turned out to be
+              # window before windows: a sheet or popover the focused window's tree holds is a window of its own
+              #   to the window server, and is told from one the tree does not describe by the frames window() read
               # drag last: it needs the frames
   ax:
     max_nodes: 3000
@@ -107,6 +109,17 @@ observe:
     content_roles: [AXRow, AXCell, AXImage, AXStaticText, AXLink, AXHeading, AXList, AXOutline, AXTable, AXWebArea, AXGroup, AXMenuItem]
     field_chars: 300             # how much of a text field's contents is shown as evidence
     screen_text_chars: 1500
+  windows:                       # the app's windows as the window server lists them, which needs no answer from
+                                 # the app: what it has on screen when it does not answer Accessibility (starting,
+                                 # or busy), and the windows on screen its tree does not describe when it does
+    min_size: [100, 60]          # smaller is not one of its windows: the harness's own floor, set after it counted
+                                 # toolbar strips, tooltips and unrealised panels at [0, 0, 100, 30] as windows
+    read_by_sight: 0             # how many windows on screen that the tree of an answering app does not describe
+                                 # are read off the screen, by their number, on each look; 0 lists them unread, the
+                                 # one standing in for a tree that lists no window included (read, it is read as a
+                                 # canvas, with click targets). Stays 0 until a read-only survey of this Mac's apps
+                                 # has counted how many such windows are ones nobody sees: each of those would cost a
+                                 # read per action
   apps:
     # launchservices: Spotlight finds the bundles, LaunchServices says which copy it would open for each
     #   bundle id — that copy is the one reported. Finds apps wherever they are (405 here against 146 by
@@ -181,7 +194,10 @@ observe:
     timeout_ms: 250
   typing:                        # type the caller's text wherever the cursor is (editors that expose no text field)
     enabled: true
-    requires_input: text         # offered only when the caller supplied inputs.text
+    requires_input: text         # offered only when the caller supplied inputs.text — or, without "and press Return",
+                                 # when a field of the app has the keyboard and the task holds texts of its own
+    max_texts: 4                 # texts the task holds besides the caller's inputs (paths the goal names, the planner's
+                                 # text a screen holds word for word) that an empty field is offered, the decider choosing
     # English, like every other string this repo writes. What the Mac says comes from the Mac and is in
     # whatever language it is set to; what *we* say is ours, and saying it twice in two chosen languages
     # only makes Chinese look special. Goals are the caller's own words, in any language they like.
@@ -246,16 +262,34 @@ planner:
   when: auto                     # auto: consult when the decider calls for a different route, a second opinion, or text | always: plan first | never
   warm_on_task_start: true       # wake a local planner in the background when a task starts (weights get paged out when idle)
   context_chars: 600
-  context_actions: 40           # labels the planner sees (window first, then menus). Each one is prompt it must read
-                                 # before it can answer: 400 labels meant ~5000 tokens and ~40 s of prefill on a dense model
-  context_skip_channels: [app, shortcut, file]   # not worth the planner's attention budget (running apps are listed separately)
-  max_steps: 8                   # sub-goals per plan
+  brief:                         # what the planner is told can be done, each place its share (macwork/brief.py). Each
+                                 # entry is prompt it must read before it can answer: 400 labels were ~5000 tokens and
+                                 # ~40 s of prefill on a dense model, and the first 40 held no item of the app's menus
+    on_screen: 16                # entries from the app's own window, after one per name and long runs folded
+    menu_entries: 17             # entries per top-level menu, those with a key equivalent first. The smallest count that
+                                 # holds 95% of the 75 menu items the decider chose since c632ed9, placed as the brief
+                                 # orders them, one in a folded submenu where its fold stands: 6 held 38, 12 held 63,
+                                 # 16 held 71, 17 holds 74. By name it shows fewer: 24 of the 75 sat in a folded
+                                 # submenu (19 in Recent Items) whose entry names its first two, 6 of them; leaving out
+                                 # the 18 no count can name, 16 holds 53 of 57 and 17 holds 56. Finder's Go ▸ Go to
+                                 # Folder…, 10 of the 75, stood 14th or 17th: its menu is nearly all keyed items
+    fold_over: 4                 # a submenu, or a run of rows or cells, of more than this is one entry saying how many
+    elsewhere: 3                 # lines for other processes' controls on screen, and the Services
+  max_steps: 8                   # sub-goals per plan; also how many moves that could not be used the planner is told of
   max_replans: 2
   max_corrections: 3             # replans after a step judged to have gone wrong are counted on their own
   second_opinion_on_done: true   # before a task ends `done` after acting, a different model reads the same screen
                                  # and says whether it agrees; a "no" sends the decider back with "done" off the
                                  # table. Real runs ended done with the Open dialog up, or 144 still on the display
   max_done_opinions: 2           # per run; past this the decider's own verdict stands
+  beside: true                   # a rethink after a step that got somewhere (none of what the no-progress rule counts:
+                                 # it did not fail, break its promise or only lead back, and was not judged below
+                                 # progress_bad), on an action that needs no text from the planner and that the floor
+                                 # lets through, on a screen not judged risky, takes that action and asks for the route
+                                 # while it is carried out; the route is taken in at a later look. false: such a rethink
+                                 # waits for its route and decides again with it, as every rethink did. A planner that
+                                 # answers through the helper (foundation), or a decider that answers through a local
+                                 # planner, is always waited for; the planner's own suggestion is taken unasked either way
   fill_inputs: true              # let the planner write text a step needs instead of asking the caller
   trust_on_device: true          # on-device planners see unredacted text; cloud planners never do
   endpoints:                     # any OpenAI-compatible chat API
@@ -348,10 +382,19 @@ engine:
   quit_wait_ms: 3000             # how long a polite quit may take before the app is assumed to be asking something
   carry_chars: 600               # what each app showed, carried along so a later step uses real values, not guesses
   result_chars: 800              # the last screen text kept in the result (so closing an app loses no answer)
-  max_fruitless_rethinks: 2      # "rethink" twice with no new route from the planner: diagnose and stop
+  max_fruitless_rethinks: 2      # rethinks that brought no new route — asked, and the same route, nothing or no answer
+                                 # came, or there was no planner or allowance to ask — this many, and the task says why
+                                 # it is stuck and stops. A question refused as asked already on this exact screen, a
+                                 # look that could not be read, and an answer too late or still on its way never count.
+                                 # A new route, or the planner's word that only the user can go on, resets it
   min_steps_before_giving_up: 4  # …but not while the screen still offers things this task has never tried
   max_answer_tries: 2            # a goal asking for information keeps looking this many times before it gives up
-  open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front
+  open_front_s: 6                # opening a file waits this long for the app that handles it to come to the front,
+                                 # and a look waits this long for an app that is starting or busy to answer
+  max_ready_waits: 6             # looks per run that may first wait for the app to answer (the ledger's ready_waits),
+                                 # apart from the decider's own `max_waits`: a launch does not use up its "wait"
+  ready_poll_ms: 200             # the pause between questions while waiting; a question to an app that does not
+                                 # answer already takes the helper's 0.5 s messaging timeout
   service_front_s: 1.5           # a service that brings its app forward does it quickly, or it does not do it
   repeat_notice: 3               # the same action three times running is put in front of the decider as a fact
   interruptions:
@@ -372,7 +415,10 @@ engine:
     step_evidence: 0.6           # …and a sub-goal the planner gave evidence for advances only when the screen
                                  # is judged to show that evidence too: one number moved the plan on before
     done_veto: 0.35              # after acting, the stricter done check overrules only below this
-    progress_bad: 0.2            # the last step is recorded as having had no effect
+    progress_bad: 0.2            # a step judged below this got the task nowhere: it counts toward the no-progress rule
+                                 # (max_no_progress), a rethink right after it waits for its route (planner.beside), and
+                                 # the planner is told the step went wrong. A judgement, not a measurement: nothing is
+                                 # withheld on it alone
     risky_screen: 0.6
     backs_out: 0.8               # on a risky screen, an action judged to only back out goes ahead without asking
     wants_answer: 0.5            # the goal asks for information: the planner writes outputs.answer when done
@@ -413,6 +459,9 @@ engine:
                                  # being restarted and tidying still knows what that task opened
   store: ~/Library/Application Support/macwork/tasks.db
   activate_wait_s: 1.5           # how long to wait for an app to come to the front before refusing to type
+  start_in_front_app: true       # a task that names no app begins in the app in front (never the one running this
+                                 # engine: then in none). false: it begins in none, and the apps provider offers what
+                                 # the goal names. Eval runs set it false, so no task begins where the last one ended
   activate_settle_s: 0.3         # after it comes forward, before its key window has focus
   close_wait_s: 0.6              # tidy: after asking a window to close
 
@@ -425,6 +474,15 @@ input:
   focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
   focus_wait_s: 0.8              # how long to wait for the field to really have the keyboard before typing
   submit_wait_s: 0.8             # …and for the typed text to be in it before Return is sent
+  handback_ms: 1000              # when the helper had to select an ASCII keyboard layout to type, how long after the
+                                 # last key it may keep it while the focused element does not yet show the keys,
+                                 # before the person's own input source goes back. A ceiling: they show within tens
+                                 # of ms. Given back at once, an app still 1-4 keys behind the 6 ms-a-key stream read
+                                 # the last of them through the input method, and 21 of 265 typing steps on
+                                 # 09-20..23 left the end of the text composing. Sent to input.type by act._type
+  handback_quiet_ms: 250         # …and how long for a focused element that shows no text, or whose text changed and
+                                 # then stopped changing without ever showing the keys (the app rewrote them): about
+                                 # ten times the longest backlog measured at hand-back, 4 keys at 6 ms
 
 grants:                          # standing grants: a confirmation the person chose to have remembered, for one
                                  # action in one app (`macwork grants` lists them, `… revoke` takes one back).

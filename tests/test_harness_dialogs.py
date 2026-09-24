@@ -7,11 +7,13 @@ presses Escape at them in the sweep — never Allow, which is the person's decis
 """
 
 from macwork import evals
+from macwork.config import Config
 
 
 class Helper:
     def __init__(self, windows):
         self.windows, self.calls = windows, []
+        self.front = 1
 
     def call(self, method, **p):
         self.calls.append((method, p))
@@ -19,13 +21,15 @@ class Helper:
             return self.windows
         if method == "apps.running":
             return [{"pid": 1, "name": "TextEdit", "bundle_id": "com.apple.TextEdit"}]
+        if method == "apps.frontmost":
+            return {"app": {"pid": self.front}}
         return {"ok": True}
 
 
 class Eng:
     def __init__(self, windows):
         self.helper = Helper(windows)
-        self.cfg = None
+        self.cfg = Config.load(overrides={"config": {"engine": {"activate_wait_s": 0.05}}})
         self.tasks = {}
 
     def _host_bundles(self):
@@ -49,13 +53,14 @@ def test_a_dialog_above_every_window_counts_as_a_window_and_a_banner_does_not():
 def test_a_prompt_that_was_not_there_before_is_a_leftover_owned_by_nobody_in_the_app_list():
     eng = Eng([DOC, PROMPT])
     left = evals._leftovers(eng, ({1: {10}}, {1}))
-    assert [x for x in left if x.get("dialog")] == [{"app": "UserNotificationCenter", "pid": 77, "new_app": False, "windows": 1,
-                                                     "ids": [90], "dialog": True, "title": PROMPT["title"]}]
+    assert [x for x in left if x.get("dialog")] == [{"app": "UserNotificationCenter", "pid": 77, "bundle_id": None, "new_app": False,
+                                                     "windows": 1, "ids": [90], "dialog": True, "title": PROMPT["title"]}]
     assert evals._dialogs_above(eng, {77: {90}}) == []          # up before the suite began: not the run's
 
 
 def test_the_sweep_steps_back_from_it_with_escape_and_never_answers_it(monkeypatch):
     eng = Eng([DOC, PROMPT])
+    eng.helper.front = 77                       # the prompt has the keyboard once it is asked to the front
     monkeypatch.setattr(evals, "_discard_prompt", lambda *a, **k: False)
     evals.sweep(eng, ({1: {10}}, {1}))
     keys = [p for m, p in eng.helper.calls if m == "input.key"]

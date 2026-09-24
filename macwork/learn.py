@@ -10,7 +10,7 @@ from .act import get_channel
 from .decider import DeciderError, choice, noul
 from .model import Affordance, Observation
 from .loop import Progress
-from .observe import Ctx, arrange, get_provider, installed_apps, observe
+from .observe import Ctx, arrange, declare_keys, get_provider, installed_apps, observe
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ class LearnMixin:
         keys_provider = get_provider("keys")
         if keys_provider:
             keys_provider(ctx, extra)
+            declare_keys(ctx, obs, extra.affordances)   # the keys go to the screen being backed out of
         pool = [a for a in obs.affordances + extra.affordances if not a.slots and not self._risky(a, ctx) and not self._denied(a, ctx.app)]
         flat, _folded = arrange(pool, int(self.cfg.get("engine.max_options", 200)) - 1, set())
         if not flat:

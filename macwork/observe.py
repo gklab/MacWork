@@ -15,16 +15,21 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import zlib
 from dataclasses import dataclass, field
+from functools import lru_cache
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Callable
 
 from .config import Config
+from .facts import CALLERS
 from .helper import Helper, HelperError
 from .appmodel import parse_services
-from .model import Affordance, Observation, Slot, with_state, TaskScope
+from .model import Affordance, Observation, Slot, clip, steady, with_state, TaskScope
+from .onscreen import app_windows, input_method_panel, same_place, still_launching, unreadable
+from .sight import compare as compare_pictures
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +48,8 @@ class Ctx:
     redactor: Any = None                        # this task's pseudonym table
     task: str = ""                              # whose look this is: for what is remembered per task, not per Mac
     scope: TaskScope = field(default_factory=TaskScope)   # that task's live working state (see model.TaskScope)
+    texts: list[dict[str, str]] = field(default_factory=list)   # texts the task holds besides the caller's inputs,
+                                                # {text, from} (`held_texts`): typing at the cursor is offered for them
 
 
 Provider = Callable[[Ctx, Observation], None]
@@ -196,14 +203,44 @@ def apps(ctx: Ctx, obs: Observation) -> None:
 
 # ----------------------------------------------------------------------------- menu bar
 _MODS = [(1, "⇧"), (2, "⌥"), (4, "⌃")]
+# A key equivalent that prints nothing, as AppKit reports it (AXMenuItemCmdChar: an ASCII control, or one of
+# NSEvent's function-key characters, U+F700 on), shown the way the Mac's own menus show it. Apple's glyphs,
+# not names: the name "delete" in a label is a hit on the floor's own word for deleting.
+_KEY_GLYPHS = {"\x03": "⌤", "\x08": "⌫", "\t": "⇥", "\r": "↩", "\x19": "⇤", "\x1b": "⎋", " ": "␣", "\x7f": "⌫",
+               "\uf700": "↑", "\uf701": "↓", "\uf702": "←", "\uf703": "→", "\uf728": "⌦", "\uf729": "↖",
+               "\uf72b": "↘", "\uf72c": "⇞", "\uf72d": "⇟", "\uf739": "⌧",
+               **{chr(0xF704 + i): f"F{i + 1}" for i in range(35)}}
 
 
 def _shortcut(cmd: dict[str, Any] | None) -> str:
+    """The menu item's key equivalent as its menu shows it: 「 (⇧⌘S)」, 「 (⌘⌫)」.
+
+    What prints nothing was written as the raw character AppKit reports for it: 109 menu items in 11 apps of
+    this Mac's audit carried one into the labels the decider and the floor read ('menu 文件 ▸ 移到废纸篓
+    (⌘\\x08)'), ten of them bound to a delete key. One the Mac has no glyph for is left out rather than
+    written raw."""
     if not cmd or not cmd.get("char"):
+        return ""
+    ch = str(cmd["char"])
+    shown = _KEY_GLYPHS.get(ch, ch if ch.isprintable() else "")
+    if not shown:
         return ""
     m = int(cmd.get("mods") or 0)
     keys = "".join(sym for bit, sym in _MODS if m & bit) + ("" if m & 8 else "⌘")
-    return f" ({keys}{cmd['char']})"
+    return f" ({keys}{shown})"
+
+
+# What `_shortcut` puts at the end of a menu item's label, and only that: modifiers then one key, or a key the Mac
+# has a glyph for, pressed alone (see `plain_name`).
+_KEY_EQUIVALENT = re.compile(r" \((?:[⇧⌥⌃]*⌘|[⇧⌥⌃]+)(?:F\d{1,2}|\S)\)$|"
+                             r" \((?:F\d{1,2}|[" + re.escape("".join(sorted({g for g in _KEY_GLYPHS.values() if len(g) == 1})))
+                             + r"])\)$")
+
+
+def key_equivalent(label: str) -> str:
+    """The key equivalent a menu item's label ends with, as its menu shows it ('⇧⌘P'), or "" when it has none."""
+    m = _KEY_EQUIVALENT.search(label or "")
+    return m.group(0)[2:-1] if m else ""
 
 
 _COMBO_MODS = [(8, None), (4, "ctrl"), (2, "alt"), (1, "shift")]
@@ -217,6 +254,59 @@ def _combo(cmd: dict[str, Any] | None) -> str | None:
     m = int((cmd or {}).get("mods") or 0)
     mods = ([] if m & 8 else ["cmd"]) + [name for bit, name in _COMBO_MODS if name and m & bit]
     return "+".join(mods + [ch.lower()]) if mods else None
+
+
+# Keys as they get written: modifiers by name or by the glyph the Mac's menus show (⌘ ⌃ ⌥ ⇧), named keys by
+# name, alias or glyph (↩ ⎋ ⌫ …), each read as the name input.key takes. macOS numbers F-keys up to F20; the
+# helper's own key table stops at F12.
+_COMBO_ORDER = ("cmd", "ctrl", "alt", "shift", "fn")
+_MOD_WORDS = {"cmd": "cmd", "command": "cmd", "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "option": "alt",
+              "opt": "alt", "shift": "shift", "fn": "fn"}
+_MOD_GLYPHS = {"⌘": "cmd", "⌃": "ctrl", "⌥": "alt", "⇧": "shift"}
+_KEY_ALIASES = {"enter": "return", "esc": "escape", "backspace": "delete", "↩": "return", "⎋": "escape", "⇥": "tab",
+                "⌫": "delete", "⌦": "forwarddelete", "←": "left", "→": "right", "↑": "up", "↓": "down",
+                "↖": "home", "↘": "end", "⇞": "pageup", "⇟": "pagedown"}
+_NAMED_KEYS = frozenset({"return", "escape", "tab", "space", "delete", "forwarddelete", "up", "down", "left", "right",
+                         "home", "end", "pageup", "pagedown"} | {f"f{i}" for i in range(1, 21)})
+_LABEL_WORDS = frozenset({"press", "the", "key"})      # our own option wording ("press the return key"), said back
+
+
+def canonical_combo(said: Any) -> str | None:
+    """A key as the keyboard reads it — `cmd+shift+g` for "⇧⌘G", "shift+cmd+g", "Cmd + Shift + G" alike — or
+    None where it is not one.
+
+    Modifiers come in `_combo`'s order (cmd, ctrl, alt, shift, then fn, which is never dropped: fn+delete is
+    another key than delete). The key is one printable character or a named physical key. A named key alone
+    is a key; a character alone is typing, not a key; and what the helper could not split into modifiers
+    and a key — "cmd++", "menu item 「General」" — is None, not a guess.
+    """
+    return _canonical(str(said or ""))
+
+
+@lru_cache(maxsize=4096)
+def _canonical(said: str) -> str | None:
+    # named_combo reads every menu item's combo again for each key it is asked about, and the same few hundred
+    # strings come back on every look: the 13 physical keys over 400 menu items took 6.2 ms a look read afresh,
+    # 0.5 ms remembered (0.4 ms when combos were compared as written)
+    words = [w for w in re.sub(r"\s*\+\s*", "+", said.strip().lower()).split() if w not in _LABEL_WORDS]
+    if len(words) != 1:
+        return None
+    *mods, key = words[0].split("+")
+    held: set[str] = set()
+    for m in mods:
+        if m in _MOD_WORDS:
+            held.add(_MOD_WORDS[m])
+        elif m and all(g in _MOD_GLYPHS for g in m):
+            held.update(_MOD_GLYPHS[g] for g in m)
+        else:
+            return None
+    while key[:1] in _MOD_GLYPHS:                      # "⇧⌘g": the menus' own way of writing it
+        held.add(_MOD_GLYPHS[key[0]])
+        key = key[1:]
+    key = _KEY_ALIASES.get(key, key)
+    if key not in _NAMED_KEYS and not (held and len(key) == 1 and key.isprintable() and not key.isspace()):
+        return None
+    return "+".join([m for m in _COMBO_ORDER if m in held] + [key])
 
 
 def _tree(nodes: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
@@ -274,11 +364,18 @@ def menu(ctx: Ctx, obs: Observation) -> None:
                 elif include_disabled or n.get("enabled", True):
                     checked = f" {n['mark']}" if n.get("mark") else ""
                     ident = n.get("ident") or ""
+                    # where it sits: `path` as the menus spell it (what a key is named by, see named_combo),
+                    # `menu_path` as the titles from the top menu down
+                    place = path + [title]
                     obs.affordances.append(Affordance(f"m{len(obs.affordances)}", "menu", "press",
-                                                      f"menu {' ▸ '.join(path + [title])}{checked}{_shortcut(n.get('cmd'))}",
-                                                      {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd")), "title": title},
+                                                      f"menu {' ▸ '.join(place)}{checked}{_shortcut(n.get('cmd'))}",
+                                                      {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd")), "title": title,
+                                                       "path": " ▸ ".join(place), "menu_path": place},
                                                       context=' ▸ '.join(path[:1]),
-                                                      key=_identity(ident, n.get("role"), n.get("subrole"), title)))
+                                                      key=_identity(ident, n.get("role"), n.get("subrole"), title),
+                                                      # the selector behind the command, as the app names it; a
+                                                      # "_NS:" one is AppKit's numbering where the app gave no name
+                                                      facts={"identifier": ident} if ident and not ident.startswith("_NS:") else {}))
                     if n.get("mark"):
                         obs.notes.setdefault("checked", []).append(' ▸ '.join(path + [title]))
             elif n.get("role") == "AXMenu":
@@ -341,12 +438,20 @@ def _structural_identity(n: dict[str, Any], by_ref: dict[str, dict[str, Any]], k
     return "axpath|" + "/".join(reversed(path))
 
 
-def _label(n: dict[str, Any]) -> str:
+def _label(n: dict[str, Any]) -> tuple[str, str]:
+    """What names an element, and the attribute that name came from: ("", "") when nothing does. "help" is a
+    tooltip, the one name that is not the control's own words (see `element_affordances`)."""
     for k in ("title", "desc", "value", "placeholder", "help"):
         v = n.get(k)
         if v and not str(v).startswith("_NS:"):
-            return str(v)
-    return ""
+            return str(v), k
+    return "", ""
+
+
+def _kind(n: dict[str, Any]) -> str:
+    """An element's role and subrole as the Mac declares them: 'AXWindow/AXStandardWindow', 'AXSheet'."""
+    role, sub = str(n.get("role") or ""), str(n.get("subrole") or "")
+    return f"{role}/{sub}" if role and sub else role
 
 
 def _context_of(n: dict[str, Any], by_ref: dict[str, dict[str, Any]]) -> str:
@@ -407,23 +512,69 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         if p and (p in in_row or by_ref.get(p, {}).get("role") in select_roles):
             in_row.add(n["ref"])
 
+    # Where an element sits, as the Mac declares it: the nearest sheet or window above it, and whether a web
+    # page lies on the way, where the page writes the roles and identifiers itself. Worked out once per node.
+    placed: dict[str, tuple[str, bool]] = {}
+
+    def place(ref: str) -> tuple[str, bool]:
+        if ref not in placed:
+            placed[ref] = ("", False)              # a tree that led back to itself would stop here
+            up = by_ref.get(by_ref.get(ref, {}).get("parent"))
+            if up is not None:
+                holder, web = place(up["ref"])
+                placed[ref] = (_kind(up) if up.get("role") in ("AXSheet", "AXWindow") else holder,
+                               web or up.get("role") == "AXWebArea")
+        return placed[ref]
+
+    def declared(n: dict[str, Any]) -> dict[str, Any]:
+        """What the Mac declares about an element, for every action it offers (`Affordance.facts`). An
+        identifier only where the app wrote it for a control: content builds its identifiers from its data
+        (content_roles), and a page writes its own."""
+        holder, web = place(n["ref"])
+        web = web or n.get("role") == "AXWebArea"
+        ident = str(n.get("ident") or "")
+        out: dict[str, Any] = {"control": _kind(n)}
+        if holder:
+            out["in"] = holder
+        if ident and not ident.startswith("_NS:") and n.get("role") not in content_roles and not web:
+            out["identifier"] = ident
+        if web:
+            out["_web_content"] = True            # never sent: see PolicyMixin._declared
+        return out
+
     for n in nodes:
         role = n.get("role", "")
         rd = n.get("rdesc") or role.removeprefix("AX").lower()
         if n.get("enabled", True) is False:
             continue
-        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), _label(n)) \
+        own, source = _label(n)
+        ikey = _identity(n.get("ident") or "", role, n.get("subrole"), own) \
             or _structural_identity(n, by_ref, kids, content_roles)   # "" for content, whose name is its identity
         if n["ref"] in in_row and (role in text_roles or role in read_roles or role in ("AXCell", "AXImage", "AXGroup")):
             continue
         ctx_text = _context_of(n, by_ref) or where
+        facts = declared(n)
+        # A tooltip shown as a control's name is not the control's own words where something else names it too:
+        # 「此按钮也可以执行缩放窗口的操作」 names the full-screen button, which its subrole's description names as well,
+        # and its 执行 is a floor word for running code, which raised the bar the button had to clear to 0.9: 29 of
+        # the 42 verdicts recorded for it since 09-22 05:00 were gated there, and none would have been at the 0.7
+        # an unflagged action has to clear. There the floor's words are matched on the label as it reads with that
+        # other name, `floor_text`, made here: a label cut to fit could not have the tooltip taken back out of it.
+        # Where the tooltip is the only name, it is what the control is called and its words count: an icon
+        # button whose tooltip says 'Delete' is flagged by it and has the 0.9 bar to clear, and exploring an app,
+        # which asks no floor question, leaves it out while its words are all that has judged it (`_risky`).
+        tooltip = source == "help"
         if selectable(n, role):   # rows are chosen by selecting them, not by an action
-            name = _label(n) or " · ".join(dict.fromkeys(inner_text(n["ref"])))
+            shown = " · ".join(dict.fromkeys(inner_text(n["ref"])))
+            name = own or shown
             if name:
                 state = "selected" if n.get("selected") else ""
+                target = {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}
+                if tooltip and shown:
+                    target["floor_text"] = with_state(f"select {rd} 「{shown[:80]}」", state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select",
                                                   with_state(f"select {rd} 「{name[:80]}」", state),
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "frame": n.get("frame")}, context=ctx_text, key=ikey))
+                                                  target, context=ctx_text, key=ikey, facts=dict(facts)))
         if role in text_roles and n.get("editable") is False and not by_capability:   # shows text, cannot be typed into
             role = "AXStaticText"
         if typeable(n, role):
@@ -434,24 +585,29 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 obs.notes.setdefault("fields", []).append(f"{label}: {str(n['value'])[: int(wcfg.get('field_chars', 300))]}")
             obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type",
                                               with_state(f"type into {rd} 「{label}」", current),
-                                              target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
+                                              target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey,
+                                              facts=dict(facts)))
             if has_range(n, role) and n.get("value") and n.get("editable") is not False:
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select_text",
                                                   f"select part of the text in {rd} 「{label}」", dict(target),
-                                                  slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text, key=ikey))
+                                                  slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text, key=ikey,
+                                                  facts=dict(facts)))
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "cursor_end",
-                                                  f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text, key=ikey))
+                                                  f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text, key=ikey,
+                                                  facts=dict(facts)))
             if role in set(wcfg.get("submit_roles") or []):
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type_submit",
                                                   with_state(f"type into {rd} 「{label}」 and press Return", current), dict(target),
-                                                  slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
+                                                  slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey,
+                                                  facts=dict(facts)))
             # An element can be both: a table cell takes text *and* has a context menu. Probing capabilities
             # finds many more typing targets than the role list did, so swallowing their actions here would
             # quietly take away what they could already do.
             if not (n.get("actions") and by_capability):
                 continue
         # a subrole (close button, sort button…) makes the role description itself a name
-        label = _label(n) or (str(n["rdesc"]) if n.get("subrole") and n.get("rdesc") else "")
+        by_subrole = str(n["rdesc"]) if n.get("subrole") and n.get("rdesc") else ""
+        label = own or by_subrole
         named = [a for a in n.get("actions", []) if a in labels and (a != "AXShowMenu" or role in menu_roles)]
         # An action outside the naming table used to be discarded, which made AXRaise, AXCancel, AXDelete and
         # every app's own actions invisible. They are offered now — but only where nothing named already
@@ -468,9 +624,11 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 verb = labels.get(act) or str((n.get("action_desc") or {}).get(act) or "")   # the app's own word
                 goes = f" → {n['url']}" if n.get("url") else ""   # a link's target, from the app itself
                 text = with_state(f"{verb + ' ' if verb else ''}{rd} 「{label}」{goes}", state)
+                target = {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame"), "title": label}
+                if tooltip and by_subrole:
+                    target["floor_text"] = with_state(f"{verb + ' ' if verb else ''}{rd} 「{by_subrole}」{goes}", state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
-                                                  {"ref": n["ref"], "pid": ctx.app["pid"], "action": act, "frame": n.get("frame"),
-                                                   "title": label}, context=ctx_text, key=ikey))
+                                                  target, context=ctx_text, key=ikey, facts=dict(facts)))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
             t = str(n.get("value") or n.get("title") or n.get("desc") or "").strip()
             if t and n.get("url"):   # where a link goes is the thing worth knowing about it
@@ -478,6 +636,15 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             if t and t not in seen_text:
                 seen_text.add(t)
                 texts.append(t)
+    # Every word the tree gave, whole: what it shows as text, what a field holds, what a control is called. The
+    # screen text holds only the first, cut to its cap; what is read off the screen where a step changed only
+    # the picture is new only if none of it said so (read_the_change). Of the 85 looks after such a step in this
+    # Mac's audit (09-19..09-23), 29 followed a checkbox, 10 a menu or pop-up button and 11 typing into a field
+    # or a document or selecting in one: steps that change how a control or a field looks, where the words on
+    # screen are the control's name and the field's contents.
+    said = [str(n[k]).strip() for n in nodes for k in ("title", "value", "desc", "placeholder") if n.get(k) not in (None, "")]
+    if said:
+        obs.tree_text = "\n".join(filter(None, [obs.tree_text] + list(dict.fromkeys(said))))
     if texts:
         _more_text(ctx, obs, texts)
 
@@ -568,18 +735,33 @@ def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
                            skip_roles=(ax.get("window_skip_roles") or []) if scope == "focused_window" else [])
 
 
-def _more_text(ctx: Ctx, obs: Observation, lines: list[str]) -> None:
+def _more_text(ctx: Ctx, obs: Observation, lines: list[str], first: bool = False) -> None:
     """Add to the screen text, up to the cap — and say when the cap cut something.
 
     Three providers wrote to one pool, each cutting it to the cap as it went, and none said so: a prompt read
     after a long window lost its words, and the decider was told nothing was missing. The cap stays (it is
     what the decider reads on every step); the cut is a fact about the observation, and is noted.
+
+    `first`: ahead of what is there, for the one thing on screen known to be new — what the last step drew
+    (read_the_change). Added after a long window, the cap cut exactly that.
     """
     cap = int(ctx.cfg.get("observe.window.screen_text_chars", 1500))
-    joined = "\n".join(filter(None, [obs.screen_text] + list(lines)))
+    parts = list(lines) + [obs.screen_text] if first else [obs.screen_text] + list(lines)
+    joined = "\n".join(filter(None, parts))
     if len(joined) > cap:
         obs.notes["screen_text_cut"] = int(obs.notes.get("screen_text_cut", 0)) + len(joined) - cap
     obs.screen_text = joined[:cap]
+
+
+def _by_sight(ctx: Ctx, obs: Observation, lines: list[str], first: bool = False) -> None:
+    """Screen text read off the screen, not out of a tree: added like any other, and counted where it stands
+    in the screen text once the cap has had its say (`read_by_sight_lines`), so what the screen showed can be
+    told from what a tree said — a check that reads the screen text (evals.check) reads both."""
+    lines = [x for x in lines if x]
+    if lines:
+        _more_text(ctx, obs, lines, first=first)
+        shown = set(obs.screen_text.split("\n"))
+        obs.notes["read_by_sight_lines"] = int(obs.notes.get("read_by_sight_lines", 0)) + sum(1 for x in lines if x in shown)
 
 
 def _note_ax_trust(ctx: Ctx, obs: Observation) -> None:
@@ -671,9 +853,14 @@ def window(ctx: Ctx, obs: Observation) -> None:
             ctx.cache.setdefault("window_frame_by_pid", {})[ctx.app["pid"]] = nodes[0]["frame"]
         if nodes[0].get("document"):      # the file this window is showing, as the app itself reports it
             obs.notes["window_document"] = nodes[0]["document"]
+        _note_window_kind(obs, s, nodes)
     n0 = len(obs.affordances)
     element_affordances(ctx, obs, nodes, "w")
     _own_prompts(ctx, obs, nodes, n0)
+    # where each thing the tree holds is: a sheet, a popover, a panel the app does describe is a window of its
+    # own to the window server, and `windows` must not take it for one Accessibility says nothing about.
+    # Private: observe() drops it before the notes go anywhere.
+    obs.notes["_tree_frames"] = [n["frame"] for n in nodes if isinstance(n.get("frame"), list) and len(n["frame"]) == 4]
     obs.notes["window_actionable"] = count(nodes)
     if nodes and obs.notes.get("window_frame"):
         # how much of the window the tree says nothing about: the one signal that does not depend on how
@@ -685,8 +872,52 @@ def window(ctx: Ctx, obs: Observation) -> None:
             obs.notes["undescribed_frame"] = region
     if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
         obs.notes["window_not_answering"] = True
+    _note_launching(ctx, obs, s)
     obs.notes["window_ms"] = s.get("ms")
     obs.notes["window_truncated"] = s.get("truncated")
+
+
+def _note_window_kind(obs: Observation, s: dict[str, Any], nodes: list[dict[str, Any]]) -> None:
+    """What kind of window a key pressed now goes to, as the Mac declares it, and which buttons Return and
+    Escape press there.
+
+    - `window_kind`: the role and subrole of the sheet in front if one is up ('AXSheet'), else of the window
+      ('AXWindow/AXStandardWindow', 'AXWindow/AXDialog'). A key was judged by its name alone, so its first
+      verdict in an app served every window of it, and every sheet.
+    - 'a window read only in part' when the walk was cut and no sheet was seen. A sheet is among the window's
+      last children and the walk reaches it last, so a cut walk loses it first: a window read in part is not
+      known to be the window without the sheet.
+    - `default_button` and `cancel_button`: the title of the button that sheet or window names as the one
+      Return or Escape presses (helper 0.2.0), never its tooltip. An older helper names none, and neither does
+      a walk cut before it reached the button; a disabled button is not pressed by its key."""
+    by_ref = {n.get("ref"): n for n in nodes}
+
+    def depth(n: dict[str, Any]) -> int:
+        d, p = 0, n.get("parent")
+        while p in by_ref and d < 64:
+            d, p = d + 1, by_ref[p].get("parent")
+        return d
+    sheets = [(depth(n), i, n) for i, n in enumerate(nodes) if n.get("role") == "AXSheet"]
+    if sheets:
+        holder = max(sheets, key=lambda x: x[:2])[2]    # a sheet on a sheet: the one in front
+    elif s.get("truncated") or nodes[0].get("more_children"):
+        obs.notes["window_kind"] = "a window read only in part"
+        return
+    else:
+        holder = nodes[0]
+    obs.notes["window_kind"] = _kind(holder)
+    for key in ("default_button", "cancel_button"):
+        button = by_ref.get(holder.get(key)) or {}
+        title = str(button.get("title") or "").strip()
+        if title and button.get("enabled", True) is not False:
+            obs.notes[key] = title
+
+
+def _note_launching(ctx: Ctx, obs: Observation, said: dict[str, Any]) -> None:
+    """An app that has not finished launching may have no window *yet*: not the same as having none. The
+    helper says so (0.2.0), believed for engine.open_front_s after the launch (`onscreen.still_launching`)."""
+    if still_launching(said, ctx.running, ctx.app["pid"], float(ctx.cfg.get("engine.open_front_s", 6))):
+        obs.notes["app_launching"] = True
 
 
 @provider("windows")
@@ -695,18 +926,119 @@ def windows(ctx: Ctx, obs: Observation) -> None:
     if not ctx.app:
         return
     s = ctx.helper.call("ax.snapshot", pid=ctx.app["pid"], scope="windows", max_depth=0, max_nodes=50, actions=False)
+    _note_launching(ctx, obs, s)
+    if s.get("not_answering"):
+        # An app that did not answer has told nothing about its windows, and an empty list here used to say
+        # it had none: the decider read "none: the app has no window open" and was offered "bring back the
+        # main window" for an app that was starting or busy (reopen was chosen on 45 of the 158 such looks
+        # since 22ce357, against 49 of 2,338 answering ones). The window server needs no answer from the app,
+        # so what it has on screen is asked there; with nothing there, what it has open stays unknown.
+        obs.notes["window_not_answering"] = True
+        size = ctx.cfg.get("observe.windows.min_size") or [100, 60]
+        shown = app_windows(ctx.helper, ctx.app["pid"], (int(size[0]), int(size[1])))
+        obs.notes["window_stand_in"] = {k: shown[0][k] for k in ("id", "title", "frame")} if shown else None
+        if shown:
+            obs.notes["open_windows"] = [(f"「{w['title']}」" if w["title"] else "a window") + " (on screen; the app is not answering yet)"
+                                         for w in shown]
+        return                   # and nothing is reopened for an app that has not said what it has open
+    nodes = s.get("nodes", [])
     titles = []
-    for n in s.get("nodes", []):
+    for n in nodes:
         t = n.get("title") or ""
         titles.append(t or "(untitled)")
         if t and t != obs.window:
             obs.affordances.append(Affordance(f"x{len(obs.affordances)}", "window", "raise", f"switch to the window 「{t}」",
                                               {"ref": n["ref"], "pid": ctx.app["pid"], "action": "AXRaise"}, context=ctx.app.get("name", "")))
+    # An app that answers can still have a window on screen that its tree does not describe: a panel it draws
+    # in a window of its own. The window list said nothing of it, the decider was offered "bring back the main
+    # window" beside it (b_head_probe scenario 2: an answering app, no window in its tree, one on screen), and
+    # nothing read it: the capture takes the window nearest the tree's frame (scenario 7b). The window server
+    # lists it without asking the app. What the tree holds is matched first — its windows, and in the focused
+    # one every node, since a sheet or a popover is a window of its own to the window server (window() passes
+    # their frames) — so that only what it holds nowhere is listed as undescribed.
+    size = ctx.cfg.get("observe.windows.min_size") or [100, 60]
+    undescribed = [w for w in app_windows(ctx.helper, ctx.app["pid"], (int(size[0]), int(size[1])))
+                   if not _described(w, nodes, obs.notes.get("_tree_frames") or [])]
+    titles += [(f"「{w['title']}」" if w["title"] else "a window") + " (on screen; Accessibility does not describe it)"
+               for w in undescribed]
     obs.notes["open_windows"] = titles
-    if not titles and ctx.app.get("path"):   # running without a window: macOS "reopen" brings its main window back
+    if undescribed:
+        obs.notes["undescribed_windows"] = [{k: w[k] for k in ("id", "title", "frame")} for w in undescribed]
+        if not nodes:
+            # Its tree lists no window at all: the one in front stands in for it and is read as the canvas it then
+            # is, click targets and all (see vision) — where observe.windows.read_by_sight lets such a window be
+            # read. At 0 it is listed and not read, as nothing was read of it before it was listed: whether it is
+            # a window anybody sees is what the survey that read_by_sight waits for counts, and one nobody sees
+            # would be read on every look and its text offered to click.
+            read = int(ctx.cfg.get("observe.windows.read_by_sight", 0)) > 0
+            obs.notes["window_stand_in"] = dict(obs.notes["undescribed_windows"][0]) if read else None
+        else:
+            _read_undescribed(ctx, obs, undescribed)
+    # running without a window: macOS "reopen" brings its main window back — unless it is still starting,
+    # when no window *yet* is not no window, or a window of it is on screen that its tree does not describe
+    if not titles and ctx.app.get("path") and not obs.notes.get("app_launching"):
         obs.affordances.append(Affordance(f"x{len(obs.affordances)}", "app", "reopen", f"bring back the main window of {ctx.app.get('name', 'the app')}",
                                           {"pid": ctx.app["pid"], "path": ctx.app["path"], "bundle_id": ctx.app.get("bundle_id"),
                                            "name": ctx.app.get("name")}, context=ctx.app.get("name", "")))
+
+
+def _described(w: dict[str, Any], ax_windows: list[dict[str, Any]], tree_frames: list[Any]) -> bool:
+    """Does the app's tree hold this window of the window server's? Leniently, since a window it does
+    describe that is listed as undescribed is withheld from reopen and read twice:
+
+    - a window of the tree with the same title: the helper leaves out a frame the app gave as NaN or infinite,
+      and such a window has only its title to be known by;
+    - a frame of the tree in the same place (onscreen.same_place);
+    - a frame of the tree inside it that covers most of it (more than half): the window server's frame of a
+      popover takes in its arrow, and the tree's does not."""
+    title = w.get("title")
+    if title and any(n.get("title") == title for n in ax_windows):
+        return True
+    f = w.get("frame")
+    area = float(f[2]) * float(f[3])
+    for g in [n.get("frame") for n in ax_windows] + list(tree_frames):
+        if not (isinstance(g, (list, tuple)) and len(g) == 4):
+            continue
+        if same_place(g, f) or (_inside(list(g), list(f), 3) and float(g[2]) * float(g[3]) > area / 2):
+            return True
+    return False
+
+
+def _stand_in(obs: Observation) -> dict[str, Any] | None:
+    """The window standing in for one the tree does not give (`window_stand_in`), unless the tree gave the
+    look a window of its own: the window this look reads, by its number."""
+    stand = obs.notes.get("window_stand_in")
+    return stand if stand and obs.notes.get("window_frame") in (None, list(stand["frame"])) else None
+
+
+def _in_reading_order(res: dict[str, Any], boxes: list[dict[str, Any]] | None = None) -> list[str]:
+    """What an OCR read (or `boxes` of it), line by line in the order the lines are read. Right-to-left text
+    read left-to-right comes back as a different sentence, so which way a line runs is asked of the system
+    (`direction`: Locale.characterDirection for the languages actually recognised)."""
+    rtl = res.get("direction") == "rtl"
+    kept = [b for b in (res.get("boxes", []) if boxes is None else boxes) if b.get("text") and b.get("frame")]
+    return [b["text"] for b in sorted(kept, key=lambda b: (b["frame"][1] // 12, -b["frame"][0] if rtl else b["frame"][0]))]
+
+
+def _read_undescribed(ctx: Ctx, obs: Observation, undescribed: list[dict[str, Any]]) -> None:
+    """Read by sight, by its number, up to observe.windows.read_by_sight of the app's windows its tree does
+    not describe. 0, the default, lists them without reading them until a survey of this Mac's apps has
+    counted how many such windows are ones nobody sees: one of those would cost a read on every action."""
+    limit = int(ctx.cfg.get("observe.windows.read_by_sight", 0))
+    vc = ctx.cfg.section("observe.vision")
+    if limit <= 0 or vc.get("mode", "auto") == "never":
+        return
+    name = ctx.app.get("name") or "the app"
+    for w in undescribed[:limit]:
+        res = _ocr(ctx, obs, vc, window_id=w["id"])
+        # a helper older than 0.2.0 does not know window_id and reads the window nearest the tree's frame instead:
+        # what it read is not this window's
+        if not res or not same_place(res.get("frame"), w["frame"]):
+            continue
+        text = " / ".join(dict.fromkeys(_in_reading_order(res)))
+        if text:
+            _by_sight(ctx, obs, [f"[a window of {name} that Accessibility does not describe"
+                                 + (f", 「{w['title']}」" if w["title"] else "") + f": {text}]"])
 
 
 def _overlap(a: list[int], b: list[int]) -> bool:
@@ -773,8 +1105,20 @@ def overlays(ctx: Ctx, obs: Observation) -> None:
     order = sorted(range(len(wins)), key=lambda i: (_window_id(wins[i]) in seen, i))
     for i in order:
         w = wins[i]
-        # one entry per *window*: keyed on the process, a second dialog from the same one was invisible
-        if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] \
+        # one entry per *window*: keyed on the process, a second dialog from the same one was invisible.
+        # An input method's own floating windows — its candidate panel, its status bar, the tip it shows on a
+        # change of mode — are no prompt, and nothing on them is a task's to answer, press or read: they get no
+        # snapshot, no read by sight and no entry here. Taken for a prompt, the candidate panel was in
+        # covered_by on 48 looks in 27 tasks on 09-20..23: 168 candidates offered as options, 4 reports that it
+        # was left for the person to answer, and Escapes pressed at it that deleted the letters it was composing
+        # ("hello" left as "hel" or "hell", in 3 tasks). On 19 of those looks the candidates were for letters
+        # no text of the task had typed: on 3, at a task's first look, what the task before it had left
+        # composing; on the other 16, which match no text any task typed, 7 of them whole words, the person's
+        # own typing in another window, and they went to the decider as a prompt. (Recounted so; 8f63d5d gave
+        # 16 looks of 9 words and 7 single characters, counting some of the task's own composing as the
+        # person's.)
+        # Its window at the ordinary level (its settings) is read like any other.
+        if w.get("regular") or not w.get("alpha") or w.get("pid") == ctx.app["pid"] or input_method_panel(w) \
            or any(o["window"] == _window_id(w) for o in found):
             continue
         over = i < front and any(_overlap(w["frame"], f) for f in frames)
@@ -1011,21 +1355,51 @@ def _where_in(f: list[int], win: list[int] | None, words: list[str]) -> str:
     return words[row * 3 + col]
 
 
-def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False) -> dict[str, Any] | None:
+def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False,
+         window_id: Any = None, drawn: bool = False) -> dict[str, Any] | None:
     """Read the window on-device; the same window content is read once (keyed by its Accessibility fingerprint).
 
     Except on a canvas, where that key is worthless: an app that draws its own content changes everything on
     screen without one Accessibility node changing, so scrolling a canvas and reading it again would have
     returned the text from before the scroll. There, anything the engine did counts as a change.
+
+    `drawn`: a read on a look after a step that changed the picture and no word of the tree — read_the_change,
+    and the loop's own reading of the window on such a look (`_picture_changed`). The fingerprint is then the
+    one from before the step, and a read keyed on it was the read from before the step: this one is keyed on
+    the actions taken, like a canvas's, and holds only while the window looks as it did when it was read (its
+    glance, to the capture's tolerance). No action is taken while the engine waits, and a panel that closed
+    meanwhile was read back as if it were still there. What the fingerprint stands for from then on is this
+    read, so the looks after it do not read the window again for the same tree.
+
+    `window_id`: the window of that number (the window server's), whatever the tree says of it — a window the
+    tree does not describe, or the one on screen of an app that does not answer. No fingerprint is asked for
+    then: it would be of another window or of nothing, and of an app that does not answer it costs three 0.5 s
+    timeouts. What stands in for it is the picture: the key is the number, the actions taken, and this look's
+    glance, since no action is taken while the engine waits for an app to answer, and a window that finished
+    starting meanwhile must not be read as it was before the wait.
     """
     cache: dict[Any, Any] = ctx.cache.setdefault("vision.ocr", {})
-    try:
-        fp = ctx.helper.call("ax.fingerprint", pid=ctx.app["pid"], poll_nodes=int(vc.get("fingerprint_nodes", 400))).get("fingerprint")
-    except HelperError:
-        fp = None
-    if sparse:
-        fp = (fp, ctx.cache.get("actions_done", 0))
-    hit = cache.get((ctx.app["pid"], fp)) if fp is not None else None
+    drawn = drawn or bool(obs.notes.get("_picture_changed"))
+    tree_key = None
+    if window_id is not None:
+        cells = (obs.notes.get("glance") or {}).get("cells")
+        key: Any = ("window", window_id, ctx.cache.get("actions_done", 0),
+                    zlib.crc32(repr(cells).encode()) if cells is not None else None)
+    else:
+        try:
+            fp = ctx.helper.call("ax.fingerprint", pid=ctx.app["pid"], poll_nodes=int(vc.get("fingerprint_nodes", 400))).get("fingerprint")
+        except HelperError:
+            fp = None
+        if drawn and fp is not None:
+            tree_key = (ctx.app["pid"], fp)       # …and what the fingerprint stands for from now on is this read
+        if sparse or drawn:
+            fp = (fp, ctx.cache.get("actions_done", 0))
+        key = (ctx.app["pid"], fp) if fp is not None else None
+    hit = cache.get(key) if key is not None else None
+    if hit is not None and drawn and hit.get("_glance") != obs.notes.get("glance"):
+        seen = compare_pictures(hit.get("_glance"), obs.notes.get("glance"), int(ctx.cfg.get("observe.sight.tolerance", 2)))
+        if seen is None or seen["cells"]:
+            hit = None                            # the same actions, and the window has changed since it was read
     if hit is not None:
         obs.notes["vision_cached"] = True
         return hit
@@ -1034,16 +1408,20 @@ def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False) -
         # supports. The old default was a fixed [zh-Hans, en-US], written out in three places that disagreed.
         wanted = vc.get("languages")
         res = ctx.helper.call("screen.ocr", pid=ctx.app["pid"], near=obs.notes.get("window_frame"),
+                              **({"window_id": window_id} if window_id is not None else {}),
                               languages=[] if wanted in (None, "auto") else list(wanted),
                               correct=bool(vc.get("language_correction", False)),
                               fast=bool(vc.get("fast", False)), min_conf=float(vc.get("min_conf", 0.3)), timeout=15)
     except HelperError as exc:
         obs.notes["vision_error"] = str(exc)[:200]
         return None
-    if fp is not None:
+    if key is not None:
         if len(cache) > 32:
             cache.clear()
-        cache[(ctx.app["pid"], fp)] = res
+        res = dict(res, _glance=obs.notes.get("glance"))    # what the window looked like when it was read
+        cache[key] = res
+        if tree_key is not None:
+            cache[tree_key] = res
     return res
 
 
@@ -1244,8 +1622,21 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         return
     # No window means nothing to read. The capture waits for one that is not there — measured at 1.5 s on
     # an app with none — and an empty Accessibility tree reads as "sparse", so this used to run every time.
-    if obs.notes.get("open_windows") == [] or obs.notes.get("window_not_answering"):
+    # Nor does a window the tree does not give with none standing in for it (`window_stand_in` None: nothing on
+    # screen of an app that does not answer, or the window of one whose tree lists none, not to be read).
+    stand = obs.notes.get("window_stand_in")
+    if obs.notes.get("open_windows") == [] or ("window_stand_in" in obs.notes and not stand):
         return
+    # A window the tree does not give — the one on screen of an app that does not answer, or of one whose tree
+    # lists no window where observe.windows.read_by_sight allows (observe.windows) — is read as the canvas it
+    # then is, by its number. It was not read at all: the decider was told only that the app did not answer
+    # (b_head_probe scenario 3). The next glance is taken of it too.
+    blind = bool(obs.notes.get("window_not_answering"))
+    adopted = _stand_in(obs)
+    if adopted:
+        obs.notes["window_frame"] = list(adopted["frame"])
+        ctx.cache.setdefault("window_frame_by_pid", {})[ctx.app["pid"]] = list(adopted["frame"])
+        obs.window = obs.window or adopted.get("title") or None
     unlabeled = obs.notes.get("unlabeled", [])
     empty = int(obs.notes.get("window_actionable", 0)) < int(vc.get("sparse_below", 8))
     key = f"{ctx.app['pid']}|{obs.window}"
@@ -1299,7 +1690,8 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         obs.affordances.append(Affordance("vr", "vision", "reveal", f"read the {len(unlabeled)} controls without a label in this window "
                                           "from the screen (to see what they are)", {"key": key}, context=ctx.app.get("name", "")))
         return
-    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas or mostly_undescribed)
+    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas or mostly_undescribed,
+               window_id=adopted["id"] if adopted else None)
     if res is None:
         return
     boxes = res.get("boxes", [])
@@ -1371,11 +1763,16 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         obs.notes["window_unreadable"] = float(obs.notes.get("undescribed_share") or round(hollow / area, 3) if area else 1.0)
         _more_text(ctx, obs, [f"(most of this window — {int(obs.notes['window_unreadable'] * 100)}% — shows nothing that can be read: "
                               "the app describes nothing there and nothing is readable on the screen)"])
-    if canvas:
+    if blind:
+        pass    # an app that did not answer has said nothing of how much of its window its tree describes
+    elif canvas:
         ctx.cache["vision.canvas"].add(key)
     elif known_canvas:
         ctx.cache["vision.canvas"].discard(key)     # the app grew a tree (or the window changed): stop paying
-    if empty or canvas:
+    # Text only, from an app that does not answer: nothing on it to point at. A busy app queues the events it
+    # is sent and applies them to whatever it shows once it catches up, and what it shows then is not what was
+    # read here.
+    if (empty or canvas) and not blind:
         for b in uncovered[: int(vc.get("max_text_targets", 80))]:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
@@ -1393,17 +1790,104 @@ def vision(ctx: Ctx, obs: Observation) -> None:
                                               f"click the empty place in the row of {beside}, in line with {under}",
                                               {"x": e["x"], "y": e["y"], "window_frame": win}))
         _right_click_by_name(ctx, obs, vc, boxes)
-        # right-to-left text read left-to-right comes back as a different sentence, so which way a line runs
-        # is asked of the system (Locale.characterDirection for the languages actually recognised)
-        rtl = res.get("direction") == "rtl"
+    if empty or canvas:
         # only the part the tree could not say: what it could say is already in screen_text, and putting it
         # in twice spends the budget on repeating itself
-        lines = [b["text"] for b in sorted(uncovered, key=lambda b: (b["frame"][1] // 12,
-                                                                     -b["frame"][0] if rtl else b["frame"][0]))]
-        _more_text(ctx, obs, lines)
+        _by_sight(ctx, obs, _in_reading_order(res, uncovered))
     obs.notes.pop("_vision_spots", None)   # internal: notes go back to MCP clients as JSON
     obs.notes["vision_ms"] = res.get("ms")
     obs.notes["vision_boxes"] = len(boxes)
+
+
+# ----------------------------------------------------------------------------- what a step drew
+# At most this many lines of what a step drew go ahead of the tree's text on one look. What is read is meant
+# to be what one step put up, a panel or a popover; the bound keeps a change across most of the window from
+# putting all of that window's text ahead of what its tree says.
+_DRAWN_LINES = 10
+
+
+def _plain(text: str) -> str:
+    """A line as compared: without the marks nobody sees (a calculator's display is full of U+200E) and
+    without case."""
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf").casefold().strip()
+
+
+def _new_here(obs: Observation, lines: list[str]) -> list[str]:
+    """The lines no tree said — every word it gave, whole, not the part of it the cap left in the screen text
+    (`Observation.tree_text`) — and the screen text does not already hold: a line of the tree read again off
+    the screen would be said twice, and counted as read by sight."""
+    said = _plain(obs.tree_text) + "\n" + _plain(obs.screen_text)
+    out: list[str] = []
+    for t in lines:
+        p = _plain(t)
+        if p and p not in said and t not in out:
+            out.append(t)
+    return out
+
+
+def read_the_change(ctx: Ctx, obs: Observation, region: list[int] | None) -> list[str]:
+    """What the last step drew, read off the screen: the text in `region` — where the picture changed and no
+    word of the tree did (sight.compare) — that the tree does not hold, first in the screen text.
+
+    The step's outcome said "the picture in the window changed (3% of it, at the bottom left); no text on
+    screen did" and nothing read it in a window the tree describes well. Whether a window is read by sight is
+    decided for offering click targets — a sparse tree, a canvas, six texts outside every node — and those
+    tests decided whether the decider heard what the step drew: offline (scratchpad/skeptic11/probe.py), a 3
+    to 5 line panel in a window with 12 actionable nodes was read and dropped, and one drawn over a list the
+    tree describes was not read at all. None of them applies here: the picture changed there, and the tree
+    did not. Only what is new is kept, and it goes first: added after a long window, the cap cut it.
+
+    One read, keyed on the actions taken and good while the window looks as it did (`_ocr`, `drawn`): the
+    loop's own read of the window on this look (naming its unlabeled controls) is the same one. What was read
+    stays in the screen text while that part of the window looks the same, and is read again where it does
+    not (`keep_what_was_read`)."""
+    vc = ctx.cfg.section("observe.vision")
+    if not ctx.app or not region or vc.get("mode", "auto") == "never":
+        return []
+    stand = _stand_in(obs)
+    res = _ocr(ctx, obs, vc, sparse=True, window_id=stand["id"] if stand else None, drawn=True)
+    if res is None:
+        return []
+    x, y, w, h = (float(v) for v in region)
+    inside = [b for b in res.get("boxes", []) if b.get("text") and b.get("frame")
+              and x <= _center(b["frame"])[0] <= x + w and y <= _center(b["frame"])[1] <= y + h]
+    lines = _new_here(obs, _in_reading_order(res, inside))[:_DRAWN_LINES]
+    if lines:
+        _by_sight(ctx, obs, lines, first=True)
+        obs.notes["read_where_the_picture_changed"] = list(region)
+        glance = obs.notes.get("glance")
+        ctx.scope.read_there = {"pid": ctx.app["pid"], "window": obs.window, "region": list(region), "lines": lines,
+                                "glance": glance} if glance else None
+    return lines
+
+
+def keep_what_was_read(ctx: Ctx, obs: Observation) -> None:
+    """What read_the_change read stays in the screen text while the part of the window it was read in looks
+    as it did then; where it does not, what is there now is read again.
+
+    Read on one look and missing from the next, a panel still on screen was reported gone: the next step's
+    change is this look's screen text against the last one's. Whether it is still there is what the picture
+    says — the same window, and the glance compared only where it was read (sight.compare `within`). Where it
+    has changed, dropping what was read said the same of a panel that stayed with a line of it changed as of
+    one that closed: all of it gone, and a change with text gone is not one of the picture only, so nothing
+    read it again either. Read again, a panel that closed is gone, one that stayed is not, and what changed on
+    it is what the step did. A window in front that is not the one it was read in leaves it for when that one
+    is back."""
+    kept = ctx.scope.read_there
+    if not kept or not ctx.app or kept["pid"] != ctx.app["pid"] or kept["window"] != obs.window:
+        return
+    same = compare_pictures(kept["glance"], obs.notes.get("glance"), int(ctx.cfg.get("observe.sight.tolerance", 2)),
+                            within=kept["region"])
+    if same is None:                     # no glance, or the window's size changed: not vouched for
+        ctx.scope.read_there = None
+    elif same["cells"]:                  # it changed there: what is there now, kept anew by read_the_change
+        ctx.scope.read_there = None
+        read_the_change(ctx, obs, kept["region"])
+    else:
+        lines = _new_here(obs, kept["lines"])
+        if lines:
+            _by_sight(ctx, obs, lines, first=True)
+            obs.notes["read_where_the_picture_changed"] = list(kept["region"])
 
 
 # ----------------------------------------------------------------------------- scripting dictionary
@@ -1462,10 +1946,15 @@ def named_combo(obs: Observation, combo: str) -> str | None:
     publishes the key equivalent of every menu item, and the menu provider has already read them.
 
     Never a filter: an app may implement a key with no menu item behind it, and that key still works.
+
+    Both sides are read as the keyboard reads them (`canonical_combo`). Compared as written, the planner's
+    `shift+cmd+p` named nothing where the menu's own ⇧⌘P is stored as `cmd+shift+p`.
     """
-    want = combo.replace(" ", "").lower()
+    want = canonical_combo(combo)
+    if want is None:
+        return None
     for a in obs.affordances:
-        if a.channel == "menu" and str(a.target.get("combo", "")).replace(" ", "").lower() == want:
+        if a.channel == "menu" and a.target.get("combo") and canonical_combo(a.target["combo"]) == want:
             return str(a.target.get("path") or a.label)
     return None
 
@@ -1479,6 +1968,107 @@ def keys(ctx: Ctx, obs: Observation) -> None:
         obs.affordances.append(Affordance(f"k{i}", "keys", "key",
                                           f"press the {combo} key" + (f" ({named})" if named else ""),
                                           {"combo": combo}))
+
+
+def _keys_in(ctx: Ctx, obs: Observation) -> str:
+    """Where a key pressed now goes: the kind of window the look read (`_note_window_kind`), 'no window open',
+    or 'a window that could not be read'. The last when the app did not answer or is still starting with
+    nothing on screen yet (`onscreen.unreadable`), and when its tree came back empty while the window server
+    shows a window of its own: the look on which an app first times out returns an empty tree and nothing
+    else, and was taken for one with no window."""
+    if unreadable(obs):
+        return "a window that could not be read"
+    if obs.notes.get("window_kind"):
+        return str(obs.notes["window_kind"])
+    pid = (ctx.app or {}).get("pid")
+    if pid:
+        size = ctx.cfg.get("observe.windows.min_size") or [100, 60]
+        if app_windows(ctx.helper, pid, (int(size[0]), int(size[1]))):
+            return "a window that could not be read"
+    return "no window open"
+
+
+def _role_words(node: dict[str, Any]) -> str:
+    """What kind of element this is, in words made from the Mac's own constants: its subrole where it has one,
+    else its role, 'AXSearchField' -> 'search field', 'AXTextArea' -> 'text area'; "" when neither is such a
+    constant ('AXUnknown' names nothing). Never its role description: a web page writes that itself (WebKit and
+    Chromium hand aria-roledescription to Accessibility as AXRoleDescription), and it is in the Mac's language."""
+    for k in ("subrole", "role"):
+        v = str(node.get(k) or "")
+        if re.fullmatch(r"AX[A-Z][A-Za-z]*", v) and v != "AXUnknown":
+            return " ".join(w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*", v[2:]))
+    return ""
+
+
+# What `declare_keys` adds to a key's label, and only that: see `plain_key`.
+_KEY_SAID = re.compile(r" \((?:default button 「[^」]*」|cancel button 「[^」]*」|keyboard in [a-z ]+)\)")
+
+
+def plain_key(label: str) -> str:
+    """A key's label without what `declare_keys` said about it — the button it presses and where the keyboard
+    is — for a routine, which finds a key by its label (a key has no other identity) and was recorded with the
+    key wherever it was then."""
+    return _KEY_SAID.sub("", label or "")
+
+
+@lru_cache(maxsize=8192)
+def plain_name(label: str) -> str:
+    """An option's name as a planner writes it back: its label without what the engine adds to it — 'menu '
+    before a menu item's place, the key equivalent after it (`_shortcut`), what `declare_keys` says of a key
+    (`plain_key`), what a control shows right now (`model.steady`) — and with '...' written '…'.
+
+    A move names an option as the planner saw it: a menu item by its place, a field as it stood when the plan was
+    written. Matched on the whole label, 'File ▸ New Document' named nothing where the option is 'menu File ▸ New
+    Document (⌘N)', nor a field whose label had gained '(now: x)' since, and a key named nothing once its label
+    said which button Return presses."""
+    x = _KEY_EQUIVALENT.sub("", steady(plain_key(label or "")).strip())
+    return x.removeprefix("menu ").replace("...", "…").strip()
+
+
+def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:
+    """What the Mac declares about where each key and each keystroke of typing goes, as `Affordance.facts`:
+    `in` (`_keys_in`), `keyboard_on` (the role and subrole of the focused element, when the focus is in the
+    app being worked in) and `window_shows_a_file`. The floor keys its verdicts on them (policy._floor_key):
+    a key's verdict was formed once per app and served every window, sheet and field after it. 9 key picks in
+    this Mac's audit were judged by a verdict formed while the app had no window up, 7ffdee1b's Return at 0.58
+    among them.
+
+    A plain key's label also says what it triggers, where the Mac says so: the button a sheet or window names
+    for Return or Escape, and the kind of field the keyboard is in, in words made from its role and subrole
+    constants (`_role_words`) — never its name or its role description, which a web page writes. The label is
+    what the floor classifier reads, so these reach it whatever policy confirm.declared_facts says. Asked for
+    every look's keys, the planner's suggested keys and the keys a way back is chosen among, from the same
+    look."""
+    keyed = [a for a in affs if a.channel == "keys"]
+    if not keyed:
+        return
+    if "keys_in" not in obs.notes:            # once a look: its keys and the planner's go to the same place
+        obs.notes["keys_in"] = _keys_in(ctx, obs)
+    where = str(obs.notes["keys_in"])
+    f = obs.focused or {}
+    here = (ctx.app or {}).get("pid")
+    on = _kind(f) if here and f.get("pid") == here and f.get("role") else ""
+    text_roles = set(ctx.cfg.get("observe.window.text_roles") or [])
+    field = _role_words(f) if on and f.get("role") in text_roles else ""
+    facts: dict[str, Any] = {"in": where, "window_shows_a_file": bool(obs.notes.get("window_document"))}
+    if on:
+        facts["keyboard_on"] = on
+    readable = where == obs.notes.get("window_kind")
+    for a in keyed:
+        a.facts.update(facts)
+        combo = canonical_combo(a.target.get("combo")) if a.verb == "key" else None
+        if not combo or "+" in combo:         # a combination is a command: its menu item says what it does
+            continue
+        said = []
+        if combo == "return" and readable and obs.notes.get("default_button"):
+            said.append(f"default button 「{obs.notes['default_button']}」")
+        if combo == "escape" and readable and obs.notes.get("cancel_button"):
+            said.append(f"cancel button 「{obs.notes['cancel_button']}」")
+        if field:
+            said.append(f"keyboard in {field}")
+        for s in said:
+            if f"({s})" not in a.label:
+                a.label += f" ({s})"
 
 
 @provider("focus")
@@ -1513,7 +2103,7 @@ def focus(ctx: Ctx, obs: Observation) -> None:
     name = next((str(node[k]) for k in ("title", "desc", "placeholder")
                  if node.get(k) and not str(node[k]).startswith("_NS:")), "")
     obs.focused = {"pid": r.get("pid"), "app": r.get("app") or "", "bundle_id": r.get("bundle_id") or "",
-                   "role": node.get("role"), "rdesc": node.get("rdesc"), "label": name,
+                   "role": node.get("role"), "subrole": node.get("subrole"), "rdesc": node.get("rdesc"), "label": name,
                    "ref": node.get("ref"), "secure_input": bool(r.get("secure_input"))}
 
 
@@ -1534,7 +2124,13 @@ def _cursor_note(ctx: Ctx, obs: Observation) -> str:
 
 @provider("typing")
 def typing(ctx: Ctx, obs: Observation) -> None:
-    """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller)."""
+    """Type at the cursor: for editors and canvases that expose no text field (the text comes from the caller), and
+    wherever the keyboard is in a field of the app while the task holds texts of its own (`Ctx.texts`), which one
+    being the decider's choice when the step is taken (`ConsultMixin._which_text`).
+
+    Those texts were typed nowhere but into a field a provider offers, and a field inside a row is none (its text
+    names the row): c56ca3bdf52a held the plan's folder name, chose Rename twice, and was offered no typing option
+    on any of the 8 looks from its new folder on. Pressing Return after is for the caller's text only."""
     tc = ctx.cfg.section("observe.typing")
     needs = tc.get("requires_input")   # only when the caller gave text: otherwise it lures the decider into typing junk
     if (obs.focused or {}).get("secure_input"):
@@ -1542,10 +2138,17 @@ def typing(ctx: Ctx, obs: Observation) -> None:
         # option was offered anyway — steps spent reaching a refusal that was known before they were taken
         obs.notes["typing_withheld"] = "a password field has focus: keystrokes are refused while that is so"
         return
-    if ctx.app and tc.get("enabled", True) and (not needs or ctx.inputs.get(needs)):
+    if not ctx.app or not tc.get("enabled", True):
+        return
+    callers = not needs or bool(ctx.inputs.get(needs))
+    f = obs.focused or {}
+    in_a_field = f.get("pid") == ctx.app.get("pid") and f.get("role") in set(ctx.cfg.get("observe.window.text_roles") or []) \
+        and f.get("role") != "AXSecureTextField"
+    if callers or (ctx.texts and in_a_field):
         where = _cursor_note(ctx, obs)
         obs.affordances.append(Affordance("y0", "keys", "type", str(tc.get("label") or "type the given text at the cursor") + where, {},
                                           slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
+    if callers:
         obs.affordances.append(Affordance("y1", "keys", "type_submit", str(tc.get("submit_label") or "type the given text at the cursor and press Return") + where,
                                           {}, slots={"text": Slot("text", "the text to type at the cursor")}, context=ctx.app.get("name", "")))
 
@@ -1570,6 +2173,12 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
     A scheme is an app saying "you can ask me to do this without touching my windows" — it is in the bundle's
     own Info.plist, so nothing here knows any app. The link itself is text, so it comes from the caller or the
     planner like any other text, and it is judged by the safety floor with the link in it.
+
+    Each one names the app that declares it, for the policy (`declared_by`). The file channel works through the
+    system and was charged to no app, so "open a 「ssh:」 link with 终端" was offered from the terminal running
+    this engine: a link that runs a command in the host, where nothing else of the host's may be done. Not as
+    the app it opens with: `open` hands the link to the scheme's handler, which need not be the app declaring
+    it, so the link still leaves the app, and whether that serves the goal is asked (`_leaves_for`).
     """
     models = ctx.cache.get("appmodels")
     if not ctx.app or models is None:
@@ -1579,7 +2188,7 @@ def schemes(ctx: Ctx, obs: Observation) -> None:
     for scheme in (model.get("url_schemes") or [])[: int(ctx.cfg.get("observe.schemes.limit", 8))]:
         obs.affordances.append(Affordance(
             f"h{len(obs.affordances)}", "file", "open", f"open a 「{scheme}:」 link with {name}",
-            {"path": "", "scheme": scheme},
+            {"path": "", "scheme": scheme, "declared_by": ctx.app.get("bundle_id")},
             slots={"url": Slot("text", f"the whole link, starting with {scheme}:")}, context=name))
 
 
@@ -1641,7 +2250,8 @@ def services(ctx: Ctx, obs: Observation) -> None:
             # read as sending, and the floor stopped 「New TextEdit Window Containing Selection」 and 「Look Up in
             # Dictionary」 as outward-facing on three cross-app tasks in a row. The Service's name is the fact.
             f"v{len(obs.affordances)}", "service", "perform", f"「{s['name']}」 — a Service of {s['app']} on this Mac",
-            {"name": s["name"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
+            # whose it is, for the planner's brief: the Services of the apps a goal names are named there (brief.py)
+            {"name": s["name"], "app": s["app"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
             context=f"{s['app']} (a system service)"))
 
 
@@ -1780,7 +2390,10 @@ def named_paths(text: str, max_words: int = 6, max_trim: int = 40) -> list[Path]
                     if here.exists():
                         found = here
                         break
-                except (OSError, ValueError):          # a candidate too long for the file system, a bad byte
+                # a candidate too long for the file system, a bad byte; a ~ before a word that names no user on this
+                # Mac (「~30%」, 「~alice」: RuntimeError), which failed the task — on every step once the texts a task
+                # holds were read from its goal (`held_texts`), with or without the files provider
+                except (OSError, ValueError, RuntimeError):
                     continue
             if found is not None:
                 if str(found) not in seen:
@@ -1788,6 +2401,32 @@ def named_paths(text: str, max_words: int = 6, max_trim: int = 40) -> list[Path]
                     out.append(found)
                 break
     return out
+
+
+def held_texts(goal: str, admitted: dict[str, dict[str, Any]], exclude: Any = (), limit: int = 4,
+               max_words: int = 6, max_trim: int = 40) -> list[dict[str, str]]:
+    """The texts a task holds besides the caller's inputs, each with where it came from ({text, from}, and planner:
+    its source, for what the planner wrote): the paths its goal names that exist on this Mac (`named_paths`), then
+    what a planner wrote that a place the task may draw from holds word for word (`Memory.admitted` entries
+    'traced'); none of `exclude`, at most `limit`.
+
+    Never a planner's text a decider judged (in 8b1a7646fc9f it let the planner's own definition of a word through
+    at 0.76 with only Finder seen): that fills only the slot it was written for. And not the goal's
+    quoted spans: each of the 11 in the goals of this Mac's audit names something on a screen (a tab, a column,
+    a folder), not a text to type."""
+    out: list[dict[str, str]] = []
+    seen = {str(x) for x in exclude}
+    for path in named_paths(goal, max_words, max_trim):
+        if str(path) not in seen:
+            seen.add(str(path))
+            out.append({"text": str(path), "from": "a path the goal names"})
+    for text, got in admitted.items():
+        # traced to the caller's inputs, it is theirs: told to a planner as held, it would say what they hold
+        if got.get("how") == "traced" and got.get("source") != CALLERS and text not in seen:
+            seen.add(text)
+            out.append({"text": text, "from": f"the planner's {got.get('key') or 'text'}, as {got.get('source') or 'a screen'} has it",
+                        "planner": str(got.get("source") or "")})
+    return out[:limit]
 
 
 @provider("files")
@@ -1906,15 +2545,81 @@ def group_of(a: Affordance) -> tuple[str, str]:
     return f"ch:{a.channel}", names.get(a.channel, f"the {a.channel} actions")
 
 
-def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int = 12,
-            fold_over: int = 0) -> tuple[list[Affordance], dict[str, tuple[str, list[Affordance]]]]:
+SCREEN = "screen"   # the screen in front as one group: the key of its rest, when it alone is more than there is room for
+
+Anchor = tuple[str, int]   # where a page begins: a member's handle, and which of the members with that handle it is
+
+
+def on_screen(group: str) -> bool:
+    """Is this group (a `group_of` key) part of the screen in front, an area or a list of the window, rather
+    than a place to look into?"""
+    return group.startswith(("area:", "list:"))
+
+
+def page_members(affs: list[Affordance], group: str, pinned: set[str] | frozenset[str] = frozenset()) -> list[Affordance]:
+    """What `arrange` pages through for a group: its members in `affs` order, less the planner's suggestions,
+    which are offered on their own. SCREEN is every area and list of the screen in front."""
+    return [a for a in affs if a.id not in pinned
+            and (on_screen(group_of(a)[0]) if group == SCREEN else group_of(a)[0] == group)]
+
+
+def page_anchor(members: list[Affordance], first: Affordance) -> Anchor:
+    """Where a page that begins at `first` begins, in a form the next look can find again: its handle, and
+    which of the members with that handle it is.
+
+    The handle alone is not enough. Content has no identity, so its handle is its label, and a page anchored
+    on a handle that an earlier member shares began at that earlier member instead. A window of 320 controls,
+    every eleventh a 「Archive」 button, paged at 199: page 1 came back eight times running, and 122 controls
+    were never shown. The window options of the 186 looks in this Mac's audit that had 120 or more, paged
+    that way at a budget of 100 and of 60, left controls out of reach on 65 and 68 of them; anchored on
+    (handle, which), on none."""
+    h = first.handle()
+    same = [a for a in members if a.handle() == h]
+    return h, next((i for i, a in enumerate(same) if a is first), 0)
+
+
+def _from(members: list[Affordance], anchor: Anchor | None) -> list[Affordance]:
+    """The members in their order, beginning with the one `anchor` names, and the ones before it after the
+    last: a page, then the rest, then round again. A missing anchor, or one that names no member here, is
+    the first."""
+    if anchor:
+        handle, nth = anchor
+        at = [i for i, a in enumerate(members) if a.handle() == handle]
+        if 0 <= nth < len(at):
+            return members[at[nth]:] + members[:at[nth]]
+    return members
+
+
+def _sample(members: list[Affordance], sample: int) -> str:
+    """The first few members of a group by the last part of their names, each cut where a word ends."""
+    return ", ".join(clip(m.label.split(" ▸ ")[-1], 40) for m in members[:sample]) + (", …" if len(members) > sample else "")
+
+
+def arrange(affs: list[Affordance], budget: int, expanded: set[str] | dict[str, Anchor | None], sample: int = 12,
+            fold_over: int = 0, pinned: set[str] | frozenset[str] = frozenset(),
+            min_page: int = 60) -> tuple[list[Affordance], dict[str, tuple[str, list[Affordance]]]]:
     """Fit what can be done into one choice of at most ``budget`` options without guessing relevance: everything
-    when it fits; otherwise the smallest groups stay as they are and the largest are offered as one entry each
-    ("look into the File menu: New, Open, …"), which the decider can open like a person opens a menu. Groups
-    already opened in this task are always shown in full."""
+    when it fits. Otherwise, in this order:
+
+    * the screen in front, whole; when it alone is more than there is room for, its first part, and the rest
+      one "look into the rest of the window" away;
+    * the planner's suggestions (`pinned`, by id), each on its own, never with its whole group;
+    * the group the decider opened (`expanded`: {group: the `Anchor` its page begins at, None for its first
+      member}, or a set of one group, opened at its first), shown from there: at least ``min_page`` of it
+      (all of it when smaller) and as much more as the room left holds, its rest one "look into the rest
+      of …" away. One group is open at a time; SCREEN opens the screen's own rest;
+    * then the smallest other groups whole, and the others as one "look into …" each, which the decider can
+      open like a person opens a menu.
+
+    Every place keeps at least its own entry, so nothing is dropped: an action is an option, or inside an
+    entry that names it. Only more places than options can break that, and `invariants.check_options` says so."""
+    opened = dict(expanded) if isinstance(expanded, dict) else dict.fromkeys(expanded)
+    group, anchor = next(iter(opened.items()), (None, None))   # one group is open at a time
     groups: dict[str, list[Affordance]] = {}
     names: dict[str, str] = {}
     for a in affs:
+        if a.id in pinned:
+            continue
         k, n = group_of(a)
         groups.setdefault(k, []).append(a)
         names[k] = n
@@ -1923,28 +2628,55 @@ def arrange(affs: list[Affordance], budget: int, expanded: set[str], sample: int
     # every installed app, and the decider was shown 185 options — Format ▸ Rows ▸ Hide, eight URL schemes,
     # the user's Shortcuts — with the whole sheet folded behind one "look into the window" it never opened.
     # Where an action lives is still the only thing this goes by: on the screen now, before anywhere else.
-    on_screen = lambda k: k.startswith(("area:", "list:"))   # noqa: E731
-    huge = {k for k in groups if fold_over and len(groups[k]) > fold_over and k not in expanded and not on_screen(k)}
+    huge = {k for k in groups if fold_over and len(groups[k]) > fold_over and k != group and not on_screen(k)}
     if len(affs) <= budget and not huge:
         return affs, {}
-    shown = {k for k in groups if (k in expanded or len(groups[k]) == 1) and k not in huge}   # folding one option saves nothing
-    used = sum(len(groups[k]) for k in shown) + (len(groups) - len(shown))
-    for k in sorted((k for k in groups if k not in shown and k not in huge), key=lambda k: (not on_screen(k), len(groups[k]))):
-        if used - 1 + len(groups[k]) > budget and not on_screen(k):
-            break                 # the screen does not fold: if it alone is over the budget its tail is cut, and said
-        shown.add(k)
-        used += len(groups[k]) - 1
+    pins = [a for a in affs if a.id in pinned]
+    screen = page_members(affs, SCREEN, pinned)
+    others = [k for k in groups if not on_screen(k)]
+    opens = group if group in groups and not on_screen(group) else None
+    # …and it goes first when room runs out, before what the decider opened. Opened groups were listed first
+    # and the tail cut: a real task looked into the 535 installed apps while Calculator was not answering, the
+    # list stayed open, and on the next nine looks 102 to 195 apps stood in front of the keypad and not one of
+    # Calculator's 59 controls was an option. The opened group is owed a page; the screen has the rest.
+    room = budget - len(pins) - len(others)                  # every other place keeps at least its own entry
+    owed = min(len(groups[opens]) - 1, min_page) if opens else 0
+    fits = max(room - owed, 0)
     folded: dict[str, tuple[str, list[Affordance]]] = {}
-    for k, members in groups.items():
-        if k not in shown:
-            names_ = ", ".join(m.label.split(" ▸ ")[-1][:40] for m in members[:sample])
-            folded[k] = (f"look into {names[k]} ({len(members)} options: {names_}{', …' if len(members) > sample else ''})", members)
-    opened = [a for a in affs if group_of(a)[0] in expanded]   # what the decider asked to see comes first if space runs out
-    rest = [a for a in affs if group_of(a)[0] in shown and group_of(a)[0] not in expanded]
-    flat = opened + [a for a in rest if on_screen(group_of(a)[0])] + [a for a in rest if not on_screen(group_of(a)[0])]
+    shown_screen, screen_rest = screen, []
+    if len(screen) > fits:
+        paged = _from(screen, anchor if group == SCREEN else None)
+        shown_screen, screen_rest = paged[: max(fits - 1, 0)], paged[max(fits - 1, 0):]
+        room -= 1
+    room -= len(shown_screen)
+    page: list[Affordance] = []
+    if opens:
+        members = _from(groups[opens], anchor)
+        if len(members) - 1 <= room:
+            page, room = members, room - (len(members) - 1)
+        else:
+            spare = max(room, 0)
+            page, rest, room = members[:spare], members[spare:], room - spare
+            # worded as a "look into" like every other entry: the decider's instructions say what those are
+            folded[opens] = (f"look into the rest of {names[opens]} ({len(rest)} more of {len(members)}: "
+                             f"{_sample(rest, sample)})", rest)
     # Smallest groups first is not a guess at what matters — it is what shows the most *distinct* places at
     # once; the largest become one "look into …" each, so nothing is dropped for being judged uninteresting.
-    # What can still be dropped is the tail of this list when even that does not fit, and the caller is told.
+    shown: set[str] = set()
+    for k in sorted((k for k in others if k != opens and k not in huge), key=lambda k: len(groups[k])):
+        if len(groups[k]) - 1 > room:
+            break
+        shown.add(k)
+        room -= len(groups[k]) - 1
+    for k in others:
+        if k != opens and k not in shown:
+            folded[k] = (f"look into {names[k]} ({len(groups[k])} options: {_sample(groups[k], sample)})", groups[k])
+    if screen_rest:
+        folded[SCREEN] = (f"look into the rest of the window ({len(screen_rest)} more of {len(screen)} on screen: "
+                          f"{_sample(screen_rest, sample)})", screen_rest)
+    flat = shown_screen + pins + page + [a for a in affs if a.id not in pinned and group_of(a)[0] in shown]
+    # Only more places than options can still cut anything here; the caller is told, and the look breaks
+    # an invariant (`invariants.check_options`).
     return flat[: max(0, budget - len(folded))], folded
 
 
@@ -1982,16 +2714,23 @@ def observe(ctx: Ctx) -> Observation:
             fn(ctx, obs)
         except (HelperError, OSError, subprocess.SubprocessError) as exc:
             # an older helper answers a method it does not have with `no_method`; that is not the provider
-            # failing, and the way out is a rebuild, not a bug report
+            # failing, and the way out is a rebuild, not a bug report. Only the helper's errors carry a code: a
+            # command that timed out (`shortcuts list`, mdfind) made this line raise, and the look with it.
             obs.notes[f"{name}_error"] = ("the helper is older than this engine and does not know " + exc.message.split()[-1]
-                                          + ": rebuild it with `macwork helper install`") if exc.code == "no_method" else str(exc)[:200]
+                                          + ": rebuild it with `macwork helper install`") if getattr(exc, "code", None) == "no_method" else str(exc)[:200]
             log.info("provider %s failed: %s", name, exc)
         obs.notes[f"{name}_n"] = len(obs.affordances) - n0
         obs.notes[f"{name}_ms"] = round((time.monotonic() - t) * 1000)
+    keep_what_was_read(ctx, obs)              # before the loop compares this screen with the last one
+    declare_keys(ctx, obs, obs.affordances)   # after every provider: where the keys go is read from all of them
     _disambiguate(obs.affordances)
     ids = [a.id for a in obs.affordances]
     if len(ids) != len(set(ids)):
         for i, a in enumerate(obs.affordances):   # providers are independent; make ids unique afterwards
             a.id = f"{a.id}_{i}"
+    # What providers hand each other (a glance being taken, the tree's frames) is theirs: notes go back to MCP
+    # clients as JSON, and a provider that failed half-way left its own behind.
+    for k in [k for k in obs.notes if k.startswith("_")]:
+        del obs.notes[k]
     obs.notes["ms"] = round((time.monotonic() - t0) * 1000)
     return obs

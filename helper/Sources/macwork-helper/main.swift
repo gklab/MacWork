@@ -9,7 +9,7 @@ import Carbon.HIToolbox
 ///   macwork-helper --stdio              serve stdin/stdout (development: inherits the terminal's permissions)
 ///   macwork-helper --socket <path>      serve a 0600 Unix socket (installed .app, launched by the engine)
 
-let version = "0.1.0"
+let version = "0.2.0"
 let dispatcher = Dispatcher()
 
 /// Whether the session is at the lock screen / login window (nothing can be operated then).
@@ -19,9 +19,12 @@ func screenLocked() -> Bool {
 }
 
 dispatcher.register("ping") { _ in
+    // `marks`: the apps believed not to answer Accessibility, and how each one's last mark ended — whether an
+    // app answered while it was marked could only be inferred from timings before
     ["version": version, "pid": Int(getpid()), "ax_trusted": AXIsProcessTrusted(),
      "screen_capture": CGPreflightScreenCaptureAccess(), "screen_locked": screenLocked(),
-     "secure_input": IsSecureEventInputEnabled(), "methods": dispatcher.methods]
+     "secure_input": IsSecureEventInputEnabled(), "methods": dispatcher.methods,
+     "marks": Unresponsive.shared.report()]
 }
 dispatcher.register("session.state") { _ in
     ["screen_locked": screenLocked(), "frontmost": (NSWorkspace.shared.frontmostApplication?.bundleIdentifier as Any?) ?? NSNull()]
@@ -78,6 +81,7 @@ dispatcher.register("system.locale") { _ in
      "ocr_languages": ocrLanguages(),
      "region": Locale.current.region?.identifier as Any? ?? NSNull()]
 }
+dispatcher.register("system.identity", systemIdentity)
 dispatcher.register("screen.capture", offMain: true, screenCapture)
 dispatcher.register("screen.glance", offMain: true, screenGlance)
 dispatcher.register("events.watch", eventsWatch)

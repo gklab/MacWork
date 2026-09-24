@@ -27,7 +27,7 @@ from .config import Config
 from .budget import BudgetMixin
 from .invariants import check_ending
 from .words import FloorWords
-from .consult import ConsultMixin
+from .consult import ConsultMixin, planner_down
 from .decider import Decider, DeciderError, make_decider
 from .effects import EffectsMixin
 from .facts import Facts
@@ -48,6 +48,11 @@ from .tidy import TidyMixin
 log = logging.getLogger(__name__)
 
 __all__ = ["Engine", "MOVES", "Progress"]
+
+
+# Endings that are the task giving up on its own — no route, judged unreachable, only the user can go on,
+# nothing left to try — which an outage of the planner it asked for a way can explain.
+GAVE_UP = ("", "no_route", "unreachable", "needs_user", "no_actions")
 
 
 def _norm_name(s: str) -> str:
@@ -95,6 +100,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         self.cache["appmodels"] = self.models
         self.cache["skills"] = self.skills
         self._planner: Any = None
+        # One call at a time to a local planner, whoever asks: a task, beside its loop or waiting, or the floor
+        # deriving its words (consult._planner_call, policy._derive_floor_words). A local server asked twice at
+        # once works on both answers.
+        self._planner_lock = threading.Lock()
         self.last_timing: dict[str, int] = {}
         self.helper.on_reset = self._helper_restarted
         atexit.register(self.close)
@@ -116,8 +125,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
 
     def _helper_restarted(self) -> None:
         """A new helper process means every Accessibility reference handed out by the old one is gone, and pids
-        may be reused. Anything keyed on them has to go with it."""
-        for key in ("menu.snap", "menubar.snap", "menubar.owners", "ambient", "vision.ocr"):
+        may be reused. Anything keyed on them has to go with it — and what the old one said this Mac's own
+        identifiers were: a helper rebuilt since may read what the old one could not (`_mac_identity`)."""
+        for key in ("menu.snap", "menubar.snap", "menubar.owners", "ambient", "vision.ocr", "privacy.identity"):
             self.cache.pop(key, None)
         self._last = None
         log.info("helper restarted: dropped the caches that held its references")
@@ -168,6 +178,23 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         services = [str(s.get("name")) for s in (scanned[1] or [] if scanned else []) if s.get("name")]
         return self.cache["privacy.vocab"] + services
 
+    def _mac_identity(self) -> list[str]:
+        """This Mac's own serial number and hardware UUID, asked of the Mac and hidden wherever they occur.
+
+        An About This Mac window left open put the serial number into 1,911 decider requests of 189 tasks, and
+        into 445 planner prompts of 8: no tagger calls it a name and no pattern can know its shape. Only an
+        answer is kept. A helper that could not be asked (an older one does not know the question) is asked
+        again at the next request of every redactor that has none (`Redactor._know_mine`) — the engine's own,
+        which serves mac_observe and mac_act for the life of the process, too."""
+        if "privacy.identity" not in self.cache:
+            try:
+                got = self.helper.call("system.identity") or {}
+            except HelperError as exc:
+                log.info("this Mac's serial number and hardware UUID could not be read (%s)", exc)
+                return []
+            self.cache["privacy.identity"] = [str(v) for v in (got.get("serial"), got.get("uuid")) if v and len(str(v)) >= 6]
+        return self.cache["privacy.identity"]
+
     def system(self) -> dict[str, Any]:
         """What this Mac is set to — asked once, and of the Mac. Everything that used to be a fixed locale or
         a fixed pair of OCR languages reads it from here."""
@@ -189,14 +216,22 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             self._redactors.pop(key, None)
         if key not in self._redactors:
             self._redactors[key] = Redactor(self.cfg, entities=self._entities, protect=self._mac_vocabulary,
-                                            detect=self._detect)
+                                            detect=self._detect, identity=self._mac_identity)
         return self._redactors[key]
 
     @property
     def gate(self) -> Gate:
         return Gate(self.decider, self.audit)
 
-    def _resolve_app(self, hint: str | dict[str, Any] | None, running: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _resolve_app(self, hint: str | dict[str, Any] | None, running: list[dict[str, Any]],
+                     front: bool = True) -> dict[str, Any] | None:
+        """The app `hint` names, running now; with no hint, the app in front (`front`), else none.
+
+        Never the app this engine runs under (deny.host_app): a task that named no app began wherever the
+        screen was, and in this Mac's audit 17 tasks took their first look in 终端 (Terminal), the app these
+        runs are started from, 3 of them on 09-23 — its window offered as options and its text sent in looks
+        and plans. With no app named and the host in front, the answer is no app; the apps provider offers
+        what the goal names from there."""
         if isinstance(hint, dict) and hint.get("pid"):
             if any(a.get("pid") == hint["pid"] for a in running):
                 return hint
@@ -218,7 +253,10 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             return next((a for a in background if h in _names(a)), None) or \
                 next((a for a in background if any(h in n for n in _names(a) if n)), None)
             return None  # not running: the engine opens an app the caller named; otherwise the apps provider offers it
-        return (self.helper.call("apps.frontmost") or {}).get("app")
+        if not front:
+            return None
+        app = (self.helper.call("apps.frontmost") or {}).get("app")
+        return None if self._host_app(app) else app
 
     def _installed_named(self, hint: str) -> dict[str, Any] | None:
         h = _norm_name(hint)
@@ -233,9 +271,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
             got = self._scopes[key] = TaskScope()
         return got
 
-    def _ctx(self, goal: str, inputs: dict[str, Any], app: Any, key: str) -> Ctx:
+    def _ctx(self, goal: str, inputs: dict[str, Any], app: Any, key: str, front: bool = True) -> Ctx:
         running = self.helper.call("apps.running")
-        return Ctx(self.cfg, self.helper, goal=goal, inputs=inputs, app=self._resolve_app(app, running), running=running,
+        return Ctx(self.cfg, self.helper, goal=goal, inputs=inputs, app=self._resolve_app(app, running, front=front), running=running,
                    cache=self.cache, redactor=self.redactor(key),   # gate is attached only where a decision is needed
                    hands=self.take_hands, task=key, scope=self.scope(key))
 
@@ -483,6 +521,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
 
     def _finish(self, task: Task, status: str, reason: str = "", pending: dict[str, Any] | None = None,
                 cause: str = "") -> dict[str, Any]:
+        # A route asked for beside the loop is no use once the run is over, and the seconds it ran belong in the
+        # ledger this ending writes. `_run`'s finally stops it too, but only after the ledger has been written.
+        self._stop_planning(task)
         answered_anyway = False
         if cause:
             task.cause = cause
@@ -500,6 +541,11 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                     and not task.outputs.get("answer_is_no_answer"):
                 task.outputs["unfinished_but_answered"] = reason
                 status, reason, answered_anyway = "done", "the question is answered from what the task saw", ""
+        if status in ("failed", "blocked", "need_input") and task.cause in GAVE_UP and planner_down(task):
+            # It gave up, and every time it asked the planner for a way the planner could not be reached or
+            # refused it: the ending is the outage's, not the task's. Only over an ending that is a giving up
+            # — a decider that could not be reached, a locked screen or a spent budget say more.
+            task.cause = "planner_unreachable"
         if status == "need_confirm" and task.held is not None and not task.confirm_key:
             # What the "yes" will be for, by name. The held action itself is a live element and is not
             # stored; a task picked up after a restart had the caller's confirmation and nothing to apply it
@@ -509,6 +555,9 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         check_ending(task, status)
         task.outputs["budget"] = self.ledger(task)      # what it used, of what: the first question about a task that stopped
         task.updated = time.time()
+        # the looks after the last action — the done judgement, a second opinion, the answer — are time too,
+        # and the task is kept with them counted
+        self._clock_out(task, {"n": len(task.steps), "end": status})
         self.store.save(task)
         if status == "done" and not answered_anyway:
             path = self.skills.record(task, task.start_app)
@@ -516,7 +565,7 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 task.outputs["learned_routine"] = path.stem
         for app in task.apps.values():
             self.models.save(app)
-        self.audit.record("task", task=task.id, status=status, reason=reason, steps=len(task.steps))
+        self.audit.record("task", task=task.id, status=status, reason=reason, steps=len(task.steps), cause=task.cause)
         if status in ("failed", "cancelled") and task.changed and self.cfg.get("engine.revert.on_failure", False):
             # Before tidy, not after: putting a change back is done through the app's own undo command, and
             # tidy closes the windows that command lives in. `revert` refuses on its own terms — it will not
@@ -632,12 +681,14 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
                 d.begin_task()          # a task starts with the decider asked for, whatever the last one fell back to
             calls0, cost0 = (d.calls, d.cost_usd) if d else (0, 0.0)
             task.begin_run(calls0, cost0)   # steps and seconds are budgeted per turn, not across the caller's pauses
+            self._start_clock(task)         # …and timed per turn: the first step's wall time starts here
             try:
                 self._loop(task, progress or (lambda _m: None))
             except RedactionError as exc:
                 # deciding on "[withheld]" everywhere is deciding blind: stop rather than degrade quietly
                 self._finish(task, "failed", f"nothing could be sent to the decider: {exc}", cause="redaction_failed")
             finally:  # everything this run asked the decider, web research included
+                self._stop_planning(task)       # …and whatever it still had asked of the planner: never into the next run
                 task.end_run()
                 if self._decider is not None:
                     task.decider_calls += self._decider.calls - calls0

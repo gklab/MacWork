@@ -20,7 +20,7 @@ OTHER_SCRIPT = re.compile(r"[぀-ヿ㐀-鿿가-힯Ѐ-ӿ؀-ۿ]")   # CJK, Korean,
 # Where the engine's own code may hold text in another script, and why.
 CODE = {
     "macwork/privacycheck.py": "a synthetic corpus for measuring redaction in many languages: that is its job",
-    "macwork/privacy.py": "one carrier sentence per script, so a bare name is tagged in the script it is written in",
+    "macwork/privacy.py": "carrier sentences per script, so a bare name is tagged in the script it is written in",
     "macwork/facts.py": "a character class: each CJK character is a word",
 }
 # Defaults that may: the floor's word lists are documented as two languages wide and as a hint, never a
@@ -35,6 +35,7 @@ LANGUAGE_IS_THE_SUBJECT = {
     "test_floor_threshold.py": "the same verdict on a German, a Japanese, a Russian, a Chinese and an English Mac",
     "test_privacy.py": "redaction of names, addresses and numbers written in other scripts",
     "test_scripts.py": "names tagged through a carrier in their own script; selections counted in UTF-16 units",
+    "test_whole_words.py": "where a word ends in scripts with spaces and without them, which a pseudonym must respect",
     "test_paths.py": "file names in other scripts, and sentences whose particles attach to a path without a space",
     "test_facts.py": "splitting text into words where there are no spaces",
     "test_apps.py": "an app whose displayed name is localized and whose file name is not",

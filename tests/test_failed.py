@@ -1,12 +1,14 @@
 """An action that could not be carried out is not an action that does nothing.
 
-Both used to be one fact — "never offered again from this screen in this task". For an action that ran and
-changed nothing that is right: it is a fact about the action. For one that *failed* — the app was busy, the
-element had gone, a wait timed out — it is a fact about the moment, and an open world has plenty of those: a
-button that works once the page has loaded was gone for the rest of the task.
+Both used to be one fact — "never offered again from this screen in this task". For one that *failed* — the
+app was busy, the element had gone, a wait timed out — it is a fact about the moment, and an open world has
+plenty of those: a button that works once the page has loaded was gone for the rest of the task. For an action
+that ran and changed nothing it is a fact about the action, but on the exact screen it was tried on, like a
+failure: kept for the screen's structure, it held for every screen of that structure whatever it showed — each
+display of a calculator, each state of a form.
 
-Withheld while the screen is exactly as it was when it failed; offered again as soon as anything on it has
-changed. Nothing here is a timer or a count — a stretch of steps that got nowhere (`engine.max_no_progress`) is the limit.
+Both are withheld while the screen is exactly as it was; offered again as soon as anything on it has changed.
+Nothing here is a timer or a count — a stretch of steps that got nowhere (`engine.max_no_progress`) is the limit.
 """
 
 from macwork.engine import Engine
@@ -68,7 +70,7 @@ def test_it_comes_back_when_the_screen_has_changed(tmp_path):
     assert "Refresh" in res["steps"][-1] and "(failed)" not in res["steps"][-1]
 
 
-def test_an_action_that_ran_and_did_nothing_stays_gone_as_before(tmp_path):
+def test_an_action_that_ran_and_did_nothing_is_withheld_on_that_exact_screen(tmp_path):
     helper = Busy(fails=0)
     helper.quiet = True                # it is pressed, and nothing whatever happens
 
@@ -77,8 +79,8 @@ def test_an_action_that_ran_and_did_nothing_stays_gone_as_before(tmp_path):
         return {"pick": "Search"}
 
     decider, _ = run(tmp_path, helper, [{"pick": "Refresh"}, changes, {"pick": "done", "done": 0.95}, {"pick": "done", "done": 0.95}])
-    assert not any("Refresh" in o for o in offered(decider, 1))
-    assert not any("Refresh" in o for o in offered(decider, 2)), "that is a fact about the action, not about the moment"
+    assert not any("Refresh" in o for o in offered(decider, 1)), "on the very screen where it did nothing"
+    assert any("Refresh" in o for o in offered(decider, 2)), "the screen has changed: what did nothing on it may not on this one"
 
 
 def test_it_does_not_come_back_for_ever(tmp_path):

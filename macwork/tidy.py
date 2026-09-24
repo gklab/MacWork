@@ -11,12 +11,9 @@ from .decider import DeciderError, choice, noul
 from .helper import HelperError
 from .model import Task
 from .observe import arrange, observe
+from .onscreen import input_method_panel, same_place
 
 log = logging.getLogger(__name__)
-
-
-def _near(a: list[int] | None, b: list[int] | None, slack: int = 3) -> bool:
-    return bool(a and b) and all(abs(x - y) <= slack for x, y in zip(a, b))
 
 
 class TidyMixin:
@@ -81,10 +78,20 @@ class TidyMixin:
 
     def _new_windows(self, task: Task, running: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Windows, dialogs and sheets that appeared during the task in apps that were already running (the host
-        app excluded), each matched to its Accessibility element so it can be closed like a person would."""
+        app excluded), each matched to its Accessibility element so it can be closed like a person would.
+
+        …or in a process with no Dock icon that the task itself started, while its window is on screen. About
+        This Mac is a window of such a process, and tidy's record of the task that opened it named only the
+        TextEdit window it closed: its owner was not in the list of Dock apps, so it was never looked at, and
+        the serial number stayed on screen for the next task. One of those processes that was already running
+        when the task began is left alone — a long-running agent's prompt is not this task's doing."""
         if task.desktop.initial_windows is None:
             return []
         alive = {a["pid"]: a for a in running}
+        try:
+            everyone = {int(a["pid"]): a for a in self.helper.call("apps.running", all=True) if a.get("pid") is not None}
+        except HelperError:
+            everyone = {}
         host = self._host_bundles()
         try:
             now = self.helper.call("screen.windows")
@@ -94,9 +101,15 @@ class TidyMixin:
         snaps: dict[int, list[dict[str, Any]]] = {}
         for w in now:
             pid = int(w.get("pid") or 0)
-            if (w.get("layer", 0) != 0 or not w.get("alpha", 1) or pid not in alive or pid in task.desktop.opened
-                    or pid not in (task.desktop.initial_pids or set()) or alive[pid].get("bundle_id") in host
+            owner = alive.get(pid) or everyone.get(pid)
+            if (w.get("layer", 0) != 0 or not w.get("alpha", 1) or input_method_panel(w) or owner is None
+                    or pid in task.desktop.opened or owner.get("bundle_id") in host
                     or int(w.get("id") or 0) in task.desktop.initial_windows.get(pid, set())):
+                continue
+            if pid in alive or owner.get("regular"):
+                if pid not in (task.desktop.initial_pids or set()):
+                    continue                  # an app with a Dock icon the task opened is quit, not tidied
+            elif float(owner.get("launched") or 0) < task.started_wall - 1 or w.get("on_screen", True) is False:
                 continue
             if pid not in snaps:
                 try:
@@ -104,15 +117,15 @@ class TidyMixin:
                 except HelperError:
                     snaps[pid] = []
             nodes = snaps[pid]
-            el = next((n for n in nodes if n.get("role") == "AXWindow" and _near(n.get("frame"), w.get("frame"))), None)
+            el = next((n for n in nodes if n.get("role") == "AXWindow" and same_place(n.get("frame"), w.get("frame"))), None)
             sheet_of = None
             if el is None:   # a sheet: its own system window, but a child of a window in Accessibility
-                el = next((n for n in nodes if n.get("role") == "AXSheet" and _near(n.get("frame"), w.get("frame"))), None)
+                el = next((n for n in nodes if n.get("role") == "AXSheet" and same_place(n.get("frame"), w.get("frame"))), None)
                 sheet_of = el and next((n for n in nodes if n["ref"] == el.get("parent")), None)
             if el is None:
                 continue
             close = next((n for n in nodes if n.get("parent") == el["ref"] and n.get("subrole") == "AXCloseButton"), None)
-            out.append({"pid": pid, "app": alive[pid].get("name"), "bundle_id": alive[pid].get("bundle_id"), "id": int(w["id"]),
+            out.append({"pid": pid, "app": owner.get("name"), "bundle_id": owner.get("bundle_id"), "id": int(w["id"]),
                         "title": el.get("title") or (sheet_of or {}).get("title") or "(untitled)",
                         "kind": "sheet" if sheet_of else ("dialog" if el.get("subrole") in ("AXDialog", "AXSystemDialog") or not close else "window"),
                         "close": close and close["ref"]})

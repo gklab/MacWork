@@ -3,17 +3,59 @@ turning its concrete suggestions into options for the decider."""
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import os
-import re
-from typing import Any
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Any, Callable
 
-from .decider import DeciderError, noul
-from .model import Affordance, Observation, Task
-from .observe import Ctx, named_combo
-from .planner import Planning, PlannerError, make_planner
+from .brief import as_named, shares
+from .decider import DeciderError, choice, noul
+from .model import Affordance, Observation, Step, Task, clip, exact_state
+from .observe import Ctx, canonical_combo, held_texts, named_combo, plain_name
+from .onscreen import unreadable
+from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, answered_here, make_planner
 
 log = logging.getLogger(__name__)
+
+JUDGED = "judged to be what the task already had"   # the source of a text the decider let through
+
+# Why a move the planner gave could not be used, as the next replan is told (`Memory.unusable`). Only a move that
+# can never be used is to be given up: a text no screen has shown yet, or an option not on any screen seen since,
+# may well be there later — 391 once the calculator shows it, a TextEdit menu item once TextEdit is in front. And a
+# move that could be used on an earlier look and cannot on this one (another app in front, the display cleared) was
+# there: told "not available when suggested", the planner heard that a move it could use never had been (fakes).
+NOT_A_KEY = "not a key combination: never repeat it"
+A_LABEL_TO_TYPE = "the name of an option on screen, written as text to type: act on the option instead, never type it"
+NOT_YET = "not available when suggested"
+NOT_NOW = "not on the screen now, though it was earlier"
+_NEVER = (NOT_A_KEY, A_LABEL_TO_TYPE)
+
+
+def find_named(affs: list[Affordance], said: str) -> list[Affordance]:
+    """The options a planner's move names: those with that very label; else those with that name, as the planner
+    was shown it (`observe.plain_name`: no 'menu ' before a menu item's place, no key equivalent, nothing the
+    engine adds about what a control shows or where a key goes, '...' as '…'); else, for a menu item, the one at
+    that place in the menus (`target['menu_path']`: a checked item's mark is not part of its place). Never an
+    option whose label merely holds the words. A name copied out of the brief with the count of the run it
+    stands for is that name (`brief.as_named`)."""
+    said = str(said or "").strip()
+    if not said:
+        return []
+    exact = [a for a in affs if a.label == said]
+    if exact:
+        return exact
+    want = plain_name(as_named(said))
+    named = [a for a in affs if plain_name(a.label) == want]
+    if named:
+        return named
+    place = [x.strip() for x in want.split(" ▸ ")]
+    return [a for a in affs if a.channel == "menu" and len(place) > 1
+            and [str(x).replace("...", "…").strip() for x in a.target.get("menu_path") or []] == place]
 
 
 def _where(obs: Observation, name: str) -> tuple[float, float] | None:
@@ -26,6 +68,64 @@ def _where(obs: Observation, name: str) -> tuple[float, float] | None:
     return (f[0] + f[2] / 2, f[1] + f[3] / 2) if f else (float(hit.target["x"]), float(hit.target["y"]))
 
 
+def planner_down(task: Task) -> bool:
+    """The planner was asked, never answered, and was out of reach or refused at least once: whatever the task
+    did after that, it did without the planner it was built to have."""
+    use = task.planner_use or {}
+    errors = use.get("errors") or {}
+    return int(use.get("calls", 0)) >= 1 and int(use.get("answered", 0)) == 0 \
+        and int(errors.get("unreachable", 0)) + int(errors.get("refused", 0)) >= 1
+
+
+class Route(str, Enum):
+    """What asking the planner for a route came to, and, when nothing new came of it, why.
+
+    It was a bare True or False, and a rethink counted every False alike toward `engine.max_fruitless_rethinks`,
+    whose second ended the task no_route once it had taken `min_steps_before_giving_up` steps: the planner's own
+    nothing, a question refused as asked already, an allowance used up. Of the 20 no_route endings on 09-22..23
+    (held-out goals left out), 16 came on a rethink refused as asked already with its allowance left — 2 of them on
+    the planner's own suggestion, 7b2096c07a38's 「type 10」 right after its 「type 2」 — and 4 on one refused with
+    its allowance used up. Only NEW and BLOCKED are a route, and only they are true.
+    """
+    NEW = "new"                 # sub-goals or moves it had not given before
+    BLOCKED = "blocked"         # it says only the user can go on
+    SAME = "same"               # the route it gave last time
+    EMPTY = "empty"             # an answer with nothing in it: the last one stands
+    ASKED = "asked"             # this exact screen, at this point of the plan, for this reason, was answered already
+    SPENT = "spent"             # the allowance for this kind of question is used up
+    NONE = "none"               # there is no planner to ask
+    ERROR = "error"             # no answer could be had
+    LATE = "late"               # the run's time ran out first: the loop's own budget check says what happens next
+    PENDING = "pending"         # asked beside the loop; the answer is taken in at a later look
+    UNREADABLE = "unreadable"   # not asked: the app could not be read and can still be waited for
+
+    def __bool__(self) -> bool:
+        return self is Route.NEW or self is Route.BLOCKED
+
+
+# The rethinks that count against engine.max_fruitless_rethinks: asked and nothing new came of it, or no planner
+# to ask, or none of its allowance left. Not ASKED — the answer given on this exact screen stands — and not a look
+# that could not be read, an answer too late for its run, or one still on its way.
+FRUITLESS = frozenset({Route.SAME, Route.EMPTY, Route.ERROR, Route.SPENT, Route.NONE})
+
+
+@dataclass
+class Asked:
+    """One question for the planner, put together on the loop's thread — the brief reads the task, the app model
+    and the screen — so that the call itself can run on another."""
+    key: tuple[Any, ...]                 # what `Memory.consulted` remembers once it is answered
+    kind: str                            # rethink | stuck | first | blocked | impossible | nothing_left
+    problem: str
+    went_wrong: bool                     # the last step got nowhere: a correction, not a replan
+    first: bool                          # no plan yet: plan, not replan
+    steps_at: int                        # steps taken when it was asked
+    plan_i_at: int                       # the sub-goal the plan was at
+    brief: dict[str, Any] = field(default_factory=dict)
+    asks_first: list[str] = field(default_factory=list)
+    done: list[str] = field(default_factory=list)
+    plan: list[dict[str, Any]] = field(default_factory=list)   # the plan as it stood (`_plan_view`): a replan is told it
+
+
 class ConsultMixin:
     # ------------------------------------------------------------- planning
     @property
@@ -35,6 +135,85 @@ class ConsultMixin:
         if self._planner is None:
             self._planner = make_planner(self.cfg, self.helper) or False
         return self._planner or None
+
+    def _planning(self, task: Task) -> Planning | None:
+        """The one way a task reaches its planner: every ask redacted for this task, audited under its id, and
+        counted and timed into `task.planner_use`. There were four hand-built ones and none of them counted."""
+        backend = self.planning_backend
+        if backend is None:
+            return None
+        # Every key there is, before an ask can be counted from a thread of its own (`Planning._count`): the
+        # task is read and written to disk on the loop's thread meanwhile, and a dict must not grow under that.
+        use = task.planner_use
+        for key in ("calls", "answered", "failed", "ms", "waited_ms", "beside_ms"):
+            use.setdefault(key, 0)
+        use.setdefault("errors", {k: 0 for k in ERROR_KINDS})
+        use.setdefault("by", {})
+        return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=use)
+
+    # ------------------------------------------------------------- one planner call at a time
+    def _planner_call(self, task: Task, ask: Callable[[Planning, threading.Event], Any], beside: bool = False,
+                      route: bool = True) -> PlannerCall:
+        """Every question this task puts to its planner goes out through here, on a thread of its own
+        (`PlannerCall`). `ask(planning, stop)` is the question; `beside`: it runs while the loop goes on, as the
+        task's one call in flight (`TaskScope.planning`), and is taken in at a later look.
+
+        Whatever this task still has running beside the loop is stopped first: a newer question replaces it. A
+        local server asked twice at once works on both answers — one plan took 87 s that takes 11 s on its own
+        (`OpenAICompatPlanner._stream`) — so a call that a local planner may answer (`planner.answered_here`: any
+        member of a chain) is sent only once the one before it has let go (`engine._planner_lock`), which a
+        stopped call does at its next line. A call to one that is not on this Mac does not wait for it: the
+        doubling is a local server's, and a cloud planner asked without a stream (deepseek's endpoint, Anthropic)
+        cannot be stopped, so the next question would sit out an answer that is dropped anyway. Nothing is sent
+        once the call has been stopped.
+
+        A question that is not for a route (`route=False`: text for a slot, the answer, an opinion on "done")
+        replaces none: a route that has already landed is left for the next look to take in, and only one still
+        running is stopped. Stopped all the same, a route that landed while the decider chose an action needing
+        text was dropped unread by the question for that text."""
+        self._stop_planning(task, keep_landed=not route)
+        planning = self._planning(task)
+        lock = self._planner_lock if answered_here(self.planning_backend) else contextlib.nullcontext()
+
+        def run(stop: threading.Event) -> Any:
+            with lock:
+                if stop.is_set():
+                    raise PlannerError("stopped before it was sent", kind="stopped")
+                return ask(planning, stop)
+        call = PlannerCall(run)
+        if beside:
+            self.scope(task.id).planning = call
+        return call
+
+    def _planner_wait(self, task: Task, call: PlannerCall, until: float | None = None) -> Any:
+        """The call's answer, the loop waiting for it (`planner_use.waited_ms`). Past `until` it is stopped and
+        PlannerError(stopped) is raised: a route that comes after the run's time is up is no use to that run."""
+        t0 = time.monotonic()
+        landed = call.wait(until)
+        call.waited = True
+        use = task.planner_use
+        use["waited_ms"] = int(use.get("waited_ms", 0)) + round((time.monotonic() - t0) * 1000)
+        if not landed:
+            call.cancel()
+            raise PlannerError("the run's time ran out before the planner answered", kind="stopped")
+        if call.error is not None:
+            raise call.error
+        return call.result
+
+    def _stop_planning(self, task: Task, keep_landed: bool = False) -> None:
+        """Stop the call this task has running beside the loop, if it has one: a newer question replaces it, or
+        its run is over. The seconds it ran are the planner's work beside the loop (`planner_use.beside_ms`),
+        unless the loop sat waiting on it, when they were counted as waited already. `keep_landed`: one that has
+        landed, and nothing stopped, is left where it is for `_merge_beside`."""
+        scope = self._scopes.get(task.id)
+        call = scope.planning if scope is not None else None
+        if call is None or (keep_landed and call.done() and not call.stopped):
+            return
+        scope.planning = scope.planning_asked = None
+        call.cancel()
+        if not call.waited:
+            use = task.planner_use
+            use["beside_ms"] = int(use.get("beside_ms", 0)) + round(call.seconds * 1000)
 
     def _brief(self, task: Task, ctx: Ctx | None, obs: Observation | None, affs: list[Affordance] | None = None,
                acting: bool = True) -> dict[str, Any]:
@@ -55,18 +234,20 @@ class ConsultMixin:
         if obs:
             brief["window"] = obs.window
             brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 600))]
+            seen = self._evidence(obs)
             if acting:
-                skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
-                # …except the apps the goal names, first. Shown only the apps that happened to be running, a
-                # planner routed a lookup the goal put in 「词典」 through the person's own browser and terminal,
-                # because nothing it was shown said 词典 is an app on this Mac.
-                named = [a for a in (affs or obs.affordances) if a.target.get("named")]
-                pool = named + [a for a in (affs or obs.affordances) if a.channel not in skip]
-                brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
+                # Each place its share (brief.py): the apps the goal names first — shown only the apps that happened
+                # to be running, a planner routed a lookup the goal put in 「词典」 through the person's own browser
+                # and terminal, because nothing it was shown said 词典 is an app on this Mac — then the app's window,
+                # its menus, and what other processes show.
+                brief.update(shares(self.cfg, affs or obs.affordances, ctx.app if ctx else None, ctx.running if ctx else []))
             else:
-                brief.update({k: v for k, v in self._evidence(obs).items() if k != "controls_on_screen"})
-            if "open_windows" in obs.notes:
-                brief["open_windows"] = obs.notes["open_windows"] or "none: the app has no window open"
+                brief.update({k: v for k, v in seen.items() if k != "controls_on_screen"})
+            # What the app has open, and whether it answered at all, in the decider's words for either kind of
+            # question. The route prompts logged at 07:24:35 and 07:25:18 on 09-23 said only "open_windows:
+            # none: the app has no window open" of an app that was starting, and both plans began by opening
+            # its window.
+            brief.update({k: seen[k] for k in ("open_windows", "app_not_answering") if k in seen})
         if acting:
             routines = [sk["goal"] for sk in self.skills.for_app((ctx.app or {}).get("bundle_id") if ctx else None)]
             if routines:
@@ -75,28 +256,101 @@ class ConsultMixin:
             brief["done_so_far"] = [s.action for s in task.steps[-8:]]
             if acting:
                 brief["tried_without_effect"] = sorted({s.action for s in task.steps if not s.ok or not s.events})[:20]
+        if acting and task.memory.unusable:
+            # A move that could not be used was dropped without a word — a key that is no key (14 of the 251 key
+            # moves the decider was told of in this Mac's audit: 13 labels such as 'menu item 「General」', and
+            # '⌘\b'), text no screen had shown, an action naming nothing on screen — and the next replan was asked
+            # as if it had never been given.
+            brief["moves_that_could_not_be_used"] = dict(task.memory.unusable)
+        if acting:
+            held = self._texts_the_task_holds(task)
+            if held:
+                brief["texts_the_task_holds"] = held
         return brief
 
-    def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str, affs: list[Affordance] | None = None) -> bool:
-        """Ask the planner for (new) sub-goals. False when there is none, or it has been asked enough."""
-        backend = self.planning_backend
-        if backend is None or self.cfg.get("planner.when", "auto") == "never":
+    def _held_for(self, task: Task, typing: bool = True) -> list[dict[str, str]]:
+        """The texts this task holds besides the caller's inputs, with where each came from (`observe.held_texts`):
+        the paths its goal names that exist on this Mac and the planner's own text a place the task saw holds word
+        for word; at most observe.typing.max_texts.
+
+        `typing`: they are what an empty field may take, and with planner.fill_inputs off ("let the planner write text
+        a step needs"), the planner's own text is not among them. It was, and a field the setting left to the caller
+        took the plan's input instead, the decider choosing it (offline, with fakes)."""
+        fc = self.cfg.section("observe.files")
+        admitted = task.memory.admitted if not typing or self.cfg.get("planner.fill_inputs", True) else {}
+        return held_texts(task.goal, admitted, exclude=[str(v) for v in task.inputs.values()],
+                          limit=int(self.cfg.get("observe.typing.max_texts", 4)),
+                          max_words=int(fc.get("max_path_words", 6)), max_trim=int(fc.get("max_path_trim", 40)))
+
+    def _texts_the_task_holds(self, task: Task) -> list[str]:
+        """What a planner is told the task holds (`_held_for`), and nothing else: never the caller's inputs. No planner
+        prompt carried them at 7aa894d, and the redactor catches names and patterns, not a password or a token, while
+        a planner may be a cloud one."""
+        return [t["text"] for t in self._held_for(task, typing=False)]
+
+    def _may_still_wait(self, task: Task, ctx: Ctx | None, obs: Observation) -> bool:
+        """This look read nothing of the app, and waiting may still change that: it is still starting, the next
+        look may wait for it (`ready_waits` left, and it has not stayed silent through one), or the decider may
+        (`waits` left). Once none of that holds, the planner may be asked with the app's silence in its brief:
+        for an app that never answers, a way around it is the only way on."""
+        why = unreadable(obs)
+        if not why:
             return False
+        pid = (ctx.app or {}).get("pid") if ctx is not None else None
+        ready_wait = pid is not None and pid not in ctx.scope.silent and self.allowance_left(task, "ready_waits")
+        return why == "starting" or ready_wait or self.allowance_left(task, "waits")
+
+    # ------------------------------------------------------------- asking for a route
+    def _nowhere(self, st: Step) -> bool:
+        """Did this step get the task nowhere? It could not be done, broke its promise, only led back to a screen
+        seen before it, or was judged below progress_bad on the look after it. What the no-progress rule counts,
+        and what a rethink waits for its route on."""
+        bad = float(self.cfg.get("engine.thresholds.progress_bad", 0.2))
+        return not st.ok or st.kept is False or st.led_back or float(st.decision.get("progress_after", 1.0)) < bad
+
+    def _went_wrong(self, task: Task) -> bool:
+        return bool(task.steps) and self._nowhere(task.steps[-1])
+
+    def _may_ask_beside(self) -> bool:
+        """May a route be asked for while the loop goes on? `planner.beside` (the switch: off, every rethink waits
+        for its route), a planner that may be asked so (`beside`: not one that answers through the helper), and a
+        decider that does not answer through a local planner itself. `decider.kind: local`, or `auto` once it has
+        fallen back to it, builds its backend from `planner.endpoints` and asks that server for every decision
+        without `engine._planner_lock`: with routes asked beside the loop, 4 of a task's 7 decisions were sent to the
+        server while a route was there (fakes), and none with `planner.beside` off."""
+        return bool(self.cfg.get("planner.beside", True)) and bool(getattr(self.planning_backend, "beside", False)) \
+            and not answered_here(getattr(getattr(self, "_decider", None), "backend", None))
+
+    def _run_deadline(self, task: Task) -> float:
+        """When this run's time is up (engine.budget_s from its start): a route waited for is given up then."""
+        return task.run_started + float(self.cfg.get("engine.budget_s", 90))
+
+    def _asking(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
+                affs: list[Affordance] | None, kind: str) -> Asked | Route:
+        """The question to put to the planner, or why none is put: NONE, UNREADABLE, SPENT or ASKED. Nothing is
+        spent or remembered as asked here — that is done once an answer has come (`_adopt`) — and the brief is
+        built here, on the loop's thread, so the call itself can run on another."""
+        if self.planning_backend is None or self.cfg.get("planner.when", "auto") == "never":
+            return Route.NONE
+        if obs is not None and self._may_still_wait(task, ctx, obs):
+            # Before anything is spent or remembered as asked: the same question can be asked once the app
+            # answers. 53 plans since 22ce357 were made right after a look the app had not answered.
+            log.info("planner: not asked while the app cannot be read and can still be waited for")
+            return Route.UNREADABLE
         # Two different reasons to think again, and they used to draw on one allowance. "I am not sure about
         # this screen" can be said before anything has been tried; "what I just did went wrong" comes with
         # evidence. A task spent its replans at steps 0 and 2 on the first kind, then typed a formula the app
         # rejected — the reason was written on the screen — and had none left for the one moment that called
-        # for it. Whether the last step went wrong is a judgement the decider already makes every step
-        # (`progress`), so a replan that follows one is counted on its own.
+        # for it. Whether the last step got nowhere is judged for every step (`_nowhere`, what the no-progress
+        # rule counts), so a replan that follows one is counted on its own.
+        went_wrong = self._went_wrong(task)
         last = task.steps[-1] if task.steps else None
-        went_wrong = last is not None and (not last.ok or float(last.decision.get("progress_after", 1.0))
-                                           < float(self.cfg.get("engine.thresholds.progress_bad", 0.2)))
         if went_wrong:
             if not self.allowance_left(task, "corrections"):
-                return False
+                return Route.SPENT
             problem = f"the last action did not do what it was for ({last.action[:80]}); what the screen says now is in the context. {problem}"
         elif not self.allowance_left(task, "replans"):
-            return False
+            return Route.SPENT
         # Asking the same question of the same screen gets the same answer, and this answer is not cheap:
         # measured on this Mac, one replan is 1.5-2.7s of local model, and one task spent 12 of its 21
         # seconds being told the same thing three times. What it was asked about is the screen and how far
@@ -104,50 +358,218 @@ class ConsultMixin:
         # …and "what I just did went wrong" is a different question from "I am not sure about this screen",
         # even on the same screen at the same point of the plan: keyed without it, a task stuck on one
         # screen had already used the key on the first kind, and the correction — the one the allowance
-        # above exists for — was refused as already asked.
-        here = (self._signature(ctx.app, obs) if ctx is not None and obs is not None else "", task.plan_i, len(task.steps) > 0, went_wrong)
-        if here in task.memory.consulted:
-            log.info("planner: already asked about this screen")
-            return False
-        task.memory.consulted.add(here)
-        planning = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id)
+        # above exists for — was refused as already asked. So is "the last three steps got nowhere" (`kind`).
+        # The screen is what it shows, not only its structure: keyed on the structure, aff49b2812ff's rethink
+        # on a calculator showing 「1」 was refused as already asked, because a plan had been made while it
+        # showed 「12+30×4」, and the task ended no_route there.
+        state = exact_state(self._signature(ctx.app, obs), obs.screen_text) if ctx is not None and obs is not None else ""
+        key = (state, task.plan_i, len(task.steps) > 0, went_wrong, kind)
+        if key in task.memory.consulted:
+            log.info("planner: this screen was already asked about, for this reason: that answer stands")
+            return Route.ASKED
+        # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
+        # terminal for a chip model, a file count, a deletion and a Safari version — each one a stop to ask
+        # the user (a command is `execute`) on a task that had a route through the apps' own windows.
+        # Beside the instructions rather than in the context: it is the same on every call, so it belongs
+        # in the part of the prompt a local server keeps.
+        return Asked(key=key, kind=kind, problem=problem, went_wrong=went_wrong, first=task.plan is None,
+                     steps_at=len(task.steps), plan_i_at=task.plan_i, brief=self._brief(task, ctx, obs, affs),
+                     asks_first=list(self.floor_categories().values()), done=[s.action for s in task.steps],
+                     plan=self._plan_view(task))
+
+    def _plan_view(self, task: Task) -> list[dict[str, Any]]:
+        """The plan as a replan is told it: each sub-goal done, now or next, and for the one it is at, what the
+        screen was to show once it is done.
+
+        The replan was told the goal, what had been done and the problem, and never the plan: aff49b2812ff's knew
+        neither that 168 was expected nor that it was at sub-goal 1, and came back with nothing after 19.8 s."""
+        view: list[dict[str, Any]] = []
+        for i, sub in enumerate(task.plan or []):
+            view.append({"sub_goal": sub, "status": "done" if i < task.plan_i else "now" if i == task.plan_i else "next"})
+            if i == task.plan_i and self._expected_evidence(task):
+                view[-1]["expected_on_screen"] = self._expected_evidence(task)
+        return view
+
+    def _ask_route(self, task: Task, asked: Asked) -> Callable[[Planning, threading.Event], Any]:
+        goal = task.goal
+        if asked.first:
+            return lambda planning, stop: planning.plan(goal, asked.brief, asked.asks_first, stop=stop)
+        return lambda planning, stop: planning.replan(goal, asked.brief, asked.done, asked.problem, asked.asks_first,
+                                                      plan=asked.plan, stop=stop)
+
+    def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
+                 affs: list[Affordance] | None = None, kind: str = "rethink", bounded: bool = True) -> Route:
+        """Ask the planner for a route, and wait for it — never past this run's time (`bounded`; the words an
+        ending is owed are not bounded). What it came to: NEW or BLOCKED, or why nothing new came (`Route`)."""
+        asked = self._asking(task, ctx, obs, problem, affs, kind)
+        if isinstance(asked, Route):
+            return asked
+        until = self._run_deadline(task) if bounded else None
+        if until is not None and time.monotonic() >= until:
+            return Route.LATE
         try:
-            ctx_brief = self._brief(task, ctx, obs, affs)
-            # What the floor stops for, in policy's words. The planner did not know, and wrote routes through a
-            # terminal for a chip model, a file count, a deletion and a Safari version — each one a stop to ask
-            # the user (a command is `execute`) on a task that had a route through the apps' own windows.
-            # Beside the instructions rather than in the context: it is the same on every call, so it belongs
-            # in the part of the prompt a local server keeps.
-            asks_first = list(self.floor_categories().values())
-            plan = planning.plan(task.goal, ctx_brief, asks_first) if task.plan is None else \
-                planning.replan(task.goal, ctx_brief, [s.action for s in task.steps], problem, asks_first)
+            plan = self._planner_wait(task, self._planner_call(task, self._ask_route(task, asked)), until=until)
         except PlannerError as exc:
             log.info("planner: %s", exc)
+            if exc.stopped:
+                return Route.LATE
             task.outputs.setdefault("planner_errors", []).append(str(exc)[:200])
-            return False
-        self.spend_allowance(task, "corrections" if went_wrong else "replans")
+            return Route.ERROR
+        return self._adopt(task, ctx, plan, asked)
+
+    def _consult_beside(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
+                        affs: list[Affordance] | None = None) -> Route:
+        """Ask for a route and do not wait for it: PENDING, and the answer is taken in at the first look after it
+        has landed (`_merge_beside`). Or, at once, why it is not asked: NONE, UNREADABLE, SPENT or ASKED."""
+        asked = self._asking(task, ctx, obs, problem, affs, "rethink")
+        if isinstance(asked, Route):
+            return asked
+        self._planner_call(task, self._ask_route(task, asked), beside=True)
+        self.scope(task.id).planning_asked = asked
+        return Route.PENDING
+
+    def _merge_beside(self, task: Task, ctx: Ctx | None) -> Route | None:
+        """The route asked for beside the loop, once it has landed, taken in as a waited one is (`_adopt`) less
+        what the task has done since it was asked; None while there is none to take in. Asked, it counts as the
+        rethink it answers: the same route, an empty answer or none is fruitless, and `blocked` is an opinion."""
+        scope = self._scopes.get(task.id)
+        call = scope.planning if scope is not None else None
+        if call is None or not call.done():
+            return None
+        stopped, asked = call.stopped, scope.planning_asked
+        self._stop_planning(task)              # landed: let go, and its seconds counted as run beside the loop
+        if stopped or asked is None:
+            return None
+        if call.error is not None:
+            log.info("planner, asked beside the loop: %s", call.error)
+            task.outputs.setdefault("planner_errors", []).append(str(call.error)[:200])
+            got = Route.ERROR
+        else:
+            got = self._adopt(task, ctx, call.result, asked)
+        if got is Route.BLOCKED:
+            self._planner_opinion(task)
+        if got in FRUITLESS:
+            self.spend_allowance(task, "fruitless")
+        return got
+
+    @staticmethod
+    def _planner_opinion(task: Task) -> None:
+        """The planner's word alone ended the task here. A real run ended `blocked` at step 0 because the planner,
+        shown a path as ~/…, decided it "did not know the real user name" — a text model's reading of a redacted
+        path, and the decider had said "find another route", not "blocked". Two independent judgements have to
+        agree: the planner's is kept as an opinion the decider sees, and only its own `blocked` ends the task
+        (with the planner's reason)."""
+        task.outputs["planner_thinks_blocked"] = task.blocked_reason
+        task.blocked_reason = ""
+
+    def _adopt(self, task: Task, ctx: Ctx | None, plan: dict[str, Any], asked: Asked) -> Route:
+        """An answer, taken in: what it adds, or why it adds nothing. Its allowance is spent and its question
+        remembered as asked here, once there is an answer: a question the planner never answered used to be
+        remembered all the same, and asked about again on that screen it was refused as already asked."""
+        self.spend_allowance(task, "corrections" if asked.went_wrong else "replans")
+        task.memory.consulted.add(asked.key)
+        if plan.get("steps") and task.plan_i != asked.plan_i_at:
+            # It landed after the plan moved on — asked beside the loop, taken in steps later — and is its moves only:
+            # its sub-goals are the rest of the plan as it stood before, and set in at the sub-goal it was asked at they
+            # would set the task back. Settled first, so that what is compared, remembered and counted below is what
+            # is taken in. Decided after those, an answer whose sub-goals were all it had, or whose moves the task had
+            # taken meanwhile, was a new route that added nothing (fakes): the standing tries went, the count of
+            # fruitless rethinks went back to 0, the stretch that got nowhere was not asked about at that look, and the
+            # dropped sub-goals, remembered as the route given, made the same answer asked again on time "the same".
+            log.info("planner: the plan moved on while it was asked; its moves only")
+            plan = {**plan, "steps": [], "evidence": []}
+        # A key as the keyboard reads it, before anything is compared: 'cmd + n' is the move 'cmd+n' was.
+        moves = [{**t, "keys": canonical_combo(t["keys"]) or t["keys"]} if t.get("keys") else t for t in plan.get("try") or []]
         # Asked again, the planner may give the plan it gave last time. A real task was handed the same two
         # sub-goals three times running, 25-40 s apiece on this Mac's local model, and each time looked again
         # instead of acting. The same answer is no new route — which is what `max_fruitless_rethinks` counts,
         # and past it the task says why it is stuck instead of asking a fourth time.
-        route = list(plan["steps"]) + [self._suggestion_label(t) for t in plan.get("try") or []]
+        route = list(plan["steps"]) + [self._suggestion_label(t) for t in moves]
         if route and route == task.memory.last_route and not plan.get("blocked"):
             log.info("planner: the same route as last time")
-            return False
+            return Route.SAME
+        # Every try the planner gave, but what the task has done since it asked (an answer taken in beside the
+        # loop comes steps later). What did nothing is a fact about one exact screen, applied where the options
+        # are built (`Memory.withheld_reason`): a suggestion that did nothing on this screen is withheld on it and
+        # offered on any other. Dropped here, it was dropped from every screen.
+        since = [s.action for s in task.steps[asked.steps_at:]]
+        tries = [t for t in moves if not self._done_since(t, since)]
+        blocked = str(plan.get("blocked") or "")
+        if not plan["steps"] and not tries and not blocked:
+            # Nothing in it: the tries it gave before are still on offer. Answered this way, every try was
+            # taken away as well.
+            log.info("planner: an answer with nothing in it; the last one stands")
+            return Route.EMPTY
         task.memory.last_route = route
-        task.blocked_reason = plan.get("blocked") or ""
-        dead = task.memory.no_effect_handles()
-        task.tries = [t for t in plan.get("try") or [] if self._suggestion_label(t) not in dead]   # facts beat suggestions
-        if not plan["steps"] and not task.tries and not task.blocked_reason:
-            return False
-        if task.blocked_reason:
-            return True
-        if plan["steps"]:
-            task.plan, task.plan_evidence = plan["steps"], list(plan.get("evidence") or [])
-        task.plan, task.plan_i = (task.plan or []), 0
+        task.blocked_reason, task.tries = blocked, tries
+        # What was told back for now was about moves this answer no longer gives. Kept, it went on being told once
+        # the option it named was on screen, the same brief listing that option (fakes); what can never be used stays.
+        given = {self._move_said(t) for t in tries}
+        for said in [s for s, why in task.memory.unusable.items() if why not in _NEVER and s not in given]:
+            del task.memory.unusable[said]
+        # Something new, a route or the planner's word that only the user can go on: the rethinks that came to
+        # nothing before it are behind the task (a rethink that got either reset the count, as before).
+        task.pace.fruitless = 0
+        if blocked:
+            return Route.BLOCKED
         self._plan_inputs(task, ctx, plan.get("inputs") or {})
-        self.audit.record("plan", task=task.id, steps=plan["steps"], problem=problem)
-        return True
+        self._admit_moves(task, tries)
+        at = self._splice(task, plan, asked)
+        # where it went in, and how big each part of what the planner was told was: on this Mac's local model the
+        # prompt is most of what a plan costs (160-200 tokens a second to read)
+        self.audit.record("plan", task=task.id, steps=plan["steps"], problem=asked.problem, at=at,
+                          brief_chars={k: len(json.dumps(v, ensure_ascii=False, default=str)) for k, v in asked.brief.items()})
+        return Route.NEW
+
+    def _admit_moves(self, task: Task, tries: list[dict[str, Any]]) -> None:
+        """What of an answer's moves cannot be used yet, told back from the moment it is taken in (`_told_back`): a key
+        that is no key, and text nothing the task has seen holds, which waits until a screen shows it (`_suggested`
+        looks again at every look, and takes back what it then finds)."""
+        facts = task.memory.facts
+        for t in tries:
+            if t.get("keys") and canonical_combo(t["keys"]) is None:
+                self._told_back(task, t, NOT_A_KEY)
+            elif t.get("type"):
+                if facts is not None and facts.source_of(t["type"]) is not None:
+                    self._usable_again(task, t)       # available when suggested, whatever a later look finds
+                else:
+                    self._not_here(task, t)
+
+    def _splice(self, task: Task, plan: dict[str, Any], asked: Asked) -> int | None:
+        """Take an answer's sub-goals in as the rest of the plan, from the sub-goal the plan was at when it was asked;
+        where they went in, or None when they did not.
+
+        Every answer replaced the whole plan and set the task back to sub-goal 1, an answer with moves only as well:
+        of the 773 answers taken in in this Mac's audit, 59 came while the plan was past its first sub-goal, and put
+        the task back at one it had done (none had moves only). The replan is told the plan (`_plan_view`) and gives
+        the rest of it. An answer with moves only leaves the plan where it is, and so does one that lands after the
+        plan has moved on: `_adopt` has taken its sub-goals out already."""
+        steps = list(plan["steps"])
+        if not steps:
+            if task.plan is None:
+                task.plan = []                    # a plan was made, of moves only: the next question is a replan
+            return None
+        old = list(task.plan or [])
+        at = min(asked.plan_i_at, len(old))
+        had = (list(task.plan_evidence or []) + [""] * len(old))[: len(old)]
+        said = (list(plan.get("evidence") or []) + [""] * len(steps))[: len(steps)]
+        task.plan, task.plan_evidence, task.plan_i = old[:at] + steps, had[:at] + said, at
+        task.memory.plan_moved_at = len(task.steps)
+        return at
+
+    def _done_since(self, t: dict[str, Any], since: list[str]) -> bool:
+        """Was this try taken among the steps `since`? By the label it is offered under, which for a key also
+        names the menu item it turns out to be ("press cmd+n (suggested by the planner) (menu File ▸ New)") — or as
+        the option on screen it names (`find_named`, less a menu item's place, which a step's label does not keep):
+        an action by that option's name, a named key alone by the keys provider's key."""
+        label = self._suggestion_label(t)
+        if not label:
+            return False
+        key = canonical_combo(t["keys"]) if t.get("keys") else None
+        alone = key if key and "+" not in key else None
+        name = plain_name(t["action"]) if t.get("action") else None
+        return any(a == label or a.startswith(label + " (") or (name and plain_name(a) == name)
+                   or (alone and canonical_combo(plain_name(a)) == alone) for a in since)
 
     def _write_answer(self, task: Task, ctx: Ctx | None, obs: Observation | None) -> None:
         """The goal asked for information: the planner states it from what the screen (and the web) showed.
@@ -162,8 +584,9 @@ class ConsultMixin:
             # last screen alone: a page whose title was in the window title came back as "not in the information
             # provided", and it is also what the answer is checked against afterwards.
             brief["seen_in_each_app"] = task.memory.facts.brief()
-        try:
-            answer = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).answer(task.goal, brief)
+        try:     # waited for with no deadline: the task owes the caller its answer
+            answer = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.answer(task.goal, brief),
+                                                                 route=False))
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
@@ -205,33 +628,29 @@ class ConsultMixin:
         return stands, answers
 
     def _plan_inputs(self, task: Task, ctx: Ctx | None, inputs: dict[str, Any]) -> None:
-        """Text a plan wants put into `task.inputs`.
+        """Text a plan gives, kept as the planner's (`Memory.admitted`) once `_admit_text` lets it through.
 
-        `inputs` is where the *caller's* text lives, and everything downstream treats it that way — it is
-        typed, saved and reported as something a person asked for. `_fill` puts a planner's text through a
-        provenance guard before it can be typed and records it where the injection checks look; this went
-        round all of it with a `setdefault`, so a planner asked for a plan could put anything there and it
-        became indistinguishable from what the caller supplied.
-
-        The same guard, then: a value the task has already seen, or one the decider judges to be what the
-        task already had, written another way. Anything else is refused and said so.
+        It went into `task.inputs`, where the *caller's* text lives, and everything downstream took it for the
+        caller's: the decider was shown it under state['inputs'] (344 looks in 28 tasks in the audit), beside an
+        instruction that only goal and inputs come from the user; `source_of` counted it as "the caller's
+        inputs", so any later text made of it traced to the user; and under the key 'text' it filled every text
+        slot — 450bbbdad38a typed the plan's 'hello' at the cursor where the goal wanted HELLO WORLD. It is still
+        recorded where the injection checks look (`outputs.planner_inputs`) and in the audit. What leaving
+        `task.inputs` costs was measured: in 19 tasks with a planner file or query input, the file options it
+        produced appeared in 8 and were never chosen.
         """
         for k, v in inputs.items():
-            if k in task.inputs:            # the caller's own words are never overwritten
+            if k in task.inputs:            # the caller gave this one: the plan's value for it is not taken
                 continue
             text = str(v)
-            source = task.memory.facts.source_of(text) if task.memory.facts else None
-            if source is None:
-                a = Affordance("plan", "keys", "type", f"the value the plan gives for 「{k}」", {})
-                if not self._text_stands(task, ctx, text, a):
-                    log.info("refused planned input %r: seen nowhere", text[:60])
-                    self.audit.record("refused_text", task=task.id, text=text[:120], into=f"inputs.{k}")
-                    task.outputs.setdefault("refused_text", []).append({"into": f"inputs.{k}", "text": text[:120]})
-                    continue
-                source = "judged to be what the task already had"
-            task.inputs[k] = text
-            task.outputs.setdefault("planner_inputs", []).append({"into": k, "text": text, "source": source})
-            self.audit.record("filled_text", task=task.id, into=f"inputs.{k}", source=source)
+            got = self._admit_text(task, ctx, text, f"the value the plan gives for 「{k}」")
+            if got is None:
+                log.info("refused planned input %r: seen nowhere", text[:60])
+                self._refuse_text(task, text, f"inputs.{k}")
+                continue
+            if self._hold_text(task, text, got, k):      # recorded once, however many plans give it again
+                task.outputs.setdefault("planner_inputs", []).append({"into": k, "text": text, "source": got[0]})
+                self.audit.record("filled_text", task=task.id, into=f"inputs.{k}", source=got[0])
 
     def _fill(self, task: Task, ctx: Ctx, obs: Observation | None, a: Affordance, slot: str) -> str | None:
         backend = self.planning_backend
@@ -241,44 +660,146 @@ class ConsultMixin:
         brief = self._brief(task, ctx, obs, acting=False)
         if task.memory.facts and task.memory.facts.seen:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
-        try:
-            text = Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id).fill(
-                task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief) or None
+        held = self._texts_the_task_holds(task)
+        if held:
+            # 7357798484a7's fill wrote file:///Users/$(whoami)/… while its plan's own input held the path: the fill
+            # brief carried none of the texts the task held. Of the 21 fills since c0e7011 whose text the audit
+            # keeps, 11 wrote one the task held (9 a path the goal names, 2 an earlier fill)
+            brief["texts_the_task_holds"] = held
+        try:     # waited for with no deadline: the step cannot be taken without it
+            text = self._planner_wait(task, self._planner_call(
+                task, lambda planning, stop: planning.fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief),
+                route=False)) or None
         except PlannerError as exc:
             log.info("planner fill: %s", exc)
             return None
-        if text and task.memory.facts:
-            source = task.memory.facts.source_of(text)
-            if source is None:
-                # Not word for word — which a field often cannot take: a path typed into an address bar becomes
-                # file:///…, and that one extra word was enough to end a real task on the spot. So it is judged
-                # instead: the same value written another way is allowed, a value from nowhere is not.
-                if not self._text_stands(task, ctx, text, a):
-                    log.info("refused text not seen anywhere: %r", text[:60])
-                    self.audit.record("refused_text", task=task.id, text=text[:120], into=a.label)
-                    task.outputs.setdefault("refused_text", []).append({"into": a.label, "text": text[:120]})
-                    return None
-                source = "judged to be what the task already had"
-            self.audit.record("filled_text", task=task.id, into=a.label, source=source)
+        if not text:
+            return None
+        # Not word for word — which a field often cannot take: a path typed into an address bar becomes
+        # file:///…, and that one extra word was enough to end a real task on the spot. So it is judged
+        # instead: the same value written another way is allowed, a value from nowhere is not.
+        got = self._admit_text(task, ctx, text, a.label)
+        if got is None:
+            log.info("refused text not seen anywhere: %r", text[:60])
+            self._refuse_text(task, text, a.label)
+            return None
+        self._hold_text(task, text, got, slot)
+        self.audit.record("filled_text", task=task.id, into=a.label, source=got[0])
         return text
 
-    def _text_stands(self, task: Task, ctx: Ctx | None, text: str, a: Affordance) -> bool:
-        """Text no source holds word for word, judged against everything the task has to draw from."""
+    def _which_text(self, task: Task, ctx: Ctx | None, obs: Observation | None, a: Affordance, slot: str) -> dict[str, str] | None:
+        """For an empty slot, a text the task already holds, the decider choosing which ({text, from, and planner:
+        its source when the planner wrote it}), or None: none fits, or none is to be asked about here.
+
+        The planner was asked to write it instead, a call of its own, and wrote again what the task held — 11 of
+        the 21 fills since c0e7011 whose text the audit keeps — or wrote nothing: 0ab712dadc94 ended need_input at
+        the Go to Folder field while the plan's own input held exactly the path it needed.
+
+        Asked only where the floor judges the step again with the value in it (a type or type_submit verb, a url
+        slot: `LoopMixin._perform`), which is what any text typed or link opened has to pass. The options are the
+        caller's inputs — the decider sees them on every look already; no planner prompt is built from them, though
+        one typed into a field that shows it is on the screen a planner is told of (design-v5, the planner's
+        protocol) — then the texts the task holds (`_held_for`), each with where it came from, and none. Typing at
+        the cursor and pressing Return is for the caller's text only."""
+        if ctx is None or ctx.gate is None or not (slot == "url" or (slot == "text" and a.verb in ("type", "type_submit"))):
+            return None
+        texts = [{"text": str(v), "from": f"the caller's input 「{k}」"} for k, v in task.inputs.items()
+                 if isinstance(v, str) and v.strip() and k != "clarification"]     # the engine's own question's answer
+        if not (a.channel == "keys" and a.verb == "type_submit"):
+            texts += self._held_for(task)
+        seen: set[str] = set()
+        texts = [t for t in texts if not (t["text"] in seen or seen.add(t["text"]))]   # one each, the first kept
+        if not texts:
+            return None
+        options = {f"h{i}": f"「{clip(t['text'], 200)}」 — {t['from']}" for i, t in enumerate(texts)} | \
+            {"none": "none of these: the step needs another text"}
+        state: dict[str, Any] = {"goal": task.goal, "what_it_needs": a.slots[slot].desc}
+        if obs is not None:
+            state["window"] = obs.window
+        if task.plan and task.plan_i < len(task.plan):
+            state["current_step"] = task.plan[task.plan_i]
+        try:
+            ans = ctx.gate.decide(self.redactor(task.id), state,
+                                  {"which_text": choice(self.cfg.question("which_text"), options, fills={"action": a.label})}, task=task.id)
+        except DeciderError:
+            return None
+        pick = str((ans.get("which_text") or {}).get("choice") or "")
+        return texts[int(pick[1:])] if pick in options and pick != "none" else None
+
+    def _admit_text(self, task: Task, ctx: Ctx | None, text: str, into: str) -> tuple[str, str] | None:
+        """Where text a planner wrote for `into` comes from, as (source, how), or None: it may not be written.
+
+        The one guard for plan inputs and fills, in order: a place the task may draw from holds it word for word
+        (`Facts.source_of`: "traced"); it was let through before (`Memory.admitted`); the decider already gave a
+        verdict on it with the task where it is now, no step taken since (`Memory.judged`); else the decider
+        judges it (`_text_stands`: "judged"). Since plan inputs left `task.inputs`, the skip that kept a replan
+        from judging the same input again no longer covers them, and every judgement costs a request whose
+        verdict, near the cut, can come out the other way. Only a verdict the decider gave is remembered: with
+        none to be had it is refused this time, and asked about next time.
+        """
+        facts = task.memory.facts
+        source = facts.source_of(text) if facts is not None else None
+        if source is not None:
+            return source, "traced"
+        held = task.memory.admitted.get(text)
+        if held:
+            return str(held.get("source") or JUDGED), str(held.get("how") or "judged")
+        said = task.memory.judged.get(text)
+        if said and len(said) == 2 and said[1] == len(task.steps):
+            stands: bool | None = bool(said[0])
+        else:
+            stands = self._text_stands(task, ctx, text, into)
+            if stands is not None:
+                task.memory.judged[text] = [stands, len(task.steps)]
+        return (JUDGED, "judged") if stands else None
+
+    def _hold_text(self, task: Task, text: str, got: tuple[str, str], key: str) -> bool:
+        """Keep a planner's admitted text as the planner's, with where it came from. True when it is new."""
+        had = task.memory.admitted.get(text)
+        if had is None or (got[1] == "traced" and had.get("how") != "traced"):
+            task.memory.admitted[text] = {"source": got[0], "how": got[1], "key": key}
+        return had is None
+
+    def _refuse_text(self, task: Task, text: str, into: str) -> None:
+        self.audit.record("refused_text", task=task.id, text=text[:120], into=into)
+        task.outputs.setdefault("refused_text", []).append({"into": into, "text": text[:120]})
+
+    def _text_stands(self, task: Task, ctx: Ctx | None, text: str, into: str) -> bool | None:
+        """Text no source holds word for word, judged against everything the task has to draw from. None when
+        there was no decider to ask, or it did not answer: no verdict, which the caller takes as a refusal."""
         if ctx is None or ctx.gate is None:
-            return False
-        state = {"goal": task.goal, "inputs": dict(task.inputs), "text": text, "into": a.label,
-                 "seen_in_each_app": task.memory.facts.brief()}
+            return None
+        state = {"goal": task.goal, "inputs": dict(task.inputs), "text": text, "into": into,
+                 "seen_in_each_app": task.memory.facts.brief() if task.memory.facts is not None else {}}
         try:
             ans = ctx.gate.decide(self.redactor(task.id), state, {"stands": noul(self.cfg.question("text_stands"))}, task=task.id)
         except DeciderError:
-            return False
+            return None
         stands = float(ans.get("stands", {}).get("noul", 0.0))
         log.info("text not traceable word for word; judged %.2f: %r", stands, text[:60])
         return stands >= float(self.cfg.get("engine.thresholds.text_stands", 0.75))
 
+    def _traced(self, task: Task, obs: Observation | None, text: str) -> str | None:
+        """What holds this text word for word — the goal, the caller's inputs or what an app showed, the screen
+        being looked at now included (`_look` records it in the facts only as the look ends) — or None."""
+        facts = task.memory.facts
+        if facts is None:
+            return None
+        if obs is not None:
+            facts = replace(facts, seen=dict(facts.seen))
+            facts.record((obs.app or {}).get("name"), obs.window, obs.screen_text, len(task.steps))
+        return facts.source_of(text)
+
+    @staticmethod
+    def _planners_own(look: Any, a: Affordance) -> bool:
+        """Is this one of the planner's current suggestions: a move it proposed (it carries the try it is), or an
+        option on screen one of its moves names (`Look.moves`, by id)? Known by what it is, not by an id prefix:
+        the window's "read all the text" option is t<n>, as the suggestions were."""
+        return "try" in a.target or a.id in look.moves
+
     def _suggestion_label(self, t: dict[str, Any]) -> str:
         if t.get("keys"):
-            return f"press {t['keys'].lower()} (suggested by the planner)"
+            return f"press {canonical_combo(t['keys']) or t['keys'].lower()} (suggested by the planner)"
         if t.get("type"):
             return f"type 「{t['type'][:40]}」 at the cursor (suggested by the planner)"
         if t.get("open_url"):
@@ -287,26 +808,129 @@ class ConsultMixin:
             return f"drag 「{t['drag'][0][:40]}」 onto 「{t['drag'][1][:40]}」 (suggested by the planner)"
         return str(t.get("action") or "")
 
-    def _suggested(self, task: Task, obs: Observation | None = None) -> list[Affordance]:
-        """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (its suggested
-        labels are marked on the matching screen actions). The decider chooses; nothing runs unasked. A drag is
-        offered only when both of its ends are found on the live screen."""
-        out: list[Affordance] = []
-        # modifiers are fixed; the key itself is anything one character long or a name the helper knows —
-        # a whitelist of US-ANSI punctuation here rejected "cmd+ö" and every non-ASCII layout's keys
-        rx = self.cfg.get("engine.key_pattern",
-                          r"(?i)((cmd|shift|alt|option|opt|ctrl|control|fn)\+)+(.|f[0-9]{1,2}|return|enter|escape|esc"
-                          r"|tab|space|delete|backspace|forwarddelete|up|down|left|right|home|end|pageup|pagedown)")
+    @staticmethod
+    def _move_said(t: dict[str, Any]) -> str:
+        """A move as the decider is told of it, by what kind of move it is. Every move that was not text or an
+        action was said as a key press: a link or a drag read 'press None', on 42 looks in 16 tasks in the audit,
+        and a list of nothing but links and drags was not said at all (3 looks in 3 tasks)."""
+        if t.get("keys"):
+            return f"press {t['keys']}"
+        if t.get("type"):
+            return f"type {t['type']}"
+        if t.get("open_url"):
+            return f"open {t['open_url']}"
+        if t.get("drag"):
+            return f"drag {t['drag'][0]} onto {t['drag'][1]}"
+        return str(t.get("action") or "")
+
+    def _told_back(self, task: Task, t: dict[str, Any], why: str) -> None:
+        """This move could not be used, and why: what the next replan is told (`Memory.unusable`), the newest
+        `planner.max_steps` of them — one answer's worth of moves. A reason it can never be used stands over one
+        that is only for now."""
+        said, gone = self._move_said(t), task.memory.unusable
+        if gone.get(said) in _NEVER:
+            return
+        gone.pop(said, None)
+        gone[said] = why
+        for old in list(gone)[: max(0, len(gone) - int(self.cfg.get("planner.max_steps", 8)))]:
+            del gone[old]
+
+    def _usable_again(self, task: Task, t: dict[str, Any]) -> None:
+        """This move can be used on this look: remembered so (`Memory.was_usable`), and the planner is no longer told
+        it could not be."""
+        said = self._move_said(t)
+        task.memory.was_usable.add(said)
+        if task.memory.unusable.get(said) in (NOT_YET, NOT_NOW):
+            del task.memory.unusable[said]
+
+    def _not_here(self, task: Task, t: dict[str, Any]) -> None:
+        """This move cannot be used on this look, for now: told back as not available when it was suggested, or, once
+        it has been usable on a look (`Memory.was_usable`), as not on the screen now."""
+        self._told_back(task, t, NOT_NOW if self._move_said(t) in task.memory.was_usable else NOT_YET)
+
+    def _named_by_planner(self, task: Task, affs: list[Affordance]) -> dict[str, int]:
+        """{option id: the try that names it} for the options among `affs` that the planner's moves name: an
+        action by the option's label, name or place (`find_named`), and a key pressed alone by the key the keys
+        provider offers (a named key alone is no option of the planner's own: `_suggested`).
+
+        By id, not by label: labels repeat, and the planner writes the names it was shown, which are not the
+        labels. An action that names nothing here is told back (`_not_here`) until it does."""
+        own = [a for a in affs if "try" not in a.target]
+        keys: dict[str, list[Affordance]] = {}
+        for a in own:
+            if a.channel == "keys" and a.verb == "key":
+                keys.setdefault(canonical_combo(a.target.get("combo")) or "", []).append(a)
+        moves: dict[str, int] = {}
         for i, t in enumerate(task.tries):
-            if t.get("keys") and re.fullmatch(rx, t["keys"]):
+            if t.get("action"):
+                found = find_named(own, t["action"])
+                if found:
+                    self._usable_again(task, t)
+                else:
+                    self._not_here(task, t)
+            elif t.get("keys"):
+                combo = canonical_combo(t["keys"])
+                found = keys.get(combo, []) if combo and "+" not in combo else []
+            else:
+                continue
+            for a in found:
+                moves.setdefault(a.id, i)
+        return moves
+
+    def _suggested(self, task: Task, obs: Observation | None = None) -> list[Affordance]:
+        """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (the options on
+        screen its moves name are marked: `_named_by_planner`). The decider chooses; nothing runs unasked. A drag is
+        offered only when both of its ends are found on the live screen, and text to type only once the goal, the
+        caller's inputs or a screen the task saw holds it word for word.
+
+        Each is try<n> and carries which try it is (`target['try']`), and that marker is what the loop reads: the
+        window's "read all the text" option is t<n>, as the suggestions were, and one taken removed the other."""
+        out: list[Affordance] = []
+        # A key as the keyboard reads it (`canonical_combo`): 'Cmd + Shift + G', '⇧⌘G' and 'command+shift+g' are one
+        # key. A pattern over the words took 'cmd+ö' but none of those, and no named key pressed alone: of the 251
+        # key moves the decider was told of in this Mac's audit, it marked 73; 127 were a named key alone ('return',
+        # which the planner is told to add after typing into a search field) and 37 a combination written another
+        # way. A named key alone is the keys provider's own option, marked as the planner's.
+        on_offer = {canonical_combo(a.target.get("combo")) for a in (obs.affordances if obs is not None else [])
+                    if a.channel == "keys" and a.verb == "key"}
+        for i, t in enumerate(task.tries):
+            if t.get("keys"):
+                combo = canonical_combo(t["keys"])
+                if combo is None:
+                    continue                  # no key on any look: told back once, as the answer was taken in (`_admit_moves`)
+                if "+" not in combo and combo in on_offer:
+                    continue                  # the keys provider's own option is the planner's (`_named_by_planner`)
                 # named by the app's own menu item where it has one: a bare combo is invisible to both the
                 # word list and the classifier, which is how a suggested cmd+s was released as an edit
-                named = named_combo(obs, t["keys"]) if obs is not None else None
-                out.append(Affordance(f"t{i}", "keys", "key",
+                named = named_combo(obs, combo) if obs is not None else None
+                out.append(Affordance(f"try{i}", "keys", "key",
                                       self._suggestion_label(t) + (f" ({named})" if named else ""),
-                                      {"combo": t["keys"].lower()}))
+                                      {"combo": combo, "try": i}))
             elif t.get("type"):
-                out.append(Affordance(f"t{i}", "keys", "type", self._suggestion_label(t), {"text": t["type"]}))
+                # Only text the goal, the caller's inputs or a screen the task saw holds word for word, checked
+                # again on every look (no request): until then the move waits, and 391 is offered once a screen
+                # has shown 391. A move's text went to the keyboard with no check at all. 3ac98732a3d2 typed the
+                # planner's '17×23=391' before any screen had shown 391, and 7ffdee1b4ce3 refused 391 as a plan
+                # input and offered 'type 「391」' two seconds later; of the 139 typing moves chosen in the audit,
+                # 19 (in 9 tasks) typed text nothing the task had seen held — 391 before Calculator showed it, the
+                # planner's own definition of a word, a sysctl command. The decider's judgement is no substitute
+                # here: it let that definition through at 0.76 in 8b1a7646fc9f, when all the task had looked at
+                # was Finder with no window open, and scored 391 at 0.74 in 54d03f49a1e0, against a cut of 0.75.
+                # Text it lets through is never a move on offer: it goes only into a slot a plan's fill gives it
+                # for (`_fill`), and typing it there is judged by the floor again with the text in its label. The
+                # verdict is kept (`Memory.admitted`): the same text is not judged again, for that slot or another.
+                # Either way the next replan hears of it (`_told_back`): an option's own name put into type is not
+                # text to type, ever; a text no screen has shown yet may be once one does.
+                if obs is not None and find_named(obs.affordances, t["type"]):
+                    self._told_back(task, t, A_LABEL_TO_TYPE)
+                    continue
+                source = self._traced(task, obs, t["type"])
+                if source is None:
+                    self._not_here(task, t)
+                    continue
+                self._usable_again(task, t)
+                out.append(Affordance(f"try{i}", "keys", "type", self._suggestion_label(t),
+                                      {"text": t["type"], "source": source, "try": i}))
             elif t.get("open_url"):
                 # the planner sees this Mac's home as `~` (privacy.replace) and writes it back that way — a
                 # real run suggested `file://~/Library/...`, which nothing can open. Pseudonyms are restored
@@ -316,10 +940,11 @@ class ConsultMixin:
                     url = "file://" + os.path.expanduser(url[len("file://"):])
                 elif url.startswith("~/"):
                     url = os.path.expanduser(url)
-                out.append(Affordance(f"t{i}", "file", "open", self._suggestion_label({**t, "open_url": url}), {"path": "", "url": url}))
+                out.append(Affordance(f"try{i}", "file", "open", self._suggestion_label({**t, "open_url": url}),
+                                      {"path": "", "url": url, "try": i}))
             elif t.get("drag") and obs is not None:
                 a, b = (_where(obs, name) for name in t["drag"])
                 if a and b:
-                    out.append(Affordance(f"t{i}", "pointer", "drag", self._suggestion_label(t),
-                                          {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1]}))
+                    out.append(Affordance(f"try{i}", "pointer", "drag", self._suggestion_label(t),
+                                          {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1], "try": i}))
         return out

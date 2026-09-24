@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -38,6 +39,75 @@ def steady(label: str) -> str:
     return _STATE.sub("", label or "").strip()
 
 
+def word_kind(ch: str) -> str:
+    """What kind of writing one character is, for "does a word go on here": a letter of a script without
+    capitals ("uncased": Chinese, Japanese, Korean, Arabic, Hebrew, Thai…), a letter of one with them
+    ("cased"), a digit, a combining mark, or "" — a space, punctuation, an underscore — where a word ends.
+    Scripts of one kind are not told apart: Latin and Cyrillic are both "cased", Chinese and Arabic both
+    "uncased"."""
+    if ch.isalpha():
+        return "uncased" if ch.lower() == ch.upper() else "cased"
+    if ch.isdigit():
+        return "digit"
+    return "mark" if len(ch) == 1 and unicodedata.category(ch).startswith("M") else ""
+
+
+def joined(a: str, b: str) -> bool:
+    """Does a word whose last letter is `a` go on into `b`? Into a combining mark it does: the mark belongs to
+    the letter before it. Otherwise only where both are of one kind, so a word ends at a space, punctuation
+    or an underscore, where letters with capitals meet letters without ("Safari" in "Safari浏览器"), and where
+    letters meet digits.
+
+    `a` is a letter, never a mark: a mark does not say what kind of letter it sits on. Taking the mark for
+    the letter, this went on after it into anything a word is made of, so after 「café」 written with its
+    accent as a mark of its own a word went on into Chinese and into digits, where after 「café」 written as
+    one character it ends. Text is asked with `joined_at`, which looks past a mark to its letter; a mark
+    given here as `a` sits on no letter and carries no word on."""
+    ka, kb = word_kind(a), word_kind(b)
+    return kb == "mark" or (kb != "" and ka == kb)
+
+
+def joined_at(text: str, k: int) -> bool:
+    """Does a word go on across position `k` of `text`, from text[k - 1] into text[k]? `joined`, with a
+    combining mark read as the letter it sits on, so a word ends in the same places whether an accent is
+    written into its letter or as a mark after it: 「Chloé2024」 is 「Chloé」 and 「2024」 either way, and
+    「cafés」 is one word. Nothing is joined at either end of the text."""
+    if not 0 < k < len(text):
+        return False
+    i = k - 1
+    while i > 0 and word_kind(text[i]) == "mark":
+        i -= 1
+    return joined(text[i], text[k])
+
+
+def clip(text: str, n: int) -> str:
+    """At most `n` characters, cut where a word ends (`joined_at`), with "…" where anything was cut.
+
+    Cut anywhere else, the piece that is left reads like a word of its own: a 'look into' summary cut each
+    label at 40 characters, 「… — a Service of Saf」 was tagged a person, and 「Saf」 then went out as a
+    pseudonym inside 「Safari」. So the cut steps back to where a word ends, giving up at most n // 2
+    characters: in a script written without spaces a whole run of letters is one word, and a step back with
+    no bound gives up as much of the room as that run fills. A word that began more than n // 2 characters
+    before the end of the room is cut where the room ends, though never between a letter and its accent; one
+    that began nearer is left out whole. Cut at 40, as a 'look into' summary cuts them, the option labels in
+    this Mac's audit lose a median of 1 character to the step back; the bound decides 5 of the 6,106 that
+    are longer, each a Latin name of more than 20 letters, which it cuts inside.
+    """
+    if len(text) <= n:
+        return text
+    if n < 2:
+        return "…"[:max(n, 0)]
+    k = n - 1
+    floor = max(k - n // 2, 1)
+    while k > floor and joined_at(text, k):
+        k -= 1
+    if joined_at(text, k):                   # still inside a word, one that began further back than that
+        k = n - 1
+        while k > 1 and word_kind(text[k]) == "mark":
+            k -= 1
+    return text[:k].rstrip() + "…"
+
+
 @dataclass
 class Affordance:
     id: str                        # unique within one observation
@@ -51,6 +121,10 @@ class Affordance:
     yields: str = ""               # for an action that only *returns* something (a file's text, a window's): what
                                    # exactly it would return, as an identity that changes when the source does.
                                    # Once a task holds that, the action is complete and is not offered again
+    facts: dict[str, Any] = field(default_factory=dict)   # what the Mac declares about it: the window or sheet it
+                                   # is in, the control's role and subrole, a menu item's identifier, where the
+                                   # keyboard is for a key. Part of the floor's verdict key (policy._floor_key);
+                                   # never in a label or public(). A key starting with "_" is never sent anywhere
 
     def name(self) -> str:
         """What this action is called, without what it happens to show right now."""
@@ -97,6 +171,10 @@ class Observation:
     focused: dict[str, Any] | None = None
     notes: dict[str, Any] = field(default_factory=dict)   # provider diagnostics (timings, truncation)
     at: float = field(default_factory=time.time)
+    tree_text: str = ""                          # every word the Accessibility trees gave — texts, what fields hold,
+                                                 # what controls are called — whole, not cut to screen_text's cap:
+                                                 # what a line read off the screen is checked against
+                                                 # (observe.read_the_change). Never sent anywhere
 
     def by_id(self) -> dict[str, Affordance]:
         return {a.id: a for a in self.affordances}
@@ -118,6 +196,8 @@ class Change:
     gone: list[str] = field(default_factory=list)          # …and the reverse
     picture_share: float | None = None                     # of the window's picture, when a glance could compare
     picture_where: str | None = None
+    picture_region: list[int] | None = None                # …and where on screen, in points (sight.compare): what
+                                                           # the step drew is read there (observe.read_the_change)
 
     @property
     def app_changed(self) -> bool:
@@ -145,8 +225,8 @@ class Change:
         return not (self.text_changed or self.window_changed or self.app_changed or self.picture_changed)
 
     def describe(self, limit: int = 200) -> str:
-        def cut(x: str, n: int = 48) -> str:
-            return x if len(x) <= n else x[: n - 1] + "…"
+        def cut(x: str, n: int = 48) -> str:   # never inside a word: see `clip`
+            return clip(x, n)
         parts: list[str] = []
         if self.app_changed:
             parts.append(f"now in {self.app_after}")
@@ -164,16 +244,27 @@ class Change:
             amount = f"{share:.0f}%" if share >= 1 else "under 1%"
             return f"the picture in the window changed ({amount} of it, {self.picture_where}); no text on screen did"
         out = ", ".join(parts) or NOTHING_CHANGED
-        return out if len(out) <= limit else out[: limit - 1] + "…"
+        return clip(out, limit)
 
     def as_dict(self) -> dict[str, Any]:
         return {"app_before": self.app_before, "app_after": self.app_after, "window_before": self.window_before,
                 "window_after": self.window_after, "appeared": list(self.appeared), "gone": list(self.gone),
                 "picture_share": self.picture_share, "picture_where": self.picture_where,
+                "picture_region": list(self.picture_region) if self.picture_region else None,
                 "picture_only": self.picture_only, "nothing": self.nothing}
 
 
 NOTHING_CHANGED = "nothing on screen changed"
+
+
+def exact_state(sig: str, screen_text: str) -> str:
+    """The screen's structure *and* what it says: `12×` and `12×2` are one structure and two states.
+
+    A stable digest, not `hash()`: that one is salted per process, tasks survive a restart, and a key made
+    with it would quietly never match again.
+    """
+    import zlib
+    return f"{sig}:{zlib.crc32(screen_text.encode('utf-8')):08x}"
 
 
 @dataclass
@@ -240,9 +331,16 @@ class Pace:
     settled_leave: bool = False                                # the app was let finish before the task left it
     settled_done: bool = False                                 # the screen was let settle before judging "done"
     redo: int = 0                                              # decisions discarded because the screen moved meanwhile
-    fruitless: int = 0                                         # "rethink" asked with no new route to be had
+    fruitless: int = 0                                         # rethinks that brought no new route: asked and got
+                                                               # the same, nothing or no answer, or found no planner
+                                                               # or allowance to ask. A question refused as asked
+                                                               # already, and an answer late or still on its way,
+                                                               # never count (consult.FRUITLESS). A new route, or the
+                                                               # planner's word that only the user can go on, resets it
     answer_tries: int = 0                                      # times a goal asking for information ended with none
     done_opinions: int = 0                                     # second opinions asked on "done" (budget: planner.max_done_opinions)
+    ready_waits: int = 0                                       # looks that waited for the app to answer first
+                                                               # (budget: engine.max_ready_waits)
 
 
 @dataclass
@@ -251,12 +349,22 @@ class Memory:
     facts it may write from."""
     consulted: set[Any] = field(default_factory=set)           # screens the planner has already been asked about
     interruptions: dict[str, dict[str, Any]] = field(default_factory=dict)   # what each thing in the way turned out to be
-    no_effect: set[str] = field(default_factory=set)           # "screen|action" that changed nothing: never offered again
+    no_effect: set[str] = field(default_factory=set)           # "exact state|action" that changed nothing there
     no_progress: set[str] = field(default_factory=set)         # "screen|action" taken in a stretch that got the task nowhere
-    expanded: set[str] = field(default_factory=set)            # option groups the decider chose to look into
-    screens_seen: set[str] = field(default_factory=set)
+    first_seen: dict[str, int] = field(default_factory=dict)   # screen signature -> how many steps had been taken
+                                                               # when it was first seen. "Led back" is a claim about
+                                                               # the screens seen *before* a step; a set of every
+                                                               # screen ever seen could not tell those from the one
+                                                               # the step itself had just led to, and a second look
+                                                               # at that one flagged the step: on 09-22..23, 79 of
+                                                               # the 109 circle entries were added on looks with no
+                                                               # step in between
     screen_notes: dict[str, str] = field(default_factory=dict)  # distinct screens seen (signature -> short text)
-    circles: list[str] = field(default_factory=list)           # actions that only led back to a screen already seen
+    circles: list[str] = field(default_factory=list)           # handles of the steps that only led back to a screen
+                                                               # already seen (`Step.led_back`), once each
+    stuck_at: str = ""                                         # "steps:length" of the stretch that got nowhere the
+                                                               # planner was last asked about, or whose route had
+                                                               # just landed: one stretch is asked about once
     facts: Any = None                                          # facts.Facts: what this task has actually seen
     serves: dict[str, bool] = field(default_factory=dict)      # "does leaving for X serve the goal", asked once per action
     declined: set[str] = field(default_factory=set)            # floor actions the decider judged the goal never asked for
@@ -274,6 +382,23 @@ class Memory:
     retracted_at: int = -1                                     # len(steps) when the last one was noted (a look can repeat)
     last_route: list[str] = field(default_factory=list)       # the sub-goals and moves of the planner's last answer:
                                                                # the same answer again is no new route
+    # Text a planner wrote that was let through, and where it came from: text -> {source, how, key}. `how` is
+    # "traced" (the goal, the caller's inputs or a screen the task saw holds it word for word) or "judged" (the
+    # decider judged it to be a value the task already had). Kept here, never in `Task.inputs`: that is the
+    # caller's alone.
+    admitted: dict[str, dict[str, Any]] = field(default_factory=dict)
+    judged: dict[str, list[Any]] = field(default_factory=dict)   # text -> [verdict, len(steps) when the decider
+                                                               # gave it]: asked about once until a step is taken
+    # Moves the planner gave that could not be used, as they are said to it (`ConsultMixin._move_said`) -> why,
+    # oldest first: what the next replan is told (`moves_that_could_not_be_used`). A move that was only not
+    # available for now leaves it once it is, or once an answer no longer gives it (`ConsultMixin._told_back`).
+    unusable: dict[str, str] = field(default_factory=dict)
+    was_usable: set[str] = field(default_factory=set)          # moves, said so, that could be used on some look: one
+                                                               # that cannot on a later look is told back as not on the
+                                                               # screen now, not as not available when suggested
+    plan_moved_at: int = -1                                    # len(steps) when the plan last moved: a sub-goal was
+                                                               # ticked off, or an answer spliced in. A sub-goal with
+                                                               # no evidence is ticked off only after a step since
 
     # ---- the one way in and the one way out. The keys were built by hand in six places ("sig|handle",
     # "sig|label" before that) and read back in five; one of them still used the label a day after the
@@ -282,9 +407,13 @@ class Memory:
     def _at(sig: str, handle: str) -> str:
         return f"{sig}|{handle}"
 
-    def note_no_effect(self, sig: str, handle: str) -> None:
-        """This action, from this screen, changed nothing: a fact, never offered from here again."""
-        self.no_effect.add(self._at(sig, handle))
+    def note_no_effect(self, state: str, handle: str) -> None:
+        """This action changed nothing on this exact screen: withheld while the screen is as it was, like a failure.
+
+        Keyed on the structure alone, the fact held for every screen of that structure, whatever it showed, and
+        the structure of a window that holds content does not change with its content: in aff49b2812ff a
+        calculator's 「=」 was withheld on the display 「1」 by a fact recorded on 「12+30×4」."""
+        self.no_effect.add(self._at(state, handle))
 
     def note_no_progress(self, sig: str, handle: str) -> None:
         """Taken in a stretch of steps that got the task nowhere: not offered again from where it was taken."""
@@ -302,16 +431,16 @@ class Memory:
         """Not what the goal is about, or only ever leads back: not offered again in this task."""
         self.declined.add(handle)
 
-    def no_effect_handles(self) -> set[str]:
-        return {k.split("|", 1)[1] for k in self.no_effect}
-
     def withdrawn_from(self, state: str, limit: int) -> set[str]:
         got = self.retracted.get(state) or []
         return {h for h in set(got) if got.count(h) >= limit}
 
     def withheld_reason(self, sig: str, state: str, handle: str, approval: str, limit: int) -> str | None:
-        """Why this action is not offered from this screen, or None: no_effect | failed | withdrawn | declined."""
-        if self._at(sig, handle) in self.no_effect:
+        """Why this action is not offered from this screen, or None: no_effect | no_progress | failed | withdrawn |
+        declined. `no_effect`, `failed` and `withdrawn` hold for the exact state they were learned in (`state`);
+        `no_progress` for the screen's structure (`sig`), since on a screen that changes by itself an exact state
+        is never seen twice; `declined` for the whole task."""
+        if self._at(state, handle) in self.no_effect:
             return "no_effect"
         if self._at(sig, handle) in self.no_progress:
             return "no_progress"
@@ -335,6 +464,31 @@ class TaskScope:
     pictures: dict[str, Any] = field(default_factory=dict)     # exact state -> what it looked like the first time
     vision_wanted: set[str] = field(default_factory=set)       # windows this task asked to read by sight
     windows_seen: set[Any] = field(default_factory=set)        # window ids seen so far: a new one is read first
+    silent: set[int] = field(default_factory=set)              # apps (pids) a look will not wait for again until
+                                                               # they answer once: a wait ran out on them, or the
+                                                               # helper is too old to be asked again at once
+    # The clock of the step being made (loop._step_record): set at the start of each run, moved on at every step.
+    looks: int = 0                                             # looks since the last step
+    last_step_at: float | None = None                          # monotonic time of the last step, or of the run's start
+    planner_mark: tuple[int, int, int, int] = (0, 0, 0, 0)     # planner_use (calls, ms, waited_ms, beside_ms) then
+    decisions_mark: int = 0                                    # the decider's count of decisions then
+    # The one question to the planner this task has running beside the loop (planner.PlannerCall), and what it
+    # was asked (consult.Asked): taken in at a later look, stopped when a newer question replaces it or the run
+    # ends. A thread and an answer on its way belong to this process, never to the stored task.
+    planning: Any = None
+    planning_asked: Any = None
+    # The one group of options the decider opened, and where: {group, start, where, steps} (loop._open_group).
+    # Like a menu a person opened, it lasts until the next step is taken or the app or window in front
+    # changes, and opening another replaces it; the rest of the screen in front stays open across steps on
+    # the same window. It was `memory.expanded`, kept for the whole task and stored with it: the list of
+    # every installed app, opened once while Calculator was not answering, was still open in front of the
+    # keypad on each of the nine looks that followed.
+    opened: dict[str, Any] | None = None
+    # What was read by sight where a step changed the picture and no text (observe.read_the_change): {pid,
+    # window, region, lines, glance}, the glance being the one the lines were read on. The lines are part of
+    # the screen text while that region looks as it did then (observe.keep_what_was_read): read once and
+    # then missing, a panel still on screen was reported gone by the next step's change.
+    read_there: dict[str, Any] | None = None
 
 
 @dataclass
@@ -384,12 +538,23 @@ class Task:
     updated: float = field(default_factory=time.time)
     reason: str = ""
     cause: str = ""                                            # why it ended, for a program: budget |
-                                                 # screen_locked | decider_unreachable | redaction_failed |
-                                                 # engine_error.
+                                                 # screen_locked | decider_unreachable | planner_unreachable
+                                                 # | redaction_failed | engine_error | app_not_answering
+                                                 # (and the gave-up causes no_route, unreachable,
+                                                 # needs_user, no_actions, …).
                                                  # `reason` is for a person; the eval harness read it for
                                                  # phrases to tell "the service was down" from "it failed"
     decider_calls: int = 0
     cost_usd: float = 0.0
+    # Every ask of the planner this task made: {calls, answered, failed, ms, by: {planner: n}, errors: {kind: n}}
+    # (planner.Planning._count), and over the whole task how long the loop sat waiting on the planner (waited_ms)
+    # and how long the planner worked while the loop went on (beside_ms; consult._planner_wait, _stop_planning).
+    # Kept, and handed back as result()["planner"] — never in `outputs`, which an eval's output_contains reads:
+    # ms counts can hold any number a check looks for.
+    planner_use: dict[str, Any] = field(default_factory=dict)
+    # Where its time went, summed over its step records (loop._step_record): steps, looks, wall_ms and each
+    # stage's ms. Handed back as result()["timing"], never in `outputs`, for the same reason as planner_use.
+    timing: dict[str, Any] = field(default_factory=dict)
     # One *run* is one uninterrupted turn of the loop: do(), or a resume() after the caller answered. The step
     # and time budgets are per run, because the caller's thinking time is not the task's — a task that waited
     # two minutes for a "yes" must not come back already out of budget. What bounds a task over all its runs
@@ -399,9 +564,13 @@ class Task:
     spent_s: float = 0.0                                       # working time of the runs that are over
     run_calls0: int = 0                                        # the decider's call count when this run began
     run_cost0: float = 0.0
+    run_waited_ms0: int = 0                                    # planner_use waited_ms and beside_ms when this run
+    run_beside_ms0: int = 0                                    # began: the ledger's planner_seconds are this run's
 
     def begin_run(self, calls: int, cost: float) -> None:
         self.run_started, self.run_step0, self.run_calls0, self.run_cost0 = time.monotonic(), len(self.steps), calls, cost
+        self.run_waited_ms0 = int(self.planner_use.get("waited_ms", 0))
+        self.run_beside_ms0 = int(self.planner_use.get("beside_ms", 0))
         # The counts in `pace` bound loops inside a run — how many times to look into a group, wait, ask
         # the planner again — and were never reset, while steps and seconds were. A task handed back with
         # `need_continue` three times came back with fresh steps and no replan left. The flags stay: they
@@ -432,4 +601,8 @@ class Task:
             out["outputs"] = self.outputs
         if self.plan:
             out["plan"] = {"steps": self.plan, "at": min(self.plan_i, len(self.plan)), "replans": self.pace.replans}
+        if self.planner_use.get("calls"):
+            out["planner"] = self.planner_use
+        if self.timing:
+            out["timing"] = self.timing
         return out

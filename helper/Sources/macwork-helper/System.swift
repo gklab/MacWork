@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import IOKit
 import NaturalLanguage
 import PDFKit
 import UniformTypeIdentifiers
@@ -261,54 +262,273 @@ private func pasteRestoring(_ text: String, vKey: CGKeyCode) {
     }
 }
 
-/// Type text into whatever has keyboard focus. ASCII goes as real key presses on an ASCII keyboard layout
-/// (selected for the duration, so an active input method cannot turn "print" into pinyin candidates — and
-/// custom editors that ignore synthetic unicode events still get it); anything else goes by ``non_ascii``:
-/// "paste" (clipboard, restored afterwards; works everywhere) or "unicode" (synthetic unicode key events).
-func inputType(_ p: Params) throws -> Any {
-    guard let text = p["text"] as? String else { throw RPCError("bad_params", "text required") }
-    try requireKeyboard()
-    input.before()
-    defer { input.after() }
-    let nonAscii = p["non_ascii"] as? String ?? "paste"
-    let map = asciiKeyMap()
-    let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
-    let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue()
-    var switched = false
-    var asciiActive = true
-    if let ascii, let current, !CFEqual(ascii, current) {
-        TISSelectInputSource(ascii)
-        switched = true
-        // the switch is asynchronous: key presses sent before it lands go through the input method
-        // (pinyin turns "jev" into "je'v"), so wait until it is really active
-        asciiActive = false
-        for _ in 0..<50 {
-            if let now = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(), CFEqual(now, ascii) { asciiActive = true; break }
-            usleep(10_000)
-        }
-        usleep(30_000)
+// MARK: - typing, and handing the keyboard back
+
+/// What the focused element shows where typed keys go: the insertion point and the few characters right before
+/// it, in UTF-16 units as Accessibility counts them — or, for an element with no insertion point, all it shows.
+struct Caret: Equatable {
+    var location: Int?
+    var before: String = ""
+    var value: String? = nil
+}
+
+/// One look at the focused element while the keys land.
+enum CaretLook: Equatable {
+    case text(Caret)
+    case none        // no focused element, or one that shows no text (attribute unsupported, no value)
+    case busy        // it did not answer in time: the app is still busy, likely reading the keys
+}
+
+/// How the wait for the keys ended.
+enum Landing: String {
+    case read        // the keys are all there: the insertion point is where they end, the last of them before it
+    case settled     // what the element shows changed, then stayed the same for the quiet time
+    case unreadable  // the element showed no text for the quiet time
+    case timeout     // the ceiling
+}
+
+private func isBreak(_ ch: Character) -> Bool { ch.unicodeScalars.contains { $0 == "\n" || $0 == "\r" || $0 == "\t" } }
+
+/// The last keys of a text: what follows its last Return or Tab, at most 8 characters of it.
+func keyTail(_ text: String) -> String {
+    let after = text.lastIndex(where: isBreak).map { text[text.index(after: $0)...] } ?? text[...]
+    return String(after.suffix(8))
+}
+
+/// What must sit right before the insertion point once every key of `text` has landed, or "" when nothing can
+/// say so: a Return or a Tab does what the app makes of it — a new line, the next field, sending the text —
+/// so no position and no text follow from them (0 of 222 texts typed on 09-20..23 held one).
+func landingTail(_ text: String) -> String { text.contains(where: isBreak) ? "" : keyTail(text) }
+
+private func folded(_ s: String) -> String { s.folding(options: [.caseInsensitive], locale: nil) }
+
+/// Wait until the focused element shows the keys have arrived, and say how it ended.
+///
+/// - `.read`: the insertion point is at `expectAt` with `tail` (case-folded) right before it; for an element
+///   that shows only a value, the value changed from `before` and holds the tail more often than it did. An
+///   empty tail never reads. The position, not the text alone: the text is already there when it is typed
+///   again after select-all, or appended to a document that ends with it, and "abab" typed after "ab" reads
+///   "abab" two keys early. A value that already held the tail holds it after the first key too.
+/// - `.settled`: what the element shows changed, then stayed unchanged for `quiet` — an app that rewrites what
+///   was typed (curly quotes, autocorrect) never shows the tail.
+/// - `.unreadable`: no text for `quiet`.
+/// - `.timeout`: `ceiling`.
+/// A look the app is too busy to answer advances neither quiet time: an app that cannot answer may still be
+/// reading the keys, and only the ceiling ends that wait.
+func awaitLanding(tail: String, expectAt: Int?, before: Caret?, ceiling: TimeInterval, quiet: TimeInterval,
+                  now: () -> TimeInterval, pause: TimeInterval = 0.015, sleep: (TimeInterval) -> Void,
+                  look: () -> CaretLook) -> Landing {
+    let start = now()
+    let want = folded(tail)
+    func count(_ s: String) -> Int { folded(s).components(separatedBy: want).count - 1 }
+    func landed(_ c: Caret) -> Bool {
+        guard !want.isEmpty else { return false }
+        if let at = c.location { return at == expectAt && folded(c.before) == want }
+        guard let value = c.value, let was = before?.value, value != was else { return false }
+        return count(value) > count(was)
     }
-    defer { if switched, let current { TISSelectInputSource(current) } }
-    if !asciiActive {   // could not get a plain keyboard layout: paste everything instead of typing through an IME
-        pasteRestoring(text, vKey: map["v"]?.0 ?? CGKeyCode(kVK_ANSI_V))
-        return ["ok": true, "chars": text.count, "method": "paste"]
+    var last = before              // what the element showed at the last look that read text
+    var changed = false            // it has shown something other than what it showed before the keys
+    var sameSince: TimeInterval?   // since when it has shown `last`
+    var noneSince: TimeInterval?   // since when it has shown no text
+    while true {
+        let seen = look()
+        let t = now()
+        switch seen {
+        case .busy:
+            sameSince = nil
+            noneSince = nil
+        case .none:
+            sameSince = nil
+            let since = noneSince ?? t
+            noneSince = since
+            if t - since >= quiet { return .unreadable }
+        case .text(let c):
+            noneSince = nil
+            if landed(c) { return .read }
+            if let l = last, c != l {
+                changed = true
+                last = c
+                sameSince = t
+            } else if last == nil {
+                last = c               // nothing was read before the keys: this is what later looks compare with
+                sameSince = t
+            } else if sameSince == nil {
+                sameSince = t
+            }
+            if changed, let s = sameSince, t - s >= quiet { return .settled }
+        }
+        if t - start >= ceiling { return .timeout }
+        sleep(pause)
+    }
+}
+
+/// How selecting the ASCII keyboard layout went.
+enum LayoutSwitch: Equatable {
+    case notNeeded   // it was already the current input source
+    case inEffect    // selected, and in effect
+    case didNotTake  // selected, and still not in effect after 0.5 s
+}
+
+/// Everything typing does to the Mac, behind one seam, so the order can be checked without a key being posted.
+struct TypeEffects {
+    var selectASCII: () -> LayoutSwitch
+    var restore: () -> Void                  // the person's own input source back
+    var key: (CGKeyCode, Bool) -> Void       // one key press, shifted or not
+    var paste: (String) -> Void              // through the clipboard, which is restored afterwards
+    var unicode: (String) -> Void            // synthetic unicode key events
+    var after: () -> Void                    // everything up to now was ours (`input.after()`)
+    var look: (Int) -> CaretLook             // the focused element, with that many UTF-16 units before the caret
+    var now: () -> TimeInterval
+    var sleep: (TimeInterval) -> Void
+
+    /// The real Mac.
+    static func live(pasteKey: CGKeyCode) -> TypeEffects {
+        var previous: TISInputSource?
+        return TypeEffects(
+            selectASCII: {
+                guard let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+                      let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+                      !CFEqual(ascii, current) else { return .notNeeded }
+                previous = current
+                TISSelectInputSource(ascii)
+                // the switch is asynchronous: key presses sent before it lands go through the input method
+                // (pinyin turns "jev" into "je'v"), so wait until it is really active
+                for _ in 0..<50 {
+                    if let now = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(), CFEqual(now, ascii) { return .inEffect }
+                    usleep(10_000)
+                }
+                return .didNotTake
+            },
+            restore: { if let previous { TISSelectInputSource(previous) } },
+            key: { code, shift in postKey(code, shift: shift) },
+            paste: { pasteRestoring($0, vKey: pasteKey) },
+            unicode: postUnicode,
+            after: { input.after() },
+            look: caretNow,
+            now: { ProcessInfo.processInfo.systemUptime },
+            sleep: { usleep(useconds_t(max(0, $0) * 1_000_000)) })
+    }
+}
+
+/// The focused element as the keys land, read with AXUIElementCopy* directly and never through axAttr: a slow
+/// answer here is an app busy reading the keys, and must not mark it as not answering.
+func caretNow(_ n: Int) -> CaretLook {
+    var raw: CFTypeRef?
+    switch AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &raw) {
+    case .success: break
+    case .cannotComplete: return .busy
+    default: return .none
+    }
+    guard let raw, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return .none }
+    let el = raw as! AXUIElement
+    func value() -> (String?, busy: Bool) {
+        var v: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v)
+        return (err == .success ? v as? String : nil, err == .cannotComplete)
+    }
+    var r: CFTypeRef?
+    let got = AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &r)
+    if got == .cannotComplete { return .busy }
+    var range = CFRange()
+    guard got == .success, let r, CFGetTypeID(r) == AXValueGetTypeID(), AXValueGetValue(r as! AXValue, .cfRange, &range) else {
+        let (v, busy) = value()          // no insertion point: what the element shows
+        if busy { return .busy }
+        return v.map { .text(Caret(location: nil, value: $0)) } ?? .none
+    }
+    let at = range.location
+    guard n > 0, at > 0 else { return .text(Caret(location: at)) }
+    var want = CFRange(location: max(0, at - n), length: min(n, at))
+    if let param = AXValueCreate(.cfRange, &want) {
+        var s: CFTypeRef?
+        let err = AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString, param, &s)
+        if err == .cannotComplete { return .busy }
+        if err == .success, let s = s as? String { return .text(Caret(location: at, before: s)) }
+    }
+    let (v, busy) = value()              // no string for a range: cut it from the value
+    if busy { return .busy }
+    return .text(Caret(location: at, before: v.flatMap { markedSubstring($0, location: want.location, length: want.length) } ?? ""))
+}
+
+/// Type `text` through `fx`: select the ASCII layout, post the keys, mark them ours, wait until they have
+/// landed, and only then give the person's input source back.
+///
+/// The input source used to go back as soon as the last key was posted. An app still 1-4 keys behind a 6 ms
+/// stream then read those keys through the input method: 21 of 265 typing steps on 09-20..23 left the end of
+/// the text composing. Whatever lands while the ASCII layout is still selected was typed by it, so waiting
+/// for the keys before giving the input source back makes them committed text. No wait when no switch was
+/// needed, for an empty text, or when the text was pasted because the layout did not take.
+func typeText(_ text: String, keys map: [Character: (CGKeyCode, Bool)], nonAscii: String,
+              ceiling: TimeInterval, quiet: TimeInterval, fx: TypeEffects) -> [String: Any] {
+    var markedOurs = false
+    func ours() {             // exactly once: right after the last key, on the paste fallback, or on the way out
+        if !markedOurs { markedOurs = true; fx.after() }
+    }
+    defer { ours() }
+    guard !text.isEmpty else { return ["ok": true, "chars": 0, "switched": false, "landed": "no_switch", "handback_ms": 0] }
+    let tail = keyTail(text)
+    let n = tail.utf16.count
+    let layout = fx.selectASCII()
+    var before: Caret?
+    if layout != .notNeeded {
+        // let the switch settle; the caret is read inside those 30 ms, so a slow app does not delay the keys
+        let t0 = fx.now()
+        if layout == .inEffect, case .text(let c) = fx.look(n) { before = c }
+        let left = 0.03 - (fx.now() - t0)
+        if left > 0 { fx.sleep(left) }
+    }
+    if layout == .didNotTake {   // could not get a plain keyboard layout: paste everything instead of typing through an IME
+        fx.paste(text)
+        ours()
+        fx.restore()
+        return ["ok": true, "chars": text.count, "method": "paste", "switched": true, "landed": "no_switch", "handback_ms": 0]
     }
     var pending = ""
     func flushPending() {
         guard !pending.isEmpty else { return }
-        if nonAscii == "unicode" { postUnicode(pending) } else { pasteRestoring(pending, vKey: map["v"]?.0 ?? CGKeyCode(kVK_ANSI_V)) }
+        if nonAscii == "unicode" { fx.unicode(pending) } else { fx.paste(pending) }
         pending = ""
     }
     for ch in text {
         if let (code, shift) = map[ch] {
             flushPending()
-            postKey(code, shift: shift)
+            fx.key(code, shift)
         } else {
             pending.append(ch)
         }
     }
     flushPending()
-    return ["ok": true, "chars": text.count]
+    ours()                    // a person touching the Mac during the wait is the person, not us
+    guard layout == .inEffect else {
+        return ["ok": true, "chars": text.count, "switched": false, "landed": "no_switch", "handback_ms": 0]
+    }
+    let t0 = fx.now()
+    let landing = awaitLanding(tail: landingTail(text), expectAt: before?.location.map { $0 + text.utf16.count },
+                               before: before, ceiling: ceiling, quiet: quiet, now: fx.now, sleep: fx.sleep,
+                               look: { fx.look(n) })
+    let held = fx.now() - t0
+    fx.restore()
+    return ["ok": true, "chars": text.count, "switched": true, "landed": landing.rawValue, "handback_ms": safeInt(held * 1000)]
+}
+
+/// Type text into whatever has keyboard focus. ASCII goes as real key presses on an ASCII keyboard layout
+/// (selected for the duration, so an active input method cannot turn "print" into pinyin candidates — and
+/// custom editors that ignore synthetic unicode events still get it); anything else goes by ``non_ascii``:
+/// "paste" (clipboard, restored afterwards; works everywhere) or "unicode" (synthetic unicode key events).
+///
+/// When the layout had to be selected, the person's input source goes back only once the keys have landed:
+/// at most ``handback_ms`` (default 1000) after the last key, and ``quiet_ms`` (default 250) after the focused
+/// element stopped changing or while it shows no text. The reply says how: ``landed`` (read, settled,
+/// unreadable, timeout, or no_switch when no layout was held), ``handback_ms`` and ``switched``.
+func inputType(_ p: Params) throws -> Any {
+    guard let text = p["text"] as? String else { throw RPCError("bad_params", "text required") }
+    try requireKeyboard()
+    input.before()
+    let map = asciiKeyMap()
+    let ceiling = max(0, (p["handback_ms"] as? NSNumber)?.doubleValue ?? 1000) / 1000
+    let quiet = max(0, (p["quiet_ms"] as? NSNumber)?.doubleValue ?? 250) / 1000
+    return typeText(text, keys: map, nonAscii: p["non_ascii"] as? String ?? "paste", ceiling: ceiling, quiet: quiet,
+                    fx: .live(pasteKey: map["v"]?.0 ?? CGKeyCode(kVK_ANSI_V)))
 }
 
 func inputClick(_ p: Params) throws -> Any {
@@ -577,6 +797,26 @@ func nlEntities(_ p: Params) throws -> Any {
     return tagNames(text)
 }
 
+// MARK: - this Mac
+
+/// This Mac's own identity — its serial number and hardware UUID — as the platform expert holds them, so the
+/// engine can keep them out of what leaves the Mac. The serial number of a leftover About This Mac window went
+/// out in 1,926 decider requests: no name tagger calls it a name, and no pattern knows its shape, so the Mac is
+/// asked for it instead. {serial, uuid}; empty when the registry does not say.
+func systemIdentity(_ p: Params) throws -> Any {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+    guard service != 0 else { return [String: Any]() }
+    defer { IOObjectRelease(service) }
+    var out: [String: Any] = [:]
+    for (key, name) in [(kIOPlatformSerialNumberKey, "serial"), (kIOPlatformUUIDKey, "uuid")] {
+        if let v = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String,
+           !v.isEmpty {
+            out[name] = v
+        }
+    }
+    return out
+}
+
 // MARK: - installed apps (localized display names: "计算器" for Calculator.app)
 
 /// System apps keep their localized names in InfoPlist.loctable ({locale: {key: value}}), which
@@ -700,29 +940,120 @@ func appsOpeners(_ p: Params) throws -> Any {
 
 // MARK: - windows on screen
 
-/// Every window on screen, front to back, with its owner and layer (no titles: those need Screen Recording).
-/// Lets the engine notice what covers an app — a permission prompt or an alert from another process.
+/// Whether a window level is one an app's own windows live at: from the normal level up to, not including, the
+/// main menu's — normal, floating, modal panel, utility — as the Mac numbers them. The menu bar, status items
+/// and open menus sit at that level and above. Layer 0 alone left out an app's own floating and modal panels,
+/// and any layer at all would count its status item's window as one of its windows.
+func ordinaryLevel(_ layer: Int) -> Bool {
+    Int(CGWindowLevelForKey(.normalWindow)) <= layer && layer < Int(CGWindowLevelForKey(.mainMenuWindow))
+}
+
+/// One window of the window server's list as the engine gets it, or nil when it is not wanted: without its
+/// owner or its bounds, or another process's when `pidFilter` names one. `onScreen` holds the windows on this
+/// Space when the list was of every window, nil when it was of the on-screen ones only.
+func windowEntry(_ w: [String: Any], onScreen: Set<Int>?, regular: (Int) -> Bool, pidFilter: Int?,
+                 imPids: Set<Int>) -> [String: Any]? {
+    guard let pid = w[kCGWindowOwnerPID as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Any] else { return nil }
+    if let only = pidFilter, pid != only { return nil }
+    let frame = ["X", "Y", "Width", "Height"].map { safeInt((b[$0] as? Double) ?? Double((b[$0] as? Int) ?? 0)) }
+    let number = w[kCGWindowNumber as String] as? Int ?? 0
+    let layer = w[kCGWindowLayer as String] as? Int ?? 0
+    var e: [String: Any] = ["pid": pid, "id": number, "owner": w[kCGWindowOwnerName as String] as? String ?? "",
+                            "layer": layer, "frame": frame, "regular": regular(pid),
+                            "alpha": w[kCGWindowAlpha as String] as? Double ?? 1,
+                            "on_screen": onScreen.map { $0.contains(number) } ?? true,
+                            "ordinary": ordinaryLevel(layer), "input_method": imPids.contains(pid)]
+    // a title only for the one app asked about: it is that app's to show, and the list of everything on
+    // screen stays without anyone's document names
+    if pidFilter != nil, let title = w[kCGWindowName as String] as? String, !title.isEmpty { e["title"] = title }
+    return e
+}
+
+/// A running process, as much of it as says whether it belongs to an input method.
+struct RunningProcess {
+    let pid: Int
+    let bundleId: String?
+    let bundlePath: String?
+    let executablePath: String?
+}
+
+/// The processes of the input methods whose bundles are given: a process whose bundle identifier is one of
+/// them, or whose bundle or executable lies inside one of those bundles — its services and helpers carry
+/// identifiers of their own. Paths are compared with a trailing "/", so ".../Example.app2" is not inside
+/// ".../Example.app".
+func inputMethodPids(bundleIds: Set<String>, bundlePaths: [String], running: [RunningProcess]) -> Set<Int> {
+    let roots = bundlePaths.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+    func inside(_ path: String?) -> Bool {
+        guard let path else { return false }
+        return roots.contains { (path + "/").hasPrefix($0) }
+    }
+    var out = Set<Int>()
+    for r in running {
+        if let id = r.bundleId, bundleIds.contains(id) { out.insert(r.pid) }
+        else if inside(r.bundlePath) || inside(r.executablePath) { out.insert(r.pid) }
+    }
+    return out
+}
+
+private func tisString(_ s: TISInputSource, _ key: CFString) -> String? {
+    guard let p = TISGetInputSourceProperty(s, key) else { return nil }
+    return Unmanaged<AnyObject>.fromOpaque(p).takeUnretainedValue() as? String
+}
+
+/// The processes of this Mac's enabled keyboard input methods, asked of Text Input Sources and LaunchServices:
+/// no input method is known by name. Keyboard layouts have no process of their own, and palettes (the
+/// Character Viewer, press-and-hold accents) are another category, opened on purpose. Measured at 1.3 ms a
+/// call; on this Mac it finds the input method (by its bundle identifier) and its services process (inside
+/// the bundle), and nothing else.
+func inputMethodPids() -> Set<Int> {
+    let filter = [kTISPropertyInputSourceCategory as String: kTISCategoryKeyboardInputSource as String] as CFDictionary
+    let sources = (TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource]) ?? []   // enabled only
+    var ids = Set<String>()
+    for s in sources where tisString(s, kTISPropertyInputSourceType) != (kTISTypeKeyboardLayout as String) {
+        if let id = tisString(s, kTISPropertyBundleID) { ids.insert(id) }
+    }
+    guard !ids.isEmpty else { return [] }
+    let apps = NSWorkspace.shared.runningApplications
+    var paths = ids.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.standardizedFileURL.path }
+    for a in apps {
+        if let id = a.bundleIdentifier, ids.contains(id), let u = a.bundleURL { paths.append(u.standardizedFileURL.path) }
+    }
+    let running = apps.map { RunningProcess(pid: Int($0.processIdentifier), bundleId: $0.bundleIdentifier,
+                                            bundlePath: $0.bundleURL?.standardizedFileURL.path,
+                                            executablePath: $0.executableURL?.standardizedFileURL.path) }
+    return inputMethodPids(bundleIds: ids, bundlePaths: paths, running: running)
+}
+
+/// Every window on screen, front to back, with its owner and layer. Lets the engine notice what covers an app — a
+/// permission prompt or an alert from another process — and find an app's windows without asking the app,
+/// which a launching or busy app does not answer.
 /// Every window, or only the ones on screen. "On screen" means this Space: a window the task opened and then
 /// switched away from is not gone, and tracking it as gone loses it for good.
+///
+/// - `pid`: only that process's windows, each with its `title` where the window server has one. Titles are given
+///   only for the one app asked about; reading them needs Screen Recording, which reading a window by sight
+///   already needs.
+/// - `ordinary`: a level an app's own windows live at (see `ordinaryLevel`).
+/// - `input_method`: the window belongs to an enabled keyboard input method — its candidates, its status, its
+///   settings — which is nobody's prompt.
 func screenWindows(_ p: Params) throws -> Any {
     let all = p["all"] as? Bool ?? false
+    let only = p["pid"] as? Int
     let options: CGWindowListOption = all ? [.optionAll, .excludeDesktopElements] : [.optionOnScreenOnly, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
         return [Any]()
     }
-    let onScreen: Set<Int> = all
+    let onScreen: Set<Int>? = all
         ? Set(((CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? [])
             .compactMap { $0[kCGWindowNumber as String] as? Int })
-        : []
-    return list.compactMap { w -> [String: Any]? in
-        guard let pid = w[kCGWindowOwnerPID as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Any] else { return nil }
-        let frame = ["X", "Y", "Width", "Height"].map { safeInt((b[$0] as? Double) ?? Double((b[$0] as? Int) ?? 0)) }
-        let app = NSRunningApplication(processIdentifier: pid_t(pid))
-        let number = w[kCGWindowNumber as String] as? Int ?? 0
-        return ["pid": pid, "id": number,
-                "owner": w[kCGWindowOwnerName as String] as? String ?? "", "layer": w[kCGWindowLayer as String] as? Int ?? 0,
-                "frame": frame, "regular": app?.activationPolicy == .regular,
-                "alpha": w[kCGWindowAlpha as String] as? Double ?? 1,
-                "on_screen": all ? onScreen.contains(number) : true]
+        : nil
+    let imPids = inputMethodPids()
+    var regular: [Int: Bool] = [:]
+    func isRegular(_ pid: Int) -> Bool {
+        if let known = regular[pid] { return known }
+        let r = NSRunningApplication(processIdentifier: pid_t(pid))?.activationPolicy == .regular
+        regular[pid] = r
+        return r
     }
+    return list.compactMap { windowEntry($0, onScreen: onScreen, regular: isRegular, pidFilter: only, imPids: imPids) }
 }

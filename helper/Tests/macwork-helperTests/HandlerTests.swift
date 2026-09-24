@@ -141,6 +141,36 @@ final class HandlerTests: XCTestCase {
                                               "paths": ["/nowhere/at/all/\(counter())"]]))
     }
 
+    // MARK: - system.identity
+
+    func testThisMacsIdentityIsItsSerialNumberAndHardwareUUID() throws {
+        // what is read is never printed here, not even when an assertion fails: only its keys and its shape
+        let id = try XCTUnwrap(try systemIdentity([:]) as? [String: Any])
+        XCTAssertTrue(Set(id.keys).isSubset(of: ["serial", "uuid"]), "only these two: \(id.keys.sorted())")
+        for (key, value) in id {
+            XCTAssertFalse((value as? String ?? "").isEmpty, "\(key) is a string with something in it")
+        }
+        let uuid = try XCTUnwrap(id["uuid"] as? String, "every Mac's platform expert has a hardware UUID")
+        XCTAssertNotNil(UUID(uuidString: uuid), "the uuid is one, and not the serial number in its place")
+    }
+
+    // MARK: - the buttons a window names
+
+    func testAButtonAWindowNamesIsFoundByItsRef() {
+        // A window's default button comes back as an element reference of its own, never the very object the
+        // walk holds: it is found as an equal element. Application elements stand in for buttons here, being
+        // the one kind of element made without Accessibility.
+        let walked = [AXUIElementCreateApplication(1), AXUIElementCreateApplication(2), AXUIElementCreateApplication(3)]
+        let hits = refsOf(wanted: [(node: 0, key: "default_button", element: AXUIElementCreateApplication(2)),
+                                   (node: 0, key: "cancel_button", element: AXUIElementCreateApplication(9))],
+                          among: walked)
+        XCTAssertEqual(hits.count, 1, "a button the walk never reached is left out: \(hits)")
+        XCTAssertEqual(hits.first?.node, 0)
+        XCTAssertEqual(hits.first?.key, "default_button")
+        XCTAssertEqual(hits.first?.index, 1, "the walked node that is that button")
+        XCTAssertTrue(refsOf(wanted: [], among: walked).isEmpty)
+    }
+
     // MARK: - runAsync
 
     func testAnAsyncCallThatFinishesComesBack() throws {

@@ -11,15 +11,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 from typing import Any, Callable
 
 from .decider import DeciderError, choice, noul
 from .helper import HelperError
 from .model import Affordance, Task
 from .observe import Ctx, apps_named, known_apps, names_of
-from .planner import Planning
+from .planner import Planning, answered_here
 from .privacy import Redactor
 from .words import languages_wanted
 
@@ -28,8 +30,12 @@ log = logging.getLogger(__name__)
 
 class PolicyMixin:
     def _host_bundles(self) -> set[str]:
-        """The apps this engine runs under (the terminal or client that started it), found by walking up the
-        process tree once: typing there would type into the caller itself."""
+        """The apps this engine runs under (the terminal or client that started it): typing there would type
+        into the caller itself. Found by walking up the process tree once, and from the bundle the process was
+        started from, `__CFBundleIdentifier`: LaunchServices sets it for every process an app starts, children
+        inherit it (this Mac's shells say com.apple.Terminal), and it is still there when the terminal is not
+        among the ancestors any more — a process reparented to launchd walks up to nothing. Said once in the
+        log, so a run can be told which apps it would not touch."""
         if "host.bundles" not in self.cache:
             import os
             import subprocess
@@ -50,16 +56,62 @@ class PolicyMixin:
                 running = self.helper.call("apps.running")
             except Exception:  # noqa: BLE001
                 running = []
-            self.cache["host.bundles"] = {a["bundle_id"] for a in running if a.get("pid") in chain and a.get("bundle_id")}
+            found = {a["bundle_id"] for a in running if a.get("pid") in chain and a.get("bundle_id")}
+            started_from = os.environ.get("__CFBundleIdentifier", "").strip()
+            if started_from:
+                found.add(started_from)
+            self.cache["host.bundles"] = found
+            log.info("the engine runs under %s: never driven", ", ".join(sorted(found)) or "no app it can name")
         return self.cache["host.bundles"]
+
+    def _host_app(self, app: dict[str, Any] | None) -> bool:
+        """Is this the app the engine runs under, with the policy saying never to touch that (deny.host_app)?"""
+        deny = self.cfg.policy.get("deny", {}) or {}
+        bundle = (app or {}).get("bundle_id")
+        return bool(bundle) and bool(deny.get("host_app", True)) and bundle in self._host_bundles()
+
+    def _bundle_of(self, pid: Any, app: dict[str, Any] | None) -> str | None:
+        """The bundle of the process `pid`: the working app's when it is that one, else what the Mac lists for
+        every running process — the menu bar's extras and the prompts of other processes belong mostly to
+        processes with no Dock icon, which the list of regular apps leaves out. The list is kept for a minute
+        and asked again for a process it does not hold: a process number is given out again only once the
+        system's counter has gone round, not within a minute."""
+        if app and app.get("pid") == pid:
+            return app.get("bundle_id")
+        known = self.cache.get("bundles.by_pid")
+        now = time.monotonic()
+        if known is None or now - known[0] > 60 or pid not in known[1]:
+            try:
+                running = self.helper.call("apps.running", all=True) or []
+            except HelperError:
+                running = []
+            known = (now, {a.get("pid"): a.get("bundle_id") for a in running if a.get("pid")})
+            known[1].setdefault(pid, None)            # a process the Mac does not list: not asked again for it
+            self.cache["bundles.by_pid"] = known
+        return known[1].get(pid)
 
     def _denied(self, a: Affordance, app: dict[str, Any] | None) -> bool:
         deny = self.cfg.policy.get("deny", {}) or {}
         allow = self.cfg.policy.get("allow", {}) or {}
-        # Which app this action touches: the one it names, else — for a channel that drives the UI — the one
-        # in front. A channel that works through the system touches neither unless it names one.
+        # Which app this action touches, and so whose rules judge it: the app it names (a link, the app that
+        # declares its scheme); else the process it names, by that process's bundle; else, for a channel that
+        # drives the UI, the app being worked in. A channel that works through the system touches none of them
+        # unless it names one. The menu bar's extras name only their owner's pid, and were charged to the
+        # working app, so the host's own status menu was judged as whatever app was being worked in.
         from .act import THROUGH_THE_SYSTEM
-        bundle = a.target.get("bundle_id") or (None if a.channel in THROUGH_THE_SYSTEM else (app or {}).get("bundle_id"))
+        bundle = a.target.get("bundle_id") or a.target.get("declared_by")
+        if not bundle and a.target.get("pid"):
+            bundle = self._bundle_of(a.target["pid"], app)
+        if not bundle and a.channel not in THROUGH_THE_SYSTEM:
+            if app is None:
+                # No app is being worked in, and this drives whatever is in front — which, when a task begins
+                # in no app because the one in front runs this engine, is the engine's own terminal — or a
+                # process that no bundle names. Charged to nobody, nothing below would judge it. Measured
+                # offline with the host in front: the thirteen physical keys went from none offered to all of
+                # them, and so did the planner's typing; and while an action naming a pid was let through
+                # unjudged, the host's own status menu was offered, and a task pressed it.
+                return True
+            bundle = app.get("bundle_id")
         if bundle and bundle in (deny.get("bundle_ids") or []):
             return True
         if bundle and deny.get("host_app", True) and bundle in self._host_bundles():
@@ -81,7 +133,10 @@ class PolicyMixin:
         to be.
         """
         conf = self.cfg.policy.get("confirm", {}) or {}
-        text = f"{a.verb} {a.label} {a.context}"
+        # the label as it reads with the control's other name in place of the tooltip it is shown by, where it has
+        # one (`floor_text`, observe.py): the action's own verb and title still count, the tooltip's sentence about
+        # it does not. A control whose only name is its tooltip has no other words, and is matched on those.
+        text = f"{a.verb} {a.target.get('floor_text', a.label)} {a.context}"
         derived = self._floor_words()
         hits = [name for name, c in (conf.get("categories") or {}).items()
                 if any(re.search(rx, text) for rx in list((c or {}).get("patterns") or []) + derived.get(name, []))]
@@ -102,7 +157,13 @@ class PolicyMixin:
         backend = self.planning_backend
         if backend is None:
             return None
-        return Planning(self.cfg, backend, None, self.audit).floor_words(lang, meanings)
+        planning = Planning(self.cfg, backend, None, self.audit)
+        if not answered_here(backend):
+            return planning.floor_words(lang, meanings)
+        # No task's question and nothing to stop: it only waits its turn at a local server (consult._planner_call),
+        # which any member of a chain may be
+        with self._planner_lock:
+            return planning.floor_words(lang, meanings)
 
     def _floor_key(self, ctx: Ctx, a: Affordance) -> str:
         """Per app *version*: an update can move a command or change what a label means.
@@ -113,7 +174,45 @@ class PolicyMixin:
         run. What an action *does* is the same whatever is in the field, which is what is being classified.
         """
         app = ctx.app or {}
-        return f"{self.models.key(app) or app.get('bundle_id')}|{a.name()}|{a.context}"
+        key = f"{self.models.key(app) or app.get('bundle_id')}|{a.name()}|{a.context}"
+        # ...and what the Mac declares about it (`Affordance.facts`): a key in a sheet, in a text field, in a
+        # window read only in part or in one that could not be read is another question from the same key
+        # elsewhere, and a verdict formed blind serves only looks that are as blind
+        return key + "|" + json.dumps(a.facts, sort_keys=True, ensure_ascii=False, default=str) if a.facts else key
+
+    def _question(self, ctx: Ctx, a: Affordance, window: str | None) -> str:
+        """The question the floor classifier is asked about an action, as far as its answer can turn on it: the
+        app (by version, as in the verdict key), the window it is told of, the action's kind, name and place, and
+        what it is told the Mac declares (`_declared`). Verdict keys that differ only in facts it is not told
+        (`_floor_key`) are one question to it."""
+        app = ctx.app or {}
+        return json.dumps([self.models.key(app) or app.get("bundle_id"), window, a.channel, a.verb, a.name(), a.context,
+                           self._declared(a)], sort_keys=True, ensure_ascii=False, default=str)
+
+    def _gated_as_asked(self, ctx: Ctx, a: Affordance, window: str | None, gated: list[str]) -> list[str]:
+        """The floor gated `a` on a classifier's answer: kept for the question it was asked (`_question`), so the
+        same question asked again under facts the classifier is not told cannot release it (see `_floor`)."""
+        self.cache.setdefault("floor.gated", {}).setdefault(self._question(ctx, a, window), list(gated))
+        return gated
+
+    def _declared(self, a: Affordance) -> dict[str, Any]:
+        """`the_mac_declares` for a floor question's state, or nothing (policy confirm.declared_facts).
+
+        Off by default: it changes the classifier's input, and how the classifier scores with it has not been
+        measured. When on, only what native structure owns: the window or sheet the action is in, the
+        control's role and subrole, a menu item's identifier. Nothing about an element of a web page, whose
+        roles and identifiers the page writes, and never `keyboard_on`, the focused element, which may be one.
+
+        The switch covers this field alone. The classifier also reads the action's label, the one the decider
+        reads, and that says more than it did whatever the switch is set to: a plain key's label names the
+        button a sheet or window says Return or Escape presses and the kind of field the keyboard is in, by
+        role and subrole (`observe.declare_keys`), and a key equivalent that prints nothing is shown by its
+        glyph (`observe._shortcut`). How the classifier scores those is not measured either."""
+        conf = self.cfg.policy.get("confirm", {}) or {}
+        if not conf.get("declared_facts", False) or a.facts.get("_web_content"):
+            return {}
+        told = {k: v for k, v in a.facts.items() if k in ("in", "control") or (k == "identifier" and a.channel == "menu")}
+        return {"the_mac_declares": told} if told else {}
 
     def _releases(self, a: Affordance | None = None) -> dict[str, str]:
         """The verdicts that let an action through, named by policy rather than written into the code: what a
@@ -198,7 +297,7 @@ class PolicyMixin:
         if not ask or getattr(ctx, "gate", None) is None:
             return False
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
-                 "where": a.context, "kind": f"{a.channel} {a.verb}"}
+                 "where": a.context, "kind": f"{a.channel} {a.verb}", **self._declared(a)}
         q, fills = self.cfg.question("floor_harmless"), {"action": a.label}
         try:
             ans = ctx.gate.decide(self.redactor(task_id), state, {"harmless": noul(q, fills=fills)}, task=task_id)
@@ -263,7 +362,7 @@ class PolicyMixin:
             qid = f"floor{len(questions)}"
             questions[qid] = choice(self.cfg.question("floor_what"), self._floor_options(a, hits), fills={"action": a.label})
             mapping[qid] = key
-            actions.append({"action": a.label, "where": a.context, "kind": f"{a.channel} {a.verb}"})
+            actions.append({"action": a.label, "where": a.context, "kind": f"{a.channel} {a.verb}", **self._declared(a)})
         state = {"app": (ctx.app or {}).get("name"), "window": window, "actions": actions}
         return questions, state, mapping
 
@@ -291,7 +390,7 @@ class PolicyMixin:
         if not ask or getattr(ctx, "gate", None) is None:
             return None
         state = {"app": (ctx.app or {}).get("name"), "window": window, "action": a.label,
-                 "where": a.context, "kind": f"{a.channel} {a.verb}"}
+                 "where": a.context, "kind": f"{a.channel} {a.verb}", **self._declared(a)}
         q, fills = self.cfg.question("floor_what"), {"action": a.label}
         try:
             ans = ctx.gate.decide(self.redactor(task_id), state, {"what": choice(q, self._floor_options(a, hits), fills=fills)}, task=task_id)
@@ -343,7 +442,8 @@ class PolicyMixin:
         # plain yes or no about this action — and the ceiling still keeps it from releasing what the words
         # flagged. See `_uncalibrated_release`.
         if top not in self._releases(a):
-            return hits or [top]
+            return self._gated_as_asked(ctx, a, window, hits or [top])
+        judged = True             # a gate below is the classifier's answer, not a question nobody could ask it
         if self._calibrated():
             # Two bars, and which applies is decided by the words — not because a word list may set how
             # sure a classifier has to be, but because a hit *is* evidence of risk and evidence is
@@ -359,14 +459,28 @@ class PolicyMixin:
             sure = nav >= float(conf.get(bar, 0.9 if hits else 0.7))
         else:
             sure = not hits and self._uncalibrated_release(task_id, ctx, a, window, ask)
+            judged = f"noul|{self._floor_key(ctx, a)}" in (self.cache.get("floor.harmless") or {})
         if sure:
+            # A verdict is keyed on what the Mac declares about the action (`_floor_key`), and with
+            # confirm.declared_facts off the classifier is told none of it: a key judged again only because the
+            # focus moved from a button to a table, or because a sheet naming no button came up over a window of
+            # the same title, is the same question asked again (`_question`). A second answer to it differs only
+            # by chance, and taking whichever answer releases would sample a verdict near the bar until it
+            # passed — the reason a blind look is not asked again but takes the verdict an earlier blind look
+            # formed. So a question the floor gated stays gated under every fact it is not told; one it
+            # released may be asked again, and then gated.
+            before = (self.cache.get("floor.gated") or {}).get(self._question(ctx, a, window))
+            if before is not None:
+                log.info("floor: %r was gated as the same question under other facts: %s", a.label[:60], before)
+                return list(before)
             self.audit.record("floor", task=task_id, action=a.label, released=True,
                               navigate=round(nav, 3), words=hits, verdict=top,
                               calibrated=self._calibrated())
             return []
         # Gated, but not under the name of a release: "because: ['navigate']" is not a reason to show
         # anyone. The words' own categories if they had any, else that nobody could vouch for it.
-        return hits or ["unclassified"]
+        gated = hits or ["unclassified"]
+        return self._gated_as_asked(ctx, a, window, gated) if judged else gated
 
     def _risky(self, a: Affordance, ctx: Ctx | None = None) -> bool:
         """A cheap read for the places that filter a whole pool of actions before a decider question picks one
@@ -491,11 +605,17 @@ class PolicyMixin:
         icon in a Finder window. A menu item or a control whose own name is the name of another app on this
         Mac opens that app; the Mac's list of apps says which names those are.
         """
+        here = (ctx.app or {}).get("bundle_id")
         if a.channel in ("app", "shortcut"):
+            # Bringing back the main window of the app in front, or switching to it, stays in it: 34 of 125
+            # serves_goal questions in this Mac's audit asked that, and one was declined (0.22), so Finder, with
+            # no window open, was not given one back. Only by bundle, and only where the app in front has one: a
+            # Shortcut carries none, and neither does every app.
+            if here and a.target.get("bundle_id") == here:
+                return None
             return str(a.target.get("name") or "")
         if a.channel == "service":      # content handed to another app, which usually comes to the front with it
             return ""
-        here = (ctx.app or {}).get("bundle_id")
         if a.channel == "file" and a.verb in ("open", "reveal"):
             # whoever the system hands a file or a link to comes to the front — for a web link, the browser
             return None if here and a.target.get("bundle_id") == here else ""

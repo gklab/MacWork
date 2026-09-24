@@ -58,8 +58,7 @@ and is it done?*
 - **Undo.** `macwork revert` puts back what a task changed, using each app's own undo command.
 - **Measured, not asserted.** An evaluation suite with paired significance tests, a step profiler, and a
   privacy leak check ship with the project.
-- **Pluggable.** Observation providers, action channels and decision models register through Python entry
-  points.
+- **Pluggable.** Observation providers, action channels and decision models register through Python entry points.
 
 ## Architecture
 
@@ -179,8 +178,8 @@ browser is an app. The cost is stated honestly: Chrome puts no page content in t
    engine compares what the window looked like before and after, without knowing what the picture is of.
 5. **Arithmetic stays in code.** Option labels state measured facts ("returns all 17 lines at once; the
    window shows only part"); the decider interprets facts, it does not compute them.
-6. **Fold, don't rank.** Above 255 options the largest groups become one "look into …" entry each, opened
-   the way a person opens a menu. Nothing is dropped by a relevance guess.
+6. **Fold, don't rank.** Above 200 options the screen in front comes first and the largest groups become one
+   "look into …" entry each, opened like a menu. What does not fit is a page away, never cut or guessed away.
 7. **Callers own language.** Text to type, queries and file names come from the caller; a task that needs
    them stops with `need_input` rather than inventing them.
 
@@ -209,23 +208,24 @@ The safety floor in `policy.yaml` is a floor, not a way of deciding what to do.
 Everything a decider or planner sees passes through `privacy.py` on this Mac first.
 
 * Names found by on-device NaturalLanguage, and configured patterns (email, phone, ID and card numbers, IPs,
-  addresses), become stable pseudonyms — `⟦PERSON_1⟧` is the same person for the whole task.
-* `privacy.redact.names` hides names you list; `never_send` withholds whole fields; home paths become `~`;
-  **if tagging fails, text is withheld rather than sent.**
-* What `mac_observe` / `mac_act` hand an MCP caller is redacted the same way: the caller is a model
-  somewhere else (`server.raw_observe` opts a local one out). Every request and answer is written to a
-  local audit log as sent. `audit.dry_run: true` sends nothing at all.
+  addresses), become stable pseudonyms (`⟦PERSON_1⟧` is one person for the whole task) wherever the value
+  stands as a word or was found glued. Glued into a longer word the tagger never finds it in, it may be sent.
+* `privacy.redact.names` hides names you list, glued or not; `never_send` withholds whole fields; home paths
+  become `~`; **if tagging fails, text is withheld rather than sent.** `audit.dry_run: true` sends nothing.
+* What `mac_observe` / `mac_act` hand an MCP caller is redacted the same way (`server.raw_observe` opts a
+  local model out). Each request and answer is audited as sent; `kept` counts the known names left in place.
 * No screenshots leave the machine and there is no telemetry. The API key lives in the Keychain.
 
 `macwork privacy-check` measures the leak rate on a synthetic corpus and reports it as it is — including
-that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic or Vietnamese.
+that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic or Vietnamese, and that a
+card or ID number after a list number and a point (`1.4111111111111111`) is sent, read as a decimal's digits.
 
 ## Evaluation
 
 ```sh
 macwork eval --suite evals/v2.yaml --compare         # → evals/reports/{stamp}.{json,md}, paired with evals/baseline/
 macwork compare <before>.json <after>.json           # paired, exact McNemar; drives nothing
-macwork profile                                      # where each step's time goes, and how many steps were wasted
+macwork profile                                      # where the time goes, by stage, planner and provider
 ```
 
 `evals/v2.yaml` holds 29 tasks over navigation, multi-step, cross-app, question answering, must-not and

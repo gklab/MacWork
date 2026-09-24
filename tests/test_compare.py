@@ -122,3 +122,48 @@ def test_the_summary_a_person_reads_names_the_tasks_and_the_doubt():
     out = format_compare(compare(report({f"t{i}": [i < 12] for i in range(29)}),
                                  report({f"t{i}": [i < 14] for i in range(29)})))
     assert "12/29 → 14/29" in out and "t12" in out and "chance" in out
+
+
+# --------------------------------------------------------------------------- what a task is, and what it was run on
+
+def with_definitions(rep: dict, shas: dict[str, str]) -> dict:
+    for r in rep["rows"]:
+        r["task_sha"] = shas[r["id"]]
+    return rep
+
+
+def test_two_definitions_of_one_task_are_not_paired():
+    """A dated fix changes what a task asks; the two versions are two questions, whatever the id says. And a
+    fix to one task no longer orphans the rest: the suite's hash changes, the other tasks' do not."""
+    before = with_definitions(report({"calc": [False], "other": [True]}, sha="1111"), {"calc": "c-old", "other": "o"})
+    after = with_definitions(report({"calc": [True], "other": [False]}, sha="2222"), {"calc": "c-new", "other": "o"})
+    c = compare(before, after)
+    assert c["tasks"] == 1 and c["fixed"] == [] and c["broke"] == ["other"]
+    assert any("defined differently" in w and "calc" in w for w in c["warnings"])
+    assert not any("different suites" in w for w in c["warnings"]), "tasks paired by definition need no suite caveat"
+
+
+def test_runs_with_no_task_in_common_are_refused(tmp_path):
+    """Two draws of a sampled suite with no app in common were reported as "nothing moved"."""
+    before = report({"settings--x.one": [True]})
+    before["summary"]["drawn"] = [{"bundle_id": "x.one", "toolkit": "appkit"}]
+    after = report({"settings--x.two": [False]})
+    after["summary"]["drawn"] = [{"bundle_id": "x.two", "toolkit": "qt"}]
+    c = compare(before, after)
+    assert c["refused"] and c["fixed"] == c["broke"] == []
+    assert "not compared" in c["verdict"] and "x.one" in c["verdict"] and "x.two" in c["verdict"]
+    assert format_compare(c).startswith("not compared")
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps(before), encoding="utf-8")
+    b.write_text(json.dumps(after), encoding="utf-8")
+    from macwork import cli
+    assert cli.main(["compare", str(a), str(b)]) == 2
+
+
+def test_a_different_language_or_planner_is_said():
+    before, after = report({"a": [True]}), report({"a": [True]})
+    before["summary"]["env"] = {"languages": ["zh-Hans-CN", "en-US"], "planner": {"kind": "local", "model": ""}}
+    after["summary"]["env"] = {"languages": ["en-US"], "planner": {"kind": "deepseek", "model": "deepseek-flash"}}
+    after["summary"]["interrupted"] = {"after_runs": 1, "of_runs": 3}
+    warned = " | ".join(compare(before, after)["warnings"])
+    assert "interface languages" in warned and "planner" in warned and "interrupted" in warned

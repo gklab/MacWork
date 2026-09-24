@@ -78,8 +78,15 @@ class FakeHelper:
             return {"screen_locked": self.locked}
         if method == "system.locale":
             return {"locale": "en_US", "languages": ["en-US"], "ocr_languages": ["en-US"], "region": "US"}
+        if method == "system.identity":      # a fake Mac has no serial number to hide
+            return {}
         if method == "screen.windows":
-            return list(getattr(self, "screen", []))
+            # as a helper that knows `pid` answers: this Space unless asked for every window, one process when
+            # asked for one, and each window with whatever a test gave it (`ordinary`, `input_method`, `title`)
+            wins = list(getattr(self, "screen", []))
+            if p.get("pid") is not None:
+                wins = [w for w in wins if w.get("pid") == p["pid"]]
+            return wins if p.get("all") else [w for w in wins if w.get("on_screen", True)]
         if method == "screen.ocr":           # a screen with nothing drawn on it beyond what the tree says
             return {"boxes": [], "frame": p.get("near") or [0, 0, 800, 600], "ms": 1}
         if method == "ping":
@@ -324,6 +331,21 @@ def test_menu_items_keep_their_own_shortcut_as_a_key_combo(tmp_path):
     combos = {a.label: a.target.get("combo") for a in obs.affordances}
     assert combos["menu File ▸ New Document (⌘N)"] == "cmd+n" and combos["menu File ▸ Export ▸ PDF (⇧⌘P)"] == "cmd+shift+p"
     assert combos["menu File ▸ Delete Document"] is None
+
+
+def test_the_fake_mac_answers_the_way_a_newer_helper_does():
+    """The fake Mac most tests run on answers the way a helper that knows `pid` does: the windows of one process
+    when asked for one, this Space unless asked for every window, each window with the fields a test gave it —
+    and it has no serial number to hide."""
+    class Screen(FakeHelper):
+        screen = [{"pid": 42, "id": 1, "layer": 0, "ordinary": True, "title": "Untitled"},
+                  {"pid": 7, "id": 2, "layer": 0},
+                  {"pid": 42, "id": 3, "layer": 0, "on_screen": False}]
+    h = Screen()
+    assert [w["id"] for w in h.call("screen.windows", pid=42)] == [1]
+    assert [w["id"] for w in h.call("screen.windows", pid=42, all=True)] == [1, 3]
+    assert [w["id"] for w in h.call("screen.windows")] == [1, 2]
+    assert h.call("screen.windows", pid=42)[0] == Screen.screen[0] and h.call("system.identity") == {}
 
 
 # ----------------------------------------------------------------- goal-level protocol
@@ -613,9 +635,10 @@ def test_the_screen_in_front_is_never_folded_behind_the_menus():
     flat, folded = arrange(menus + window, 150, set(), fold_over=60)
     assert {a.id for a in flat} >= {a.id for a in window}, "the screen was folded"
     assert flat[0].id == "w0" and all(k.startswith("menu:") for k in folded), (flat[:3], list(folded))
-    # and a screen alone over the budget is cut at the tail, and nothing else is folded for it
+    # and a screen alone over the budget is not cut: its first part is shown, and the rest is one look away
     flat, folded = arrange(window, 100, set(), fold_over=60)
-    assert len(flat) == 100 and not folded
+    assert len(flat) == 99 and list(folded) == ["screen"] and folded["screen"][0].startswith("look into the rest of the window (24 more")
+    assert {a.id for a in flat} | {a.id for a in folded["screen"][1]} == {a.id for a in window}, "an action was lost"
 
 
 def test_the_decider_can_open_a_folded_group_before_acting(tmp_path):
@@ -1032,7 +1055,7 @@ def test_a_drag_suggestion_is_offered_only_when_both_ends_are_on_screen(tmp_path
     task = Task(goal="x", tries=[{"drag": ["photo.png", "Archive"]}, {"drag": ["photo.png", "Nowhere"]}])
     offered = eng._suggested(task, obs)
     assert len(offered) == 1 and offered[0].verb == "drag"
-    assert offered[0].target == {"x1": 10.0, "y1": 10.0, "x2": 120.0, "y2": 120.0}
+    assert offered[0].target == {"x1": 10.0, "y1": 10.0, "x2": 120.0, "y2": 120.0, "try": 0}
 
 
 def test_the_app_the_engine_runs_under_is_never_touched(tmp_path):
@@ -1112,6 +1135,54 @@ def test_windows_the_task_left_in_running_apps_are_closed_unless_needed(tmp_path
     h2 = LeavesAWindow()
     res2 = Engine(cfg(tmp_path, config={"engine": {"close_wait_s": 0}}), helper=h2, decider=Tidier([{"pick": "New Document"}, {"pick": "done"}], keep=0.9)).do("open that folder")
     assert res2["outputs"]["left_open"] == [{"window": "Finder: Caches", "why": "still needed for the goal"}]
+
+
+class DocklessWindows(FakeHelper):
+    """Two processes with no Dock icon put a window on screen during a task: one the task started, one that
+    was running before it (a long-running agent). Each window's own close button closes it."""
+
+    def __init__(self, started_wall):
+        super().__init__()
+        self.screen = [{"pid": 42, "id": 1, "layer": 0, "alpha": 1, "frame": [0, 0, 800, 600]}]
+        self.everyone = [{"pid": 501, "name": "System Information", "bundle_id": "com.apple.SystemProfiler",
+                          "regular": False, "launched": started_wall + 2},
+                         {"pid": 502, "name": "Old Agent", "bundle_id": "com.example.agent", "regular": False,
+                          "launched": started_wall - 3600}]
+
+    def show(self):
+        self.screen = self.screen + [
+            {"pid": 501, "id": 70, "layer": 0, "alpha": 1, "frame": [300, 200, 560, 420], "regular": False},
+            {"pid": 502, "id": 71, "layer": 0, "alpha": 1, "frame": [100, 100, 400, 300], "regular": False}]
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "apps.running" and p.get("all"):
+            return super().call(method, timeout, **p) + self.everyone
+        if method == "ax.snapshot" and p.get("pid") in (501, 502) and p.get("scope") == "windows":
+            w = next(x for x in self.screen if x["pid"] == p["pid"])
+            return {"nodes": [{"ref": f"w{p['pid']}", "role": "AXWindow", "title": "About", "frame": w["frame"]},
+                              {"ref": f"w{p['pid']}.close", "role": "AXButton", "subrole": "AXCloseButton", "parent": f"w{p['pid']}"}]}
+        if method == "ax.perform" and str(p.get("ref", "")).endswith(".close"):
+            self.calls.append((method, p))
+            pid = int(p["ref"][1:].split(".")[0])
+            self.screen = [w for w in self.screen if w["pid"] != pid]
+            return {"ok": True}
+        return super().call(method, timeout, **p)
+
+
+def test_tidy_closes_a_window_a_process_with_no_dock_icon_opened_for_the_task(tmp_path):
+    """About This Mac belongs to a process with no Dock icon. Tidy looked only at the Dock apps, so the window
+    the task opened stayed, serial number and all, for the next task to read."""
+    import time
+    h = DocklessWindows(time.time())
+    eng = Engine(cfg(tmp_path, config={"engine": {"close_wait_s": 0}}), helper=h, decider=Tidier([]))
+    task = eng._new_task("what chip does this Mac have?", {}, None)
+    eng._note_opened(task, h.call("apps.running"))       # the desktop as the task found it
+    h.show()
+    task.status = "done"
+    res = eng.tidy(task.id)
+    assert [p["ref"] for p in h.did("ax.perform")] == ["w501.close"], h.did("ax.perform")
+    assert res["closed"] == ["System Information: About"]
+    assert any(w["pid"] == 502 for w in h.screen), "a window of an agent that was running before the task is not its doing"
 
 
 def test_a_field_falls_back_to_setting_its_value_when_the_app_cannot_come_forward(tmp_path, monkeypatch):

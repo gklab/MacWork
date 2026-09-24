@@ -86,12 +86,14 @@ class of bug rather than one instance.
 * **One rule for a task going nowhere** (`engine.max_no_progress`, `_no_progress_run`). Repeats, circles
   and an unchanged screen were three counters with three thresholds that agreed by accident. A step went
   nowhere if it failed, broke its promise, led back or moved nothing; a run of those is the one thing
-  consulted about and the one thing that ends the task.
+  consulted about. Ending a task on it alone is not made yet: a task still ends `no_route` on rethinks that
+  brought no new route (see "A rethink asks; it waits only on evidence" below).
 * **Invariants checked where they must hold** (`invariants.py`). After every look: options can be told
-  apart and remembered; after every step: it says where it was taken from and what it promised, and a
-  broken promise is never an ok step; at every ending: the status is one the callers know and a stop
-  short says why. A violation is the engine's own bug, recorded as a fact in `outputs.invariants_broken`
-  and counted per run in every eval report — never an exception, never something to dig out of a trace.
+  apart and remembered, and every action the look found is an option or inside an entry that names it;
+  after every step: it says where it was taken from and what it promised, and a broken promise is never
+  an ok step; at every ending: the status is one the callers know and a stop short says why. A violation
+  is the engine's own bug, recorded as a fact in `outputs.invariants_broken` and counted per run in every
+  eval report — never an exception, never something to dig out of a trace.
 
 ## What a spreadsheet in a Qt app taught (2026-09-22, WPS, two runs, both failed)
 
@@ -125,7 +127,12 @@ the trace named five more things, each general and each measured:
   cell came back as Latin noise; reversed, every cell read. Neither order is right for a screen with both.
 * **The screen in front is never folded.** 123 on-screen options were one "look into the window" behind
   Format ▸ Rows ▸ Hide shown in full, because the on-screen group was over `fold_groups_over` like the
-  list of every installed app.
+  list of every installed app. Nor is it cut: when it alone is more than one choice holds, its first part
+  is shown and the rest is one "look into the rest of the window" away, open while the task stays in that
+  window. A group the decider opens gets the room the screen leaves, at least `fold_groups_over` of it at
+  a time (all of it when smaller), until the next step or another window; kept open for the whole task,
+  one look into the 535 installed apps had held all of Calculator's controls out of the options for nine
+  looks.
 * **A formula is made of what is on screen.** The planner wrote `=SUM(B2:B4)` and the judge that keeps
   invented values out refused it as a computed figure; the second opinion on done doubted 2388's provenance.
 
@@ -158,3 +165,201 @@ Result: the same task, failed twice before, done in 33 s — the empty crossing 
 * **Another interface language, measured.** The floor's words are now derived once per interface language
   the Mac uses (`words.py`), so the higher bar applies to a German or Japanese delete as it does to an
   English one; what the planner answers for a language nobody here reads is unverified.
+
+## An app that is starting or busy is waited for, not read blind (2026-09-24)
+
+Since the helper's 20 s cooldown (22ce357), a look taken while the app did not answer Accessibility was still
+treated as a look at it. The windows provider wrote `open_windows: []`, so the decider read "none: the app has no
+window open" beside "nothing of its window can be read", and was offered "bring back the main window". All 10
+in-loop opens since then were followed by such a look. Of 158 such looks the decider voted rethink on 144 and
+wait on none, and chose reopen on 45 (49 of 2,338 answering looks); 53 plans were made right after one, and 16
+tasks ended on one, 12 of the 67 `no_route` endings among them. With helper 0.2.0, which believes a timeout only
+until it asks again and says whether an app is still launching:
+
+* **A look waits for the app first** (`EffectsMixin._await_app`): it asks at once every `engine.ready_poll_ms`
+  until the app answers, for at most `engine.open_front_s`, each wait one of the ledger's `ready_waits`. An app
+  that stays silent that long is not waited for again until it answers, and a helper older than 0.2.0, which
+  cannot be asked at once, is not polled. The helper says `not_answering` only on a call it skips: the call whose
+  own question timed out replies with nothing, as for an app with no window, so an empty reply is asked for again
+  at once (`onscreen.app_readiness`).
+* **What such an app has on screen is asked of the window server** (`observe.windows`), which needs no answer
+  from it. No empty window list is written for it, and no reopen is offered to an app that has not answered or is
+  still starting. A launch counts as starting only within `engine.open_front_s` of its start: some processes
+  never report finished launching.
+* **The decider and the planner are told the same thing**: it is still starting, or busy; it does not answer
+  Accessibility yet; its window is, or is not, on screen.
+* **Such a look advances nothing, and a vote about the route, the user or the goal waits first.** No sub-goal
+  advances on it. A rethink, ask-user, blocked or impossible vote first spends one of the decider's waits; after
+  that a rethink takes the chosen option without a planner call, and the others end as before, with cause
+  `app_not_answering` and a reason naming the app. `_consult` does not ask the planner while a wait is still
+  possible. Two votes are still taken as on any look: done, behind the verify and second-opinion gates (the
+  second opinion asks the planner's judge about that look), and a low progress vote, which counts the step before
+  it toward the no-progress rule and as having gone wrong when the planner is next asked.
+
+## What the tree does not describe is read off the screen (2026-09-24)
+
+Offline, with fakes (scratchpad `b_head_probe` scenarios 2, 3 and 7b, `skeptic11/probe.py`): an answering app whose
+tree lists no window, with one on screen, was told it had none and offered "bring back the main window"; the
+window on screen of an app that does not answer was never read; a panel an app draws in a window of its own was
+never read; and a panel drawn in a window the tree describes was read and dropped (3 to 5 lines, where six texts
+outside every node make a canvas) or not read at all (a tree that covers the window).
+
+* **The app's windows are asked of the window server on every look** (`observe.windows`). One its tree holds
+  nowhere — matched by its windows' titles and frames and by the focused window's nodes, a popover's frame
+  inside the window server's that takes in its arrow — is listed as on screen and not described, and no reopen
+  is offered while one is up. Up to `observe.windows.read_by_sight` of them are read by sight, by their number
+  (helper 0.2.0's `window_id`). That is 0 until a read-only survey of this Mac's apps has counted how many such
+  windows are ones nobody sees: they are listed, not read.
+* **A window the tree does not give stands in for it** (`window_stand_in`): the one on screen of an app that
+  does not answer, and, where `observe.windows.read_by_sight` allows, the one on screen of an answering app whose
+  tree lists no window. It is read by its number, with no fingerprint asked (of a silent app that is three 0.5 s
+  timeouts), keyed on the look's glance as well, since no action is taken while the engine waits. From an app
+  that does not answer it is text only: a busy app applies the events it is sent to whatever it shows once it
+  catches up. An answering app's is read as the canvas it then is, its text offered to click; nothing of it was
+  read before it was listed, so while `read_by_sight` is 0 it is listed and not read, like any other window its
+  tree does not describe.
+* **What a step drew is read where the picture changed.** `sight.compare` says where (`region`), and after a step
+  that changed the picture and no word of the tree, the text there that the tree does not hold is read — ten lines
+  at most — and put first in the screen text, where the cap cannot cut it. What the tree holds is every word it
+  gives, a field's contents and a control's name included: of the 85 looks after such a step in this Mac's audit,
+  50 followed a checkbox, a menu or pop-up button, or typing into or selecting in a field or a document — steps
+  that change how a control or a field looks, where the words on screen are that control's name and that field's
+  contents. What was read stays there while that part of the window looks the same, so the next step does not
+  report it gone, and where it no longer does it is read again: a panel that closed is gone, one with a line
+  changed is not. One read, taken after the step and good while the window looks as it did, serves this and the
+  loop's own reading of the window, which names its unlabeled controls. A step recorded before the region was
+  measured is read as it was.
+* **Text read by sight is counted** (`read_by_sight_lines`): a check that reads the screen text reads it too, and
+  pass rates across this change are compared with that split.
+
+## A rethink asks; it waits only on evidence (2026-09-24)
+
+A rethink vote stopped the task for a planner call, and when a route came the action chosen with it was dropped.
+On 09-22..23 (62 tasks, held-out goals left out) the loop sat waiting on the planner for most of the two key tasks:
+28.8 of 44.3 s and 27.3 of about 35 s. Of 201 rethink looks, 23 chose the planner's own suggestion (7 waited for a
+call, 57 s: both key tasks among them, and both replans dropped the 「type 17」 and 「type serendipity」 chosen), 96
+chose an action on offer where the step before had not failed and was not judged below `progress_bad` (0.2) (60
+calls, 575 s; after 24 of them the next look chose the same action again), 47 came after a step that got nowhere
+(26 calls, 291 s), 8 had nothing to act on and 27 looked into a group of options. And every rethink that brought
+nothing counted toward the ending alike: of the 20 `no_route` endings, 16 came on a question refused as asked
+already with its allowance left, 2 of them on the planner's own suggestion.
+
+* **A question to the planner is one call at a time, and can be stopped** (`planner.PlannerCall`,
+  `ConsultMixin._planner_call`). It runs on a thread of its own; a newer question stops the one before it, and a
+  question a local server may answer — any planner of a chain that could end up answering it
+  (`planner.answered_here`), not only a chain that is local throughout — is sent only once the stopped one has let
+  go, at its next line (`engine._planner_lock`): asked twice at once a local server works on both answers. A
+  question that is not for a route (text for a slot, the answer, the opinion on "done") stops a route still
+  running and leaves one that has landed for the next look. The on-device planner answers through the helper's
+  main connection and is never asked beside the loop.
+* **The planner's own suggestion is taken** with no question asked and nothing counted.
+* **When the last step got somewhere by every measure the no-progress rule has, the action needs no text the
+  planner writes, the floor lets it through and the screen is not judged risky, the route is asked for beside the
+  loop** (`planner.beside`, the switch) while the action goes through every gate as before. Got somewhere means
+  none of what `_nowhere` counts: it did not fail, break its promise or only lead back, and was not judged below
+  `progress_bad`. The 96 above were counted by a narrower measure, the step before not failed and judged 0.2 or
+  more, which leaves out broken promises and steps that only led back; the floor stopped for the chosen action on
+  20 of them, so at most 76 go beside. The route is taken in at the first look after it lands (`_merge_beside`),
+  or, when it lands while the decider decides, before the planner is asked anything else at that look. It is
+  tried before the planner is asked again: the stretch the no-progress rule found is not asked about again until a
+  step has been taken (`Memory.stuck_at` marks a stretch by the steps taken and the step it begins at, which the
+  newest step's judgement on a later look does not move).
+* **Otherwise the route is waited for, and never past the run's time** (`engine.budget_s`): a step that got
+  nowhere (`_nowhere`, what the no-progress rule counts), nothing to act on, an action whose text the planner is
+  asked to write (that question would stop the route before it came), an action the floor stops for (20 of the 96
+  above, by the floor's last verdict before the look), a planner that cannot be asked beside the loop or a decider
+  that answers through a local planner (it would be asked at the same server as the route, without the lock), a
+  call still on its way, or no fruitless rethink left. An answer too late for its run is `late`, and the loop's own
+  budget check says what happens next. The first plan (`planner.when: always`) is asked once a run, whatever it
+  came to; a look the app did not answer asks it again once the app answers.
+* **A question says what it came to** (`consult.Route`): a new route, blocked, the same route, an empty answer
+  (the last one stands), asked already (on this exact screen, structure and text, for this reason), the allowance
+  spent, no planner, an error, late, pending, or not asked because the app could not be read. The fruitless count
+  takes the same route, an empty answer, an error, a spent allowance and no planner; never an "asked already", a
+  look nobody could read, or an answer late or still on its way. A new route resets it.
+* **The ending is the one it was**: `engine.max_fruitless_rethinks` of those, with `min_steps_before_giving_up`
+  taken or nothing untried, end the task `no_route`, and `_finish` names it `planner_unreachable` when every
+  question failed and the planner could not be reached or refused (`planner_down`). Ending on the no-progress rule
+  alone is not made: 12 of the 20 `no_route` tasks had their last step judged 0.2 or more, and would have run on
+  to the step budget. Under the kept ending, the 14 decided by an "asked already" refusal on an action of the
+  decider's own would go on (a replay): at most 75 more steps within their runs, about 244 more decider requests
+  at their own rate.
+* **The planner's seconds are counted apart**: `outputs.budget.planner_seconds` {waited, beside} for the run, and
+  every step record's `planner_waited_ms` and `planner_beside_ms`.
+
+Stopping a local call is not free. mlx_lm 0.31.3 notices a closed connection at its next write, a keep-alive once
+per 2048-token chunk of prompt it reads, and the client closes it at the next line it reads: measured on this Mac,
+a recorded replan sent right after another was stopped 3 s into its prefill had its first token 11.5-19.3 s after
+the stop (31.4 s once, the stopped prompt two recorded ones long), against 4.9-7.2 s on an idle server.
+
+## The planner's protocol: what it is told, and what is taken from it (2026-09-24)
+
+Read out of this Mac's audit (09-19..23, sealed held-out goals left out, read only). The planner's brief was the
+first 40 option labels, the window's first: after c632ed9 made it 40, none of the 97 plan and replan prompts held
+an item of the app's own menus, while 1,145 of their 3,742 labels were the Apple menu's (965 its Recent Items). A
+replan was told the goal, what had been done and the problem, never the plan, and whatever it answered replaced
+the plan and put the task back at sub-goal 1 (59 of 773 answers came while the plan was past it). Its moves were
+matched to options by the whole label or a key pattern: of 251 key moves, 73 carried the planner's mark (127 were a
+named key alone, 37 a combination written another way, 14 no key), and what could not be used was dropped without
+a word. Of the fills whose text the audit keeps (21 of 54 since c0e7011), 11 wrote a text the task already held.
+
+* **Each place has its share of the brief** (`macwork/brief.py`, `planner.brief`): the apps the goal names; the
+  app's own window (`on_screen`: every window or pointer option that names no other process, one per name, a long
+  run of rows or cells as one entry, never a keypad's buttons); one line per menu, items with a key equivalent
+  first, a long submenu as one entry (`menu_entries` 17: of the 75 menu items chosen since c632ed9, 74 have their
+  entry within it, 38 within 6, an item in a folded submenu counted where its fold stands; by name the brief shows
+  56 of them at 17, since 24 sat in a folded submenu, 19 of those in the Apple menu's Recent Items, whose entry
+  names its first two items, 6 of the 24; and 21 of the 75 were placed from looks that listed fewer than 8 items of
+  their menu); and `elsewhere`, a line per other process and one for the Services.
+* **A move names an option by what it is** (`consult.find_named`): its label, else its name as the planner was
+  shown it (`observe.plain_name`), else a menu item's place. A key is read as the keyboard reads it
+  (`canonical_combo`), and a named key alone is the keys provider's key. The planner's mark and the pinned
+  options go by id (`Look.moves`).
+* **What could not be used is told back** (`moves_that_could_not_be_used`): "never repeat" only for a key that is
+  no key or an option's name put into type; a text no screen has shown yet or an option not on screen yet is "not
+  available when suggested", and one that could be used on an earlier look and cannot now "not on the screen now,
+  though it was earlier" (`Memory.was_usable`). Either leaves the list once the move can be used again, or once an
+  answer no longer gives it.
+* **A replan is told the plan** (`Plan:` after `Goal:`, each sub-goal done, now or next, with what the screen was to
+  show for the one it is at) and its answer is the rest of it, spliced in where the plan stood when it was asked;
+  an answer with moves only leaves the plan where it is, and one that lands after the plan moved brings its moves
+  only: with none of them left to take, it is an empty answer (the tries that stood stand, and it counts toward
+  `engine.max_fruitless_rethinks`). The sub-goals keep `{goal, evidence}`. A sub-goal with no evidence is ticked off
+  at most once per step taken since the plan last moved.
+* **An empty field takes a text the task holds before the planner is asked** (`which_text`, the decider choosing
+  among the caller's inputs, the paths the goal names and the planner's own text a screen or the goal holds word
+  for word), only where the floor judges the step again with the value in it. Typing at the cursor is offered for
+  such texts where a field of the app has the keyboard. With `planner.fill_inputs` off the planner's own text is not
+  among them. The text chosen, or written by the planner, goes with the step while the caller is asked to confirm
+  it, and is recorded as a planner's text typed (`typed_by_planner`) only once the floor has let the step through.
+* **What a planner is sent.** No planner prompt is built from the caller's inputs, nor from a text of the
+  planner's that traces to them (`texts_the_task_holds` is the goal's paths and the planner's traced text). What a
+  field shows is screen text, though, and a planner is told the screen: a caller's input typed into a field that
+  shows it reaches the next planner prompt (`field_contents`, `screen_text`, `seen_in_each_app`), and the redactor
+  pseudonymises names and patterns, not a password. That held at 7aa894d for `inputs.text` typed at the cursor;
+  since `which_text`, any of the caller's inputs may be chosen for any empty field (fakes: a password chosen for a
+  plain field was in the second opinion on done). And the menus share sends an app's own menu items, which none of
+  the 97 prompts at 7aa894d held: a browser's History, Bookmarks and Tab menus list pages, bookmarks and tabs as
+  items of the menu itself, which no fold of a submenu takes. Rebuilt from the recorded looks at `menu_entries` 17,
+  up to 17 of the 17 entries of Google Chrome's History line, 16 of its Bookmarks line and 14 of its Tab line were
+  items with no key equivalent directly in the menu, where those lists stand; 13 of the 17 of Safari's History line
+  were items of its submenus of four or fewer, which are not folded. No fold for a menu's own list is made yet: folding
+  every run of more than `fold_over` items with no key equivalent cost 1 of the 75 chosen items at 17 and left
+  Safari's History as it was, and what the Mac declares that tells a list from commands is not in the recorded
+  looks.
+
+Measured (M3: this Mac's local model, the 7 recorded plan and replan calls #3, #5, #15, #18, #20, #22 and #27 of
+09-23, each asked with the brief and templates of 7aa894d and with these, two rounds interleaved; scratchpad
+w5g/ab_protocol.py). Every answer parsed, 14 of 14 in each arm. Prompt tokens, against 7aa894d: #3 -27%, #5 -4%,
+#15 +20%, #18 +16%, #20 +38%, #22 +31%, #27 -18%; +7.5% in all, +11.8% without #27. The three that shrank are the
+calls whose look before them offered no menu item; where it offered some, the shares that replace the 40 labels are
+larger, the menus share (560-1,059 characters) most of all, and the capped full outline, every menu item the task's
+looks showed, is +29%. The rebuilt briefs are
+near, not exact: a recorded look keeps option texts only. Seconds are not established: +2.6% in all, a median
+call of 28.2 s against 23.6 s, on a GPU shared with another model's process, and the same prompt asked again was
+answered in 1.7 s against 7.0 s, the server keeping its prefix. #27's answers changed shape: told the plan, both
+rounds, and two more asks on 09-25, gave no sub-goal and one move, 「open app 计算器 (Calculator)」, the move for the
+sub-goal marked now; without its `Plan:` line the same prompt gave seven keystroke-level sub-goals, typing 391 among
+them. A moves-only answer leaves the plan where it is, so that answer keeps the plan and offers its move. The +10%
+target is met in all only through the calls without menus, and not per call; the seconds are to be measured again
+on a quiet machine before W6.

@@ -12,6 +12,9 @@ private let batchAttrs: [String] = [
     "AXMenuItemCmdChar", "AXMenuItemCmdModifiers", kAXRoleDescriptionAttribute, "AXMenuItemMarkChar",
     kAXURLAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
     kAXDocumentAttribute,
+    // 22, 23: which button Return and Escape press in a window or a sheet, as AppKit declares it. In the same
+    // one round trip per node as the rest: no call of its own whose timeout could mark the app.
+    kAXDefaultButtonAttribute, kAXCancelButtonAttribute,
 ].map { $0 as String }
 
 final class AXStore {
@@ -102,41 +105,210 @@ private func axSize(_ v: CFTypeRef?) -> CGSize? {
 func axAttr(_ el: AXUIElement, _ name: String) -> CFTypeRef? {
     var v: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(el, name as CFString, &v)
-    if err == .cannotComplete { Unresponsive.shared.note(el) }   // the app did not answer in time
+    Unresponsive.shared.saw(err, el, name)   // a timeout marks the app; any answer ends its mark
     return err == .success ? v : nil
 }
 
-/// Apps that do not answer Accessibility.
+/// Whether an app has not finished launching yet, as the system says it.
+func appIsLaunching(_ pid: pid_t) -> Bool {
+    NSRunningApplication(processIdentifier: pid).map { !$0.isFinishedLaunching } ?? false
+}
+
+/// Whether a process is still there at all (EPERM: there, and someone else's).
+func processIsRunning(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
+
+/// Apps that do not answer Accessibility, believed only until they are asked again.
 ///
 /// Every call to such an app waits out the messaging timeout — measured on one: 500 ms per scope, 1500 ms
 /// for "the focused window" (three attributes tried), and a full look cost nearly five seconds to learn
-/// nothing. `.cannotComplete` is the system saying exactly this, so it is believed for a short while rather
-/// than rediscovered on every call. Short, because an app that was busy may answer a moment later.
+/// nothing. `.cannotComplete` is the system saying exactly this, so it is remembered rather than paid for
+/// again on every call.
+///
+/// It was believed for 20 s, restarted by every later timeout and ended by nothing else. An app that has just
+/// been launched times out on its first questions, so it read as having no window for those 20 s: Calculator
+/// was opened at 07:24:16.4 (task 7ffdee1b4ce3), the looks at 17.7 and 35.6 read nothing of it, and the first
+/// look after the 20 s showed its window. Wherever looks were frequent, blindness ended 17.5-20.2 s after the
+/// first blind look, and the look after it showed the app's window in all 13 cases that had one. Before the
+/// cooldown, the first look after opening Calculator, TextEdit or Dictionary read its window in 20 of 21 opens,
+/// 0.8-1.9 s after them.
+///
+/// Now a mark stands only until the app is asked again:
+/// - any answer from the app, to any call, ends it at once;
+/// - while it stands, a snapshot is skipped for `wait` after the last timeout; after that the question that
+///   timed out is asked once more — the same attribute of the same element, not the app's role, which a
+///   toolkit serving Accessibility off its main thread answers while its windows still time out. A reply
+///   that the element is gone, from an app still running, answers it too;
+/// - no answer again doubles `wait` (0.5, 1, 2 … up to the old 20 s), so an app that never answers is asked
+///   less and less often (22ce357's case: 6795 ms a look) — except while it is still launching: that app is
+///   starting, not stuck, and is asked again every 0.5 s.
+/// Every mark and every end of one is a line on stderr, and `ping` lists them: whether an app answered while
+/// it was marked is something a live run can now check rather than infer from timings.
 final class Unresponsive {
     static let shared = Unresponsive()
-    private let lock = NSLock()
-    private var seen: [pid_t: TimeInterval] = [:]
-    var cooldown: TimeInterval = 20
 
-    private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+    static let firstWait: TimeInterval = 0.5
+    static let longestWait: TimeInterval = 20
 
-    func note(_ el: AXUIElement) {
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(el, &pid) == .success else { return }
-        lock.lock(); seen[pid] = now(); lock.unlock()
+    /// An app believed not to answer: since when, for how long, and the question it did not answer.
+    struct Mark {
+        var at: TimeInterval          // the last timeout seen
+        var wait: TimeInterval        // how long after it the app is left alone
+        let el: AXUIElement
+        let attr: String
+        var questions = 0             // how many times it has been asked again
     }
 
-    /// True when this app timed out recently: ask it nothing, and say why.
-    func skip(_ pid: pid_t) -> Bool {
+    /// How an app's last mark ended, for `ping`.
+    private struct Ended {
+        let at: TimeInterval, wait: TimeInterval, questions: Int, by: String
+    }
+
+    private let lock = NSLock()
+    private var marks: [pid_t: Mark] = [:]
+    private var ended: [pid_t: Ended] = [:]
+    private let now: () -> TimeInterval
+    private let ask: (AXUIElement, String) -> AXError
+    private let isLaunching: (pid_t) -> Bool
+    private let isRunning: (pid_t) -> Bool
+    private let say: (String) -> Void
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         // the question asked again, directly: through axAttr it would report its own answer twice
+         ask: @escaping (AXUIElement, String) -> AXError = { el, attr in
+             var v: CFTypeRef?
+             return AXUIElementCopyAttributeValue(el, attr as CFString, &v)
+         },
+         isLaunching: @escaping (pid_t) -> Bool = appIsLaunching,
+         isRunning: @escaping (pid_t) -> Bool = processIsRunning,
+         say: @escaping (String) -> Void = { FileHandle.standardError.write(Data("macwork-helper: \($0)\n".utf8)) }) {
+        self.now = now
+        self.ask = ask
+        self.isLaunching = isLaunching
+        self.isRunning = isRunning
+        self.say = say
+    }
+
+    /// An answer, whatever it says: the app read the question and replied.
+    private static func answered(_ err: AXError) -> Bool {
+        switch err {
+        case .success, .noValue, .attributeUnsupported, .parameterizedAttributeUnsupported, .actionUnsupported, .notImplemented:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether this app is still launching: asked of the system, not of the app.
+    func launching(_ pid: pid_t) -> Bool { isLaunching(pid) }
+
+    /// What one Accessibility call came back with. `.cannotComplete` marks the element's app; any answer ends
+    /// its mark; `.invalidUIElement` from an app that has exited drops it. `.failure`, `.apiDisabled` and the
+    /// rest are neither an answer nor a timeout, and leave the mark as it is.
+    func saw(_ err: AXError, _ el: AXUIElement, _ attr: String) {
+        if err != .cannotComplete {
+            lock.lock()
+            let none = marks.isEmpty
+            lock.unlock()
+            if none { return }                      // nothing is marked: nothing for an answer to end
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(el, &pid) == .success else { return }   // local: no question to the app
+        saw(err, el, attr, pid: pid)
+    }
+
+    /// The same, for an element whose app is already known.
+    func saw(_ err: AXError, _ el: AXUIElement, _ attr: String, pid: pid_t) {
+        guard pid > 0 else { return }
         lock.lock()
         defer { lock.unlock() }
-        guard let at = seen[pid] else { return false }
-        if now() - at < cooldown { return true }
-        seen.removeValue(forKey: pid)
-        return false
+        if err == .cannotComplete {
+            if var m = marks[pid] {                 // another call timed out: the mark is refreshed, never grown
+                m.at = now()
+                marks[pid] = m
+                return
+            }
+            marks[pid] = Mark(at: now(), wait: Self.firstWait, el: el, attr: attr)
+            ended[pid] = nil
+            say("pid \(pid) did not answer \(attr) in time: believed silent, asked again in \(Self.firstWait) s")
+        } else if marks[pid] != nil {
+            if Self.answered(err) {
+                endLocked(pid, by: "answer", attr)
+            } else if err == .invalidUIElement && !isRunning(pid) {
+                dropLocked(pid)
+            }
+        }
     }
 
-    func clear(_ pid: pid_t) { lock.lock(); seen.removeValue(forKey: pid); lock.unlock() }
+    /// True while this app is believed not to answer: ask it nothing, and say why. Once `wait` has passed since
+    /// its last timeout — or at once with `askNow` — the question that timed out is asked again, once.
+    func skip(_ pid: pid_t, askNow: Bool = false) -> Bool {
+        lock.lock()
+        guard let m = marks[pid] else { lock.unlock(); return false }
+        if !askNow && now() - m.at < m.wait { lock.unlock(); return true }
+        lock.unlock()
+        let err = ask(m.el, m.attr)                 // outside the lock: this can take the whole messaging timeout
+        lock.lock()
+        defer { lock.unlock() }
+        if err == .invalidUIElement && !isRunning(pid) {
+            dropLocked(pid)
+            return false
+        }
+        // To the question asked again, .invalidUIElement from an app still running is the app's reply that the
+        // question itself is gone: the element that timed out — a window since closed, a web area since
+        // replaced — is not there to be asked about any more (a silent app replies nothing; that is the
+        // timeout). Taken for no answer, the mark never ended: the gone element was asked every 0.5 s, only
+        // another call the app answered could end it, and a background app gets none. If the app is still
+        // busy, the next snapshot's own timeout marks it again, on an element that exists.
+        if Self.answered(err) || err == .invalidUIElement {
+            endLocked(pid, by: "reask", m.attr, asked: 1)
+            return false
+        }
+        var again = marks[pid] ?? m
+        again.at = now()
+        again.questions += 1
+        if err == .cannotComplete {
+            again.wait = isLaunching(pid) ? Self.firstWait : min(again.wait * 2, Self.longestWait)
+            say("pid \(pid) did not answer \(m.attr) again, asked again \(again.questions) times: next in \(again.wait) s")
+        }
+        marks[pid] = again
+        return true
+    }
+
+    /// `asked`: the question that was just answered, when it was one asked again.
+    private func endLocked(_ pid: pid_t, by: String, _ attr: String, asked: Int = 0) {
+        guard let m = marks.removeValue(forKey: pid) else { return }
+        let questions = m.questions + asked
+        ended[pid] = Ended(at: now(), wait: m.wait, questions: questions, by: by)
+        say("pid \(pid) answered \(attr) (\(by)) after being asked again \(questions) times")
+    }
+
+    private func dropLocked(_ pid: pid_t) {
+        guard marks.removeValue(forKey: pid) != nil else { return }
+        ended[pid] = nil
+        say("pid \(pid) has exited: its mark is dropped")
+    }
+
+    /// {pid: {age_ms, wait_s, questions, cleared_by}}: every app marked now (cleared_by null, age since its last
+    /// timeout) and how each app's last mark ended ('answer': another call was answered; 'reask': the question
+    /// asked again was; age since then). `questions` counts the times the question was asked again, answered or
+    /// not. An app that has exited is left out.
+    func report() -> [String: Any] {
+        lock.lock()
+        defer { lock.unlock() }
+        let t = now()
+        for pid in Array(marks.keys) + Array(ended.keys) where !isRunning(pid) {
+            marks[pid] = nil
+            ended[pid] = nil
+        }
+        var out: [String: Any] = [:]
+        for (pid, e) in ended {
+            out[String(pid)] = ["age_ms": safeInt((t - e.at) * 1000), "wait_s": e.wait, "questions": e.questions, "cleared_by": e.by]
+        }
+        for (pid, m) in marks {
+            out[String(pid)] = ["age_ms": safeInt((t - m.at) * 1000), "wait_s": m.wait, "questions": m.questions, "cleared_by": NSNull()]
+        }
+        return out
+    }
 }
 
 /// Which running processes own a menu bar extra, in one call.
@@ -177,9 +349,11 @@ func axActionDescription(_ el: AXUIElement, _ action: String) -> String? {
     return (s?.isEmpty ?? true) ? nil : s
 }
 
-/// One node as a plain dictionary (children not included).
+/// One node as a plain dictionary (children not included), and, for a window or a sheet, the buttons it names
+/// as its default and cancel buttons.
 private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, settableRoles: Set<String> = [],
-                      byCapability: Bool = false, knownActions: Set<String> = []) -> (node: [String: Any], children: [AXUIElement], frame: CGRect?) {
+                      byCapability: Bool = false, knownActions: Set<String> = [])
+    -> (node: [String: Any], children: [AXUIElement], frame: CGRect?, buttons: [(key: String, element: AXUIElement)]) {
     var raw: CFArray?
     AXUIElementCopyMultipleAttributeValues(el, batchAttrs as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw)
     let vals = (raw as? [CFTypeRef]) ?? []
@@ -252,7 +426,27 @@ private func describe(_ el: AXUIElement, textLimit: Int, withActions: Bool, sett
             if !described.isEmpty { node["action_desc"] = described }
         }
     }
-    return (node, children, frame)
+    var buttons: [(key: String, element: AXUIElement)] = []
+    if let role = node["role"] as? String, role == kAXWindowRole as String || role == kAXSheetRole as String {
+        for (i, key) in [(22, "default_button"), (23, "cancel_button")] {
+            if let v = at(i), CFGetTypeID(v) == AXUIElementGetTypeID() { buttons.append((key, v as! AXUIElement)) }
+        }
+    }
+    return (node, children, frame, buttons)
+}
+
+/// Which walked node each wanted element is. `wanted` holds (the node that names it, the key it is named under,
+/// the element); `among` the walked elements in node order. Found by CFHash, then CFEqual: a reference that comes
+/// back from an attribute is its own object, equal to the walked one, not identical. An element the walk never
+/// reached is left out.
+func refsOf(wanted: [(node: Int, key: String, element: AXUIElement)], among: [AXUIElement]) -> [(node: Int, key: String, index: Int)] {
+    guard !wanted.isEmpty else { return [] }
+    var byHash: [CFHashCode: [Int]] = [:]
+    for (i, el) in among.enumerated() { byHash[CFHash(el), default: []].append(i) }
+    return wanted.compactMap { w in
+        guard let i = byHash[CFHash(w.element)]?.first(where: { CFEqual(among[$0], w.element) }) else { return nil }
+        return (w.node, w.key, i)
+    }
 }
 
 // MARK: - snapshot
@@ -286,8 +480,11 @@ func axSnapshot(_ p: Params) throws -> Any {
     } else {
         guard let pidNum = p["pid"] as? Int else { throw RPCError("bad_params", "pid or ref required") }
         pid = pid_t(pidNum)
-        if Unresponsive.shared.skip(pid) {
-            return ["nodes": [Any](), "ms": 0, "truncated": false, "not_answering": true]
+        // `ask_now`: the caller is waiting for this app and wants it asked, whatever the wait. `launching` tells
+        // an app that is starting from one that is stuck; how long starting may take is the caller's call.
+        if Unresponsive.shared.skip(pid, askNow: p["ask_now"] as? Bool ?? false) {
+            return ["nodes": [Any](), "ms": Int(Date().timeIntervalSince(started) * 1000), "truncated": false,
+                    "not_answering": true, "launching": Unresponsive.shared.launching(pid)]
         }
         let app = AXUIElementCreateApplication(pid)
         for (flag, attr) in [("manual_accessibility", "AXManualAccessibility"), ("enhanced_ui", "AXEnhancedUserInterface")] {
@@ -322,6 +519,9 @@ func axSnapshot(_ p: Params) throws -> Any {
     var nodes: [[String: Any]] = []
     var truncated = false
     var visited: [CFHashCode: [AXUIElement]] = [:]   // AX trees can contain cycles (an app listing itself as a child)
+    // each node's element, and the buttons windows and sheets name: named by their refs once the walk is done
+    var walked: [AXUIElement] = []
+    var buttons: [(node: Int, key: String, element: AXUIElement)] = []
     func firstVisit(_ el: AXUIElement) -> Bool {
         let h = CFHash(el)
         if let seen = visited[h], seen.contains(where: { CFEqual($0, el) }) { return false }
@@ -352,6 +552,8 @@ func axSnapshot(_ p: Params) throws -> Any {
         node["depth"] = item.depth
         if let parent = item.parent { node["parent"] = parent }
         nodes.append(node)
+        walked.append(item.el)
+        for b in d.buttons { buttons.append((nodes.count - 1, b.key, b.element)) }
         guard item.depth < maxDepth else { continue }
         var clip = item.clip
         if clip == nil, let f = d.frame, f.width > 0, f.height > 0, (node["role"] as? String) == (kAXWindowRole as String) { clip = f }
@@ -359,8 +561,14 @@ func axSnapshot(_ p: Params) throws -> Any {
         if d.children.count > maxChildren { node["more_children"] = d.children.count - maxChildren; nodes[nodes.count - 1] = node }
         for child in kids.reversed() { stack.append((child, ref, item.depth + 1, clip, free)) }
     }
-    return ["gen": gen, "pid": Int(pid), "nodes": nodes, "truncated": truncated,
-            "ms": Int(Date().timeIntervalSince(started) * 1000)]
+    // Which button Return and Escape press, as the window or sheet declares it: default_button and cancel_button
+    // hold that button's ref. One the walk never reached (cut by a budget, or not asked for) is left out.
+    for hit in refsOf(wanted: buttons, among: walked) { nodes[hit.node][hit.key] = nodes[hit.index]["ref"] }
+    var out: [String: Any] = ["gen": gen, "pid": Int(pid), "nodes": nodes, "truncated": truncated,
+                              "ms": Int(Date().timeIntervalSince(started) * 1000)]
+    // an app that answers but has not finished launching may have no window yet: not "it has none"
+    if p["ref"] == nil, Unresponsive.shared.launching(pid) { out["launching"] = true }
+    return out
 }
 
 // MARK: - act
@@ -429,6 +637,8 @@ func axFocused(_ p: Params) throws -> Any {
     if !(p["value"] as? Bool ?? true) {
         node["value"] = nil
         node["selected_text"] = nil
+    } else if p["marked"] as? Bool == true, let m = markedText(el) {
+        node["marked"] = m           // part of what the element holds: withheld with the value
     }
     node["ref"] = store.addTransient(el)
     var out: [String: Any] = ["focused": node, "pid": Int(pid), "secure_input": secure]
@@ -552,16 +762,54 @@ func axWait(_ p: Params) throws -> Any {
     return ["events": events, "timed_out": box.fired.isEmpty, "settled": settledQuiet, "ms": Int(Date().timeIntervalSince(box.t0) * 1000)]
 }
 
-/// Read one attribute (to verify an action, e.g. that a text field now holds what was typed).
+/// Read one attribute (to verify an action, e.g. that a text field now holds what was typed). With `marked` and
+/// AXValue, also what an input method is still composing in it (see `markedText`).
 func axGet(_ p: Params) throws -> Any {
     guard let ref = p["ref"] as? String else { throw RPCError("bad_params", "ref required") }
     let attr = p["attribute"] as? String ?? (kAXValueAttribute as String)
     let el = try store.get(ref)
-    guard let v = axAttr(el, attr) else { return ["value": NSNull()] }
-    if CFGetTypeID(v) == CFBooleanGetTypeID() { return ["value": CFBooleanGetValue((v as! CFBoolean))] }
-    if let n = v as? NSNumber { return ["value": n] }
-    if let s = v as? String { return ["value": s] }
-    return ["value": "\(v)"]
+    var out: [String: Any] = ["value": NSNull()]
+    if let v = axAttr(el, attr) {
+        if CFGetTypeID(v) == CFBooleanGetTypeID() { out["value"] = CFBooleanGetValue((v as! CFBoolean)) }
+        else if let n = v as? NSNumber { out["value"] = n }
+        else if let s = v as? String { out["value"] = s }
+        else { out["value"] = "\(v)" }
+    }
+    if p["marked"] as? Bool == true, attr == kAXValueAttribute as String, let m = markedText(el) { out["marked"] = m }
+    return out
+}
+
+/// What an input method is still composing in this element: its text, "" when nothing is, nil when the element
+/// does not say.
+///
+/// AXValue holds the composition too ('news.htm'l' and 'keep.tx't' were values with the input method's syllable
+/// separator in them), so a read-back of the value passed 24 of 26 tails left composing. An AppKit text view
+/// says what is marked (AXTextInputMarkedRange, checked in-process: {5, 2} for "lo" in "😀hello", length 0 once
+/// committed); the focused cell of an edited single-line field does not, and nothing is said for it. The text is read for the
+/// range, or cut from the value in UTF-16 units. WebKit's marker range is not read: whether it is empty while
+/// nothing is composing was never checked, and none of the recorded tails was in WebKit.
+func markedText(_ el: AXUIElement) -> String? {
+    guard let v = axAttr(el, "AXTextInputMarkedRange"), CFGetTypeID(v) == AXValueGetTypeID() else { return nil }
+    var range = CFRange()
+    guard AXValueGetValue(v as! AXValue, .cfRange, &range) else { return nil }
+    guard range.length > 0 else { return "" }
+    if let param = AXValueCreate(.cfRange, &range) {
+        var s: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString, param, &s) == .success,
+           let text = s as? String, !text.isEmpty {
+            return text
+        }
+    }
+    guard let value = axAttr(el, kAXValueAttribute) as? String else { return nil }
+    return markedSubstring(value, location: range.location, length: range.length)
+}
+
+/// `length` UTF-16 units of `text` from `location`, the way Accessibility and AppKit count a range, or nil when
+/// the range does not lie inside the text.
+func markedSubstring(_ text: String, location: Int, length: Int) -> String? {
+    let units = Array(text.utf16)
+    guard location >= 0, length >= 0, location <= units.count, length <= units.count - location else { return nil }
+    return String(decoding: units[location..<location + length], as: UTF16.self)
 }
 
 
