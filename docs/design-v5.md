@@ -196,8 +196,38 @@ until it asks again and says whether an app is still launching:
   second opinion asks the planner's judge about that look), and a low progress vote, which counts the step before
   it toward the no-progress rule and as having gone wrong when the planner is next asked.
 
-Reading the windows Accessibility does not describe — by window number, by sight — waits for a read-only survey
-of how often such windows are phantoms.
+## What the tree does not describe is read off the screen (2026-09-24)
+
+Offline, with fakes (scratchpad `b_head_probe` scenarios 2, 3 and 7b, `skeptic11/probe.py`): an answering app whose
+tree lists no window, with one on screen, was told it had none and offered "bring back the main window"; the
+window on screen of an app that does not answer was never read; a panel an app draws in a window of its own was
+never read; and a panel drawn in a window the tree describes was read and dropped (3 to 5 lines, where six texts
+outside every node make a canvas) or not read at all (a tree that covers the window).
+
+* **The app's windows are asked of the window server on every look** (`observe.windows`). One its tree holds
+  nowhere — matched by its windows' titles and frames and by the focused window's nodes, a popover's frame
+  inside the window server's that takes in its arrow — is listed as on screen and not described, and no reopen
+  is offered while one is up. Up to `observe.windows.read_by_sight` of them are read by sight, by their number
+  (helper 0.2.0's `window_id`). That is 0 until a read-only survey of this Mac's apps has counted how many such
+  windows are ones nobody sees: they are listed, not read.
+* **A window the tree does not give stands in for it** (`window_stand_in`): the one on screen of an app that
+  does not answer, or of one whose tree lists no window. It is read by its number, with no fingerprint asked (of
+  a silent app that is three 0.5 s timeouts), keyed on the look's glance as well, since no action is taken while
+  the engine waits. From an app that does not answer it is text only: a busy app applies the events it is sent
+  to whatever it shows once it catches up.
+* **What a step drew is read where the picture changed.** `sight.compare` says where (`region`), and after a step
+  that changed the picture and no word of the tree, the text there that the tree does not hold is read — ten lines
+  at most — and put first in the screen text, where the cap cannot cut it. What the tree holds is every word it
+  gives, a field's contents and a control's name included: of the 85 looks after such a step in this Mac's audit,
+  50 followed a checkbox, a menu or pop-up button, or typing into or selecting in a field or a document — steps
+  that change how a control or a field looks, where the words on screen are that control's name and that field's
+  contents. What was read stays there while that part of the window looks the same, so the next step does not
+  report it gone, and where it no longer does it is read again: a panel that closed is gone, one with a line
+  changed is not. One read, taken after the step and good while the window looks as it did, serves this and the
+  loop's own reading of the window, which names its unlabeled controls. A step recorded before the region was
+  measured is read as it was.
+* **Text read by sight is counted** (`read_by_sight_lines`): a check that reads the screen text reads it too, and
+  pass rates across this change are compared with that split.
 
 ## A rethink asks; it waits only on evidence (2026-09-24)
 

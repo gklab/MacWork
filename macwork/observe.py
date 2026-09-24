@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import zlib
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -26,7 +27,8 @@ from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
 from .model import Affordance, Observation, Slot, clip, with_state, TaskScope
-from .onscreen import app_windows, input_method_panel, still_launching, unreadable
+from .onscreen import app_windows, input_method_panel, same_place, still_launching, unreadable
+from .sight import compare as compare_pictures
 
 log = logging.getLogger(__name__)
 
@@ -618,6 +620,15 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
             if t and t not in seen_text:
                 seen_text.add(t)
                 texts.append(t)
+    # Every word the tree gave, whole: what it shows as text, what a field holds, what a control is called. The
+    # screen text holds only the first, cut to its cap; what is read off the screen where a step changed only
+    # the picture is new only if none of it said so (read_the_change). Of the 85 looks after such a step in this
+    # Mac's audit (09-19..09-23), 29 followed a checkbox, 10 a menu or pop-up button and 11 typing into a field
+    # or a document or selecting in one: steps that change how a control or a field looks, where the words on
+    # screen are the control's name and the field's contents.
+    said = [str(n[k]).strip() for n in nodes for k in ("title", "value", "desc", "placeholder") if n.get(k) not in (None, "")]
+    if said:
+        obs.tree_text = "\n".join(filter(None, [obs.tree_text] + list(dict.fromkeys(said))))
     if texts:
         _more_text(ctx, obs, texts)
 
@@ -708,18 +719,33 @@ def _snap(ctx: Ctx, scope: str, manual: bool = False) -> dict[str, Any]:
                            skip_roles=(ax.get("window_skip_roles") or []) if scope == "focused_window" else [])
 
 
-def _more_text(ctx: Ctx, obs: Observation, lines: list[str]) -> None:
+def _more_text(ctx: Ctx, obs: Observation, lines: list[str], first: bool = False) -> None:
     """Add to the screen text, up to the cap — and say when the cap cut something.
 
     Three providers wrote to one pool, each cutting it to the cap as it went, and none said so: a prompt read
     after a long window lost its words, and the decider was told nothing was missing. The cap stays (it is
     what the decider reads on every step); the cut is a fact about the observation, and is noted.
+
+    `first`: ahead of what is there, for the one thing on screen known to be new — what the last step drew
+    (read_the_change). Added after a long window, the cap cut exactly that.
     """
     cap = int(ctx.cfg.get("observe.window.screen_text_chars", 1500))
-    joined = "\n".join(filter(None, [obs.screen_text] + list(lines)))
+    parts = list(lines) + [obs.screen_text] if first else [obs.screen_text] + list(lines)
+    joined = "\n".join(filter(None, parts))
     if len(joined) > cap:
         obs.notes["screen_text_cut"] = int(obs.notes.get("screen_text_cut", 0)) + len(joined) - cap
     obs.screen_text = joined[:cap]
+
+
+def _by_sight(ctx: Ctx, obs: Observation, lines: list[str], first: bool = False) -> None:
+    """Screen text read off the screen, not out of a tree: added like any other, and counted where it stands
+    in the screen text once the cap has had its say (`read_by_sight_lines`), so what the screen showed can be
+    told from what a tree said — a check that reads the screen text (evals.check) reads both."""
+    lines = [x for x in lines if x]
+    if lines:
+        _more_text(ctx, obs, lines, first=first)
+        shown = set(obs.screen_text.split("\n"))
+        obs.notes["read_by_sight_lines"] = int(obs.notes.get("read_by_sight_lines", 0)) + sum(1 for x in lines if x in shown)
 
 
 def _note_ax_trust(ctx: Ctx, obs: Observation) -> None:
@@ -815,6 +841,10 @@ def window(ctx: Ctx, obs: Observation) -> None:
     n0 = len(obs.affordances)
     element_affordances(ctx, obs, nodes, "w")
     _own_prompts(ctx, obs, nodes, n0)
+    # where each thing the tree holds is: a sheet, a popover, a panel the app does describe is a window of its
+    # own to the window server, and `windows` must not take it for one Accessibility says nothing about.
+    # Private: observe() drops it before the notes go anywhere.
+    obs.notes["_tree_frames"] = [n["frame"] for n in nodes if isinstance(n.get("frame"), list) and len(n["frame"]) == 4]
     obs.notes["window_actionable"] = count(nodes)
     if nodes and obs.notes.get("window_frame"):
         # how much of the window the tree says nothing about: the one signal that does not depend on how
@@ -895,20 +925,98 @@ def windows(ctx: Ctx, obs: Observation) -> None:
             obs.notes["open_windows"] = [(f"「{w['title']}」" if w["title"] else "a window") + " (on screen; the app is not answering yet)"
                                          for w in shown]
         return                   # and nothing is reopened for an app that has not said what it has open
+    nodes = s.get("nodes", [])
     titles = []
-    for n in s.get("nodes", []):
+    for n in nodes:
         t = n.get("title") or ""
         titles.append(t or "(untitled)")
         if t and t != obs.window:
             obs.affordances.append(Affordance(f"x{len(obs.affordances)}", "window", "raise", f"switch to the window 「{t}」",
                                               {"ref": n["ref"], "pid": ctx.app["pid"], "action": "AXRaise"}, context=ctx.app.get("name", "")))
+    # An app that answers can still have a window on screen that its tree does not describe: a panel it draws
+    # in a window of its own. The window list said nothing of it, the decider was offered "bring back the main
+    # window" beside it (b_head_probe scenario 2: an answering app, no window in its tree, one on screen), and
+    # nothing read it: the capture takes the window nearest the tree's frame (scenario 7b). The window server
+    # lists it without asking the app. What the tree holds is matched first — its windows, and in the focused
+    # one every node, since a sheet or a popover is a window of its own to the window server (window() passes
+    # their frames) — so that only what it holds nowhere is listed as undescribed.
+    size = ctx.cfg.get("observe.windows.min_size") or [100, 60]
+    undescribed = [w for w in app_windows(ctx.helper, ctx.app["pid"], (int(size[0]), int(size[1])))
+                   if not _described(w, nodes, obs.notes.get("_tree_frames") or [])]
+    titles += [(f"「{w['title']}」" if w["title"] else "a window") + " (on screen; Accessibility does not describe it)"
+               for w in undescribed]
     obs.notes["open_windows"] = titles
+    if undescribed:
+        obs.notes["undescribed_windows"] = [{k: w[k] for k in ("id", "title", "frame")} for w in undescribed]
+        if not nodes:            # its tree lists no window at all: the one in front stands in for it (see vision)
+            obs.notes["window_stand_in"] = dict(obs.notes["undescribed_windows"][0])
+        else:
+            _read_undescribed(ctx, obs, undescribed)
     # running without a window: macOS "reopen" brings its main window back — unless it is still starting,
-    # when no window *yet* is not no window
+    # when no window *yet* is not no window, or a window of it is on screen that its tree does not describe
     if not titles and ctx.app.get("path") and not obs.notes.get("app_launching"):
         obs.affordances.append(Affordance(f"x{len(obs.affordances)}", "app", "reopen", f"bring back the main window of {ctx.app.get('name', 'the app')}",
                                           {"pid": ctx.app["pid"], "path": ctx.app["path"], "bundle_id": ctx.app.get("bundle_id"),
                                            "name": ctx.app.get("name")}, context=ctx.app.get("name", "")))
+
+
+def _described(w: dict[str, Any], ax_windows: list[dict[str, Any]], tree_frames: list[Any]) -> bool:
+    """Does the app's tree hold this window of the window server's? Leniently, since a window it does
+    describe that is listed as undescribed is withheld from reopen and read twice:
+
+    - a window of the tree with the same title: the helper leaves out a frame the app gave as NaN or infinite,
+      and such a window has only its title to be known by;
+    - a frame of the tree in the same place (onscreen.same_place);
+    - a frame of the tree inside it that covers most of it (more than half): the window server's frame of a
+      popover takes in its arrow, and the tree's does not."""
+    title = w.get("title")
+    if title and any(n.get("title") == title for n in ax_windows):
+        return True
+    f = w.get("frame")
+    area = float(f[2]) * float(f[3])
+    for g in [n.get("frame") for n in ax_windows] + list(tree_frames):
+        if not (isinstance(g, (list, tuple)) and len(g) == 4):
+            continue
+        if same_place(g, f) or (_inside(list(g), list(f), 3) and float(g[2]) * float(g[3]) > area / 2):
+            return True
+    return False
+
+
+def _stand_in(obs: Observation) -> dict[str, Any] | None:
+    """The window standing in for one the tree does not give (`window_stand_in`), unless the tree gave the
+    look a window of its own: the window this look reads, by its number."""
+    stand = obs.notes.get("window_stand_in")
+    return stand if stand and obs.notes.get("window_frame") in (None, list(stand["frame"])) else None
+
+
+def _in_reading_order(res: dict[str, Any], boxes: list[dict[str, Any]] | None = None) -> list[str]:
+    """What an OCR read (or `boxes` of it), line by line in the order the lines are read. Right-to-left text
+    read left-to-right comes back as a different sentence, so which way a line runs is asked of the system
+    (`direction`: Locale.characterDirection for the languages actually recognised)."""
+    rtl = res.get("direction") == "rtl"
+    kept = [b for b in (res.get("boxes", []) if boxes is None else boxes) if b.get("text") and b.get("frame")]
+    return [b["text"] for b in sorted(kept, key=lambda b: (b["frame"][1] // 12, -b["frame"][0] if rtl else b["frame"][0]))]
+
+
+def _read_undescribed(ctx: Ctx, obs: Observation, undescribed: list[dict[str, Any]]) -> None:
+    """Read by sight, by its number, up to observe.windows.read_by_sight of the app's windows its tree does
+    not describe. 0, the default, lists them without reading them until a survey of this Mac's apps has
+    counted how many such windows are ones nobody sees: one of those would cost a read on every action."""
+    limit = int(ctx.cfg.get("observe.windows.read_by_sight", 0))
+    vc = ctx.cfg.section("observe.vision")
+    if limit <= 0 or vc.get("mode", "auto") == "never":
+        return
+    name = ctx.app.get("name") or "the app"
+    for w in undescribed[:limit]:
+        res = _ocr(ctx, obs, vc, window_id=w["id"])
+        # a helper older than 0.2.0 does not know window_id and reads the window nearest the tree's frame instead:
+        # what it read is not this window's
+        if not res or not same_place(res.get("frame"), w["frame"]):
+            continue
+        text = " / ".join(dict.fromkeys(_in_reading_order(res)))
+        if text:
+            _by_sight(ctx, obs, [f"[a window of {name} that Accessibility does not describe"
+                                 + (f", 「{w['title']}」" if w["title"] else "") + f": {text}]"])
 
 
 def _overlap(a: list[int], b: list[int]) -> bool:
@@ -1225,21 +1333,51 @@ def _where_in(f: list[int], win: list[int] | None, words: list[str]) -> str:
     return words[row * 3 + col]
 
 
-def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False) -> dict[str, Any] | None:
+def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False,
+         window_id: Any = None, drawn: bool = False) -> dict[str, Any] | None:
     """Read the window on-device; the same window content is read once (keyed by its Accessibility fingerprint).
 
     Except on a canvas, where that key is worthless: an app that draws its own content changes everything on
     screen without one Accessibility node changing, so scrolling a canvas and reading it again would have
     returned the text from before the scroll. There, anything the engine did counts as a change.
+
+    `drawn`: a read on a look after a step that changed the picture and no word of the tree — read_the_change,
+    and the loop's own reading of the window on such a look (`_picture_changed`). The fingerprint is then the
+    one from before the step, and a read keyed on it was the read from before the step: this one is keyed on
+    the actions taken, like a canvas's, and holds only while the window looks as it did when it was read (its
+    glance, to the capture's tolerance). No action is taken while the engine waits, and a panel that closed
+    meanwhile was read back as if it were still there. What the fingerprint stands for from then on is this
+    read, so the looks after it do not read the window again for the same tree.
+
+    `window_id`: the window of that number (the window server's), whatever the tree says of it — a window the
+    tree does not describe, or the one on screen of an app that does not answer. No fingerprint is asked for
+    then: it would be of another window or of nothing, and of an app that does not answer it costs three 0.5 s
+    timeouts. What stands in for it is the picture: the key is the number, the actions taken, and this look's
+    glance, since no action is taken while the engine waits for an app to answer, and a window that finished
+    starting meanwhile must not be read as it was before the wait.
     """
     cache: dict[Any, Any] = ctx.cache.setdefault("vision.ocr", {})
-    try:
-        fp = ctx.helper.call("ax.fingerprint", pid=ctx.app["pid"], poll_nodes=int(vc.get("fingerprint_nodes", 400))).get("fingerprint")
-    except HelperError:
-        fp = None
-    if sparse:
-        fp = (fp, ctx.cache.get("actions_done", 0))
-    hit = cache.get((ctx.app["pid"], fp)) if fp is not None else None
+    drawn = drawn or bool(obs.notes.get("_picture_changed"))
+    tree_key = None
+    if window_id is not None:
+        cells = (obs.notes.get("glance") or {}).get("cells")
+        key: Any = ("window", window_id, ctx.cache.get("actions_done", 0),
+                    zlib.crc32(repr(cells).encode()) if cells is not None else None)
+    else:
+        try:
+            fp = ctx.helper.call("ax.fingerprint", pid=ctx.app["pid"], poll_nodes=int(vc.get("fingerprint_nodes", 400))).get("fingerprint")
+        except HelperError:
+            fp = None
+        if drawn and fp is not None:
+            tree_key = (ctx.app["pid"], fp)       # …and what the fingerprint stands for from now on is this read
+        if sparse or drawn:
+            fp = (fp, ctx.cache.get("actions_done", 0))
+        key = (ctx.app["pid"], fp) if fp is not None else None
+    hit = cache.get(key) if key is not None else None
+    if hit is not None and drawn and hit.get("_glance") != obs.notes.get("glance"):
+        seen = compare_pictures(hit.get("_glance"), obs.notes.get("glance"), int(ctx.cfg.get("observe.sight.tolerance", 2)))
+        if seen is None or seen["cells"]:
+            hit = None                            # the same actions, and the window has changed since it was read
     if hit is not None:
         obs.notes["vision_cached"] = True
         return hit
@@ -1248,16 +1386,20 @@ def _ocr(ctx: Ctx, obs: Observation, vc: dict[str, Any], sparse: bool = False) -
         # supports. The old default was a fixed [zh-Hans, en-US], written out in three places that disagreed.
         wanted = vc.get("languages")
         res = ctx.helper.call("screen.ocr", pid=ctx.app["pid"], near=obs.notes.get("window_frame"),
+                              **({"window_id": window_id} if window_id is not None else {}),
                               languages=[] if wanted in (None, "auto") else list(wanted),
                               correct=bool(vc.get("language_correction", False)),
                               fast=bool(vc.get("fast", False)), min_conf=float(vc.get("min_conf", 0.3)), timeout=15)
     except HelperError as exc:
         obs.notes["vision_error"] = str(exc)[:200]
         return None
-    if fp is not None:
+    if key is not None:
         if len(cache) > 32:
             cache.clear()
-        cache[(ctx.app["pid"], fp)] = res
+        res = dict(res, _glance=obs.notes.get("glance"))    # what the window looked like when it was read
+        cache[key] = res
+        if tree_key is not None:
+            cache[tree_key] = res
     return res
 
 
@@ -1458,8 +1600,19 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         return
     # No window means nothing to read. The capture waits for one that is not there — measured at 1.5 s on
     # an app with none — and an empty Accessibility tree reads as "sparse", so this used to run every time.
-    if obs.notes.get("open_windows") == [] or obs.notes.get("window_not_answering"):
+    stand = obs.notes.get("window_stand_in")
+    if obs.notes.get("open_windows") == [] or (obs.notes.get("window_not_answering") and not stand):
         return
+    # A window the tree does not give — the one on screen of an app that does not answer, or of one whose tree
+    # lists no window (observe.windows) — is read as the canvas it then is, by its number. It was not read at
+    # all: the decider was told only that the app did not answer (b_head_probe scenario 3). The next glance
+    # is taken of it too.
+    blind = bool(obs.notes.get("window_not_answering"))
+    adopted = _stand_in(obs)
+    if adopted:
+        obs.notes["window_frame"] = list(adopted["frame"])
+        ctx.cache.setdefault("window_frame_by_pid", {})[ctx.app["pid"]] = list(adopted["frame"])
+        obs.window = obs.window or adopted.get("title") or None
     unlabeled = obs.notes.get("unlabeled", [])
     empty = int(obs.notes.get("window_actionable", 0)) < int(vc.get("sparse_below", 8))
     key = f"{ctx.app['pid']}|{obs.window}"
@@ -1513,7 +1666,8 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         obs.affordances.append(Affordance("vr", "vision", "reveal", f"read the {len(unlabeled)} controls without a label in this window "
                                           "from the screen (to see what they are)", {"key": key}, context=ctx.app.get("name", "")))
         return
-    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas or mostly_undescribed)
+    res = _ocr(ctx, obs, vc, sparse=empty or known_canvas or mostly_undescribed,
+               window_id=adopted["id"] if adopted else None)
     if res is None:
         return
     boxes = res.get("boxes", [])
@@ -1585,11 +1739,16 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         obs.notes["window_unreadable"] = float(obs.notes.get("undescribed_share") or round(hollow / area, 3) if area else 1.0)
         _more_text(ctx, obs, [f"(most of this window — {int(obs.notes['window_unreadable'] * 100)}% — shows nothing that can be read: "
                               "the app describes nothing there and nothing is readable on the screen)"])
-    if canvas:
+    if blind:
+        pass    # an app that did not answer has said nothing of how much of its window its tree describes
+    elif canvas:
         ctx.cache["vision.canvas"].add(key)
     elif known_canvas:
         ctx.cache["vision.canvas"].discard(key)     # the app grew a tree (or the window changed): stop paying
-    if empty or canvas:
+    # Text only, from an app that does not answer: nothing on it to point at. A busy app queues the events it
+    # is sent and applies them to whatever it shows once it catches up, and what it shows then is not what was
+    # read here.
+    if (empty or canvas) and not blind:
         for b in uncovered[: int(vc.get("max_text_targets", 80))]:
             x, y = _center(b["frame"])
             obs.affordances.append(Affordance(f"o{len(obs.affordances)}", "pointer", "click", f"click the text 「{b['text']}」" + (f" at {_where_in(b['frame'], win, grid)}" if grid else ""),
@@ -1607,17 +1766,104 @@ def vision(ctx: Ctx, obs: Observation) -> None:
                                               f"click the empty place in the row of {beside}, in line with {under}",
                                               {"x": e["x"], "y": e["y"], "window_frame": win}))
         _right_click_by_name(ctx, obs, vc, boxes)
-        # right-to-left text read left-to-right comes back as a different sentence, so which way a line runs
-        # is asked of the system (Locale.characterDirection for the languages actually recognised)
-        rtl = res.get("direction") == "rtl"
+    if empty or canvas:
         # only the part the tree could not say: what it could say is already in screen_text, and putting it
         # in twice spends the budget on repeating itself
-        lines = [b["text"] for b in sorted(uncovered, key=lambda b: (b["frame"][1] // 12,
-                                                                     -b["frame"][0] if rtl else b["frame"][0]))]
-        _more_text(ctx, obs, lines)
+        _by_sight(ctx, obs, _in_reading_order(res, uncovered))
     obs.notes.pop("_vision_spots", None)   # internal: notes go back to MCP clients as JSON
     obs.notes["vision_ms"] = res.get("ms")
     obs.notes["vision_boxes"] = len(boxes)
+
+
+# ----------------------------------------------------------------------------- what a step drew
+# At most this many lines of what a step drew go ahead of the tree's text on one look. What is read is meant
+# to be what one step put up, a panel or a popover; the bound keeps a change across most of the window from
+# putting all of that window's text ahead of what its tree says.
+_DRAWN_LINES = 10
+
+
+def _plain(text: str) -> str:
+    """A line as compared: without the marks nobody sees (a calculator's display is full of U+200E) and
+    without case."""
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf").casefold().strip()
+
+
+def _new_here(obs: Observation, lines: list[str]) -> list[str]:
+    """The lines no tree said — every word it gave, whole, not the part of it the cap left in the screen text
+    (`Observation.tree_text`) — and the screen text does not already hold: a line of the tree read again off
+    the screen would be said twice, and counted as read by sight."""
+    said = _plain(obs.tree_text) + "\n" + _plain(obs.screen_text)
+    out: list[str] = []
+    for t in lines:
+        p = _plain(t)
+        if p and p not in said and t not in out:
+            out.append(t)
+    return out
+
+
+def read_the_change(ctx: Ctx, obs: Observation, region: list[int] | None) -> list[str]:
+    """What the last step drew, read off the screen: the text in `region` — where the picture changed and no
+    word of the tree did (sight.compare) — that the tree does not hold, first in the screen text.
+
+    The step's outcome said "the picture in the window changed (3% of it, at the bottom left); no text on
+    screen did" and nothing read it in a window the tree describes well. Whether a window is read by sight is
+    decided for offering click targets — a sparse tree, a canvas, six texts outside every node — and those
+    tests decided whether the decider heard what the step drew: offline (scratchpad/skeptic11/probe.py), a 3
+    to 5 line panel in a window with 12 actionable nodes was read and dropped, and one drawn over a list the
+    tree describes was not read at all. None of them applies here: the picture changed there, and the tree
+    did not. Only what is new is kept, and it goes first: added after a long window, the cap cut it.
+
+    One read, keyed on the actions taken and good while the window looks as it did (`_ocr`, `drawn`): the
+    loop's own read of the window on this look (naming its unlabeled controls) is the same one. What was read
+    stays in the screen text while that part of the window looks the same, and is read again where it does
+    not (`keep_what_was_read`)."""
+    vc = ctx.cfg.section("observe.vision")
+    if not ctx.app or not region or vc.get("mode", "auto") == "never":
+        return []
+    stand = _stand_in(obs)
+    res = _ocr(ctx, obs, vc, sparse=True, window_id=stand["id"] if stand else None, drawn=True)
+    if res is None:
+        return []
+    x, y, w, h = (float(v) for v in region)
+    inside = [b for b in res.get("boxes", []) if b.get("text") and b.get("frame")
+              and x <= _center(b["frame"])[0] <= x + w and y <= _center(b["frame"])[1] <= y + h]
+    lines = _new_here(obs, _in_reading_order(res, inside))[:_DRAWN_LINES]
+    if lines:
+        _by_sight(ctx, obs, lines, first=True)
+        obs.notes["read_where_the_picture_changed"] = list(region)
+        glance = obs.notes.get("glance")
+        ctx.scope.read_there = {"pid": ctx.app["pid"], "window": obs.window, "region": list(region), "lines": lines,
+                                "glance": glance} if glance else None
+    return lines
+
+
+def keep_what_was_read(ctx: Ctx, obs: Observation) -> None:
+    """What read_the_change read stays in the screen text while the part of the window it was read in looks
+    as it did then; where it does not, what is there now is read again.
+
+    Read on one look and missing from the next, a panel still on screen was reported gone: the next step's
+    change is this look's screen text against the last one's. Whether it is still there is what the picture
+    says — the same window, and the glance compared only where it was read (sight.compare `within`). Where it
+    has changed, dropping what was read said the same of a panel that stayed with a line of it changed as of
+    one that closed: all of it gone, and a change with text gone is not one of the picture only, so nothing
+    read it again either. Read again, a panel that closed is gone, one that stayed is not, and what changed on
+    it is what the step did. A window in front that is not the one it was read in leaves it for when that one
+    is back."""
+    kept = ctx.scope.read_there
+    if not kept or not ctx.app or kept["pid"] != ctx.app["pid"] or kept["window"] != obs.window:
+        return
+    same = compare_pictures(kept["glance"], obs.notes.get("glance"), int(ctx.cfg.get("observe.sight.tolerance", 2)),
+                            within=kept["region"])
+    if same is None:                     # no glance, or the window's size changed: not vouched for
+        ctx.scope.read_there = None
+    elif same["cells"]:                  # it changed there: what is there now, kept anew by read_the_change
+        ctx.scope.read_there = None
+        read_the_change(ctx, obs, kept["region"])
+    else:
+        lines = _new_here(obs, kept["lines"])
+        if lines:
+            _by_sight(ctx, obs, lines, first=True)
+            obs.notes["read_where_the_picture_changed"] = list(kept["region"])
 
 
 # ----------------------------------------------------------------------------- scripting dictionary
@@ -2394,11 +2640,16 @@ def observe(ctx: Ctx) -> Observation:
             log.info("provider %s failed: %s", name, exc)
         obs.notes[f"{name}_n"] = len(obs.affordances) - n0
         obs.notes[f"{name}_ms"] = round((time.monotonic() - t) * 1000)
+    keep_what_was_read(ctx, obs)              # before the loop compares this screen with the last one
     declare_keys(ctx, obs, obs.affordances)   # after every provider: where the keys go is read from all of them
     _disambiguate(obs.affordances)
     ids = [a.id for a in obs.affordances]
     if len(ids) != len(set(ids)):
         for i, a in enumerate(obs.affordances):   # providers are independent; make ids unique afterwards
             a.id = f"{a.id}_{i}"
+    # What providers hand each other (a glance being taken, the tree's frames) is theirs: notes go back to MCP
+    # clients as JSON, and a provider that failed half-way left its own behind.
+    for k in [k for k in obs.notes if k.startswith("_")]:
+        del obs.notes[k]
     obs.notes["ms"] = round((time.monotonic() - t0) * 1000)
     return obs

@@ -27,7 +27,7 @@ from .act import Outcome
 from .onscreen import unreadable
 from . import sight
 from .model import Affordance, Change, Observation, Step, Task
-from .observe import SCREEN, Ctx, arrange, declare_keys, get_provider, observe, page_anchor, page_members
+from .observe import SCREEN, Ctx, arrange, declare_keys, get_provider, observe, page_anchor, page_members, read_the_change
 from .skills import Skills
 
 log = logging.getLogger(__name__)
@@ -62,7 +62,8 @@ def change_between(before_text: str, after_text: str, before_window: str | None 
     return Change(app_before=before_app, app_after=after_app, window_before=before_window, window_after=after_window,
                   appeared=[x for x in after if x not in before], gone=[x for x in before if x not in after],
                   picture_share=(picture["share"] if picture and picture.get("cells") else None),
-                  picture_where=(picture.get("where") if picture and picture.get("cells") else None))
+                  picture_where=(picture.get("where") if picture and picture.get("cells") else None),
+                  picture_region=(picture.get("region") if picture and picture.get("cells") else None))
 
 
 def what_changed(before_text: str, after_text: str, before_window: str | None = None, after_window: str | None = None,
@@ -326,14 +327,31 @@ class LoopMixin:
             # and had nothing to read it with. What the tree cannot say, the screen can: read it now.
             key = f"{ctx.app['pid']}|{obs.window}"
             wanted = ctx.scope.vision_wanted
+            # Where it changed (a step recorded before that was measured has no region, and is read as it was).
+            # The tree's fingerprint is the same as before the step, so a read keyed on it is the read from
+            # before the step: this look's reads are keyed on the actions taken and good while the window looks
+            # as it did (observe._ocr `drawn`), and the one read serves both the window's reading below — which
+            # names its unlabeled controls, on this look and later ones — and what the step drew
+            # (observe.read_the_change).
+            region = last.change.get("picture_region")
+            if region:
+                obs.notes["_picture_changed"] = True
             if key not in wanted:
                 wanted.add(key)
                 sight_provider = get_provider("vision")
-                if sight_provider is not None:
+                # …unless this look's own reading of it already did: a window read on every look (a canvas) went
+                # through that reading twice, and every text in it was offered and said twice
+                if sight_provider is not None and "vision_boxes" not in obs.notes:
                     try:
                         sight_provider(ctx, obs)
                     except Exception as exc:  # noqa: BLE001  (a look must not fail because the screen could not be read)
                         obs.notes["vision_error"] = str(exc)[:200]
+            if region:
+                try:
+                    read_the_change(ctx, obs, region)
+                except Exception as exc:  # noqa: BLE001  (the same)
+                    obs.notes["vision_error"] = str(exc)[:200]
+                obs.notes.pop("_picture_changed", None)
         here = exact_state(sig, obs.screen_text)
         self._note_return(task, here, obs.notes.get("glance"))
         self._judge_led_back(task, sig)
