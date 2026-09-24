@@ -152,8 +152,9 @@ planner_plan: |-
   any text the steps will need to type, keyed by a short name such as "text", "query" or "file". Leave
   "blocked" empty unless the screen shows the goal cannot be reached until the user signs in, enters a password
   or grants a permission. In "try" list the concrete moves to attempt right now, in order, using what you know about how this kind of
-  app works: {{"action": "<an exact label from actions_available>"}}, {{"keys": "<key combo, e.g. cmd+shift+x>"}} for a
-  keyboard shortcut, {{"type": "text to type"}}, {{"drag": ["<label to drag>", "<label to drop onto>"]}}, or
+  app works: {{"action": "<an entry of on_screen, or a menu item written Menu ▸ Item>"}}, {{"keys": "<key combo, e.g.
+  cmd+shift+x>"}} for a keyboard shortcut (menus give each command's), {{"type": "text to type"}}, {{"drag": ["<label
+  to drag>", "<label to drop onto>"]}}, or
   {{"open_url": "<a whole link>"}} — use that last one only with a scheme the context lists under url_schemes,
   which is the app saying it can be driven that way without its windows.
   Leave it empty if nothing concrete comes to mind. The engine will not do the following without stopping to
@@ -168,15 +169,15 @@ planner_replan: |-
   different route if the last one failed (other windows, other menus, a command palette or search field, a
   keyboard shortcut, opening the main window first), each as {{"goal": "<what to do, in a few words>",
   "evidence": "<the few words the screen will show once it is done>"}}. Sub-goals marked done are done: never give
-  them again. Give any text needed. In "try" list concrete moves to attempt now, in order: {{"action": "<exact
-  label from actions_available>"}}, {{"keys": "<key combo>"}}, {{"type": "text to type"}}, or {{"drag": ["<label to
-  drag>", "<label to drop onto>"]}}. Prefer entry points that actually appear in actions_available (its menus list
-  the real shortcuts) over habits from other apps. After typing into a command palette or search field, add
-  {{"keys": "return"}}. Type only text the goal or the screen holds, never a value you worked out: where the app
-  works a value out from what is typed, type what it evaluates (an expression and the key that evaluates it, a
-  formula over cells the screen shows) and read the result off the screen. Never repeat anything in
-  tried_without_effect. moves_that_could_not_be_used says why moves you gave before could not be used: give none
-  again that it says never to repeat.
+  them again. Give any text needed. In "try" list concrete moves to attempt now, in order: {{"action": "<an entry
+  of on_screen, or a menu item written Menu ▸ Item>"}}, {{"keys": "<key combo>"}}, {{"type": "text to type"}}, or
+  {{"drag": ["<label to drag>", "<label to drop onto>"]}}. Prefer entry points that appear in on_screen and menus
+  (menus give each command's key equivalent) over habits from other apps. After typing into a command palette or
+  search field, add {{"keys": "return"}}. Type only text the goal or the screen holds, never a value you worked
+  out: where the app works a value out from what is typed, type what it evaluates (an expression and the key that
+  evaluates it, a formula over cells the screen shows) and read the result off the screen. Never repeat anything
+  in tried_without_effect. moves_that_could_not_be_used says why moves you gave before could not be used: give
+  none again that it says never to repeat.
   If what was tried shows the app is gated by something only the user can do (a sign-in or sign-up screen, a
   password, a system permission, a purchase), put a one-line explanation of what the user must do in "blocked"
   and leave "try" empty; otherwise leave "blocked" empty. The engine will not do the following without stopping

@@ -522,7 +522,7 @@ def probe_planners(cfg: Config, helper: Any) -> list[dict[str, Any]]:
             continue
         t0 = _time.monotonic()
         try:
-            plan = Planning(cfg, p).plan("open the Calculator app", {"app": "Finder", "actions_available": ["open app Calculator"]})
+            plan = Planning(cfg, p).plan("open the Calculator app", {"app": "Finder", "apps_the_goal_names": ["open app Calculator"]})
             out.append({"planner": name, "status": "ok", "ms": round((_time.monotonic() - t0) * 1000),
                         "model": getattr(p, "model", None), "steps": plan["steps"][:3]})
         except PlannerError as exc:

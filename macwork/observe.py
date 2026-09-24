@@ -234,6 +234,12 @@ _KEY_EQUIVALENT = re.compile(r" \((?:[⇧⌥⌃]*⌘|[⇧⌥⌃]+)(?:F\d{1,2}|\S
                              + r"])\)$")
 
 
+def key_equivalent(label: str) -> str:
+    """The key equivalent a menu item's label ends with, as its menu shows it ('⇧⌘P'), or "" when it has none."""
+    m = _KEY_EQUIVALENT.search(label or "")
+    return m.group(0)[2:-1] if m else ""
+
+
 _COMBO_MODS = [(8, None), (4, "ctrl"), (2, "alt"), (1, "shift")]
 
 
@@ -2220,7 +2226,8 @@ def services(ctx: Ctx, obs: Observation) -> None:
             # read as sending, and the floor stopped 「New TextEdit Window Containing Selection」 and 「Look Up in
             # Dictionary」 as outward-facing on three cross-app tasks in a row. The Service's name is the fact.
             f"v{len(obs.affordances)}", "service", "perform", f"「{s['name']}」 — a Service of {s['app']} on this Mac",
-            {"name": s["name"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
+            # whose it is, for the planner's brief: the Services of the apps a goal names are named there (brief.py)
+            {"name": s["name"], "app": s["app"]}, slots={slot: Slot("text", f"{asks} (it accepts {', '.join(sends) or 'anything'})")},
             context=f"{s['app']} (a system service)"))
 
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable
 
+from .brief import as_named, shares
 from .decider import DeciderError, noul
 from .model import Affordance, Observation, Step, Task, exact_state
 from .observe import Ctx, canonical_combo, named_combo, plain_name
@@ -37,14 +38,15 @@ def find_named(affs: list[Affordance], said: str) -> list[Affordance]:
     was shown it (`observe.plain_name`: no 'menu ' before a menu item's place, no key equivalent, nothing the
     engine adds about what a control shows or where a key goes, '...' as '…'); else, for a menu item, the one at
     that place in the menus (`target['menu_path']`: a checked item's mark is not part of its place). Never an
-    option whose label merely holds the words."""
+    option whose label merely holds the words. A name copied out of the brief with the count of the run it
+    stands for is that name (`brief.as_named`)."""
     said = str(said or "").strip()
     if not said:
         return []
     exact = [a for a in affs if a.label == said]
     if exact:
         return exact
-    want = plain_name(said)
+    want = plain_name(as_named(said))
     named = [a for a in affs if plain_name(a.label) == want]
     if named:
         return named
@@ -223,13 +225,11 @@ class ConsultMixin:
             brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 600))]
             seen = self._evidence(obs)
             if acting:
-                skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
-                # …except the apps the goal names, first. Shown only the apps that happened to be running, a
-                # planner routed a lookup the goal put in 「词典」 through the person's own browser and terminal,
-                # because nothing it was shown said 词典 is an app on this Mac.
-                named = [a for a in (affs or obs.affordances) if a.target.get("named")]
-                pool = named + [a for a in (affs or obs.affordances) if a.channel not in skip]
-                brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
+                # Each place its share (brief.py): the apps the goal names first — shown only the apps that happened
+                # to be running, a planner routed a lookup the goal put in 「词典」 through the person's own browser
+                # and terminal, because nothing it was shown said 词典 is an app on this Mac — then the app's window,
+                # its menus, and what other processes show.
+                brief.update(shares(self.cfg, affs or obs.affordances, ctx.app if ctx else None, ctx.running if ctx else []))
             else:
                 brief.update({k: v for k, v in seen.items() if k != "controls_on_screen"})
             # What the app has open, and whether it answered at all, in the decider's words for either kind of
