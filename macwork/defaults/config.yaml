@@ -428,6 +428,15 @@ input:
   focus_by_click: true           # single-line fields: click them before typing (some apps ignore AX focus)
   focus_wait_s: 0.8              # how long to wait for the field to really have the keyboard before typing
   submit_wait_s: 0.8             # …and for the typed text to be in it before Return is sent
+  handback_ms: 1000              # when the helper had to select an ASCII keyboard layout to type, how long after the
+                                 # last key it may keep it while the focused element does not yet show the keys,
+                                 # before the person's own input source goes back. A ceiling: they show within tens
+                                 # of ms. Given back at once, an app still 1-4 keys behind the 6 ms-a-key stream read
+                                 # the last of them through the input method, and 21 of 265 typing steps on
+                                 # 09-20..23 left the end of the text composing. Sent to input.type by act._type
+  handback_quiet_ms: 250         # …and how long for a focused element that shows no text, or whose text changed and
+                                 # then stopped changing without ever showing the keys (the app rewrote them): about
+                                 # ten times the longest backlog measured at hand-back, 4 keys at 6 ms
 
 grants:                          # standing grants: a confirmation the person chose to have remembered, for one
                                  # action in one app (`macwork grants` lists them, `… revoke` takes one back).

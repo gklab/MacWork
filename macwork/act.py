@@ -30,6 +30,7 @@ class Outcome:
     wait: bool = True                    # False: the effect is not a UI change worth waiting for
     final: bool = False                  # the result itself answers the goal (e.g. web research)
     unseen: bool = False                 # its effect may not show in an observation (see Step.unseen)
+    typed: dict[str, Any] | None = None  # keys typed: how the helper handed the keyboard back (see _type), never the text
 
 
 Channel = Callable[[Ctx, Affordance, dict[str, Any]], Outcome]
@@ -114,8 +115,20 @@ def _utf16(s: str) -> int:
     return len(s.encode("utf-16-le")) // 2
 
 
-def _type(ctx: Ctx, text: str) -> None:
-    ctx.helper.call("input.type", text=text, non_ascii=str(ctx.cfg.get("input.non_ascii", "paste")), timeout=60)
+def _type(ctx: Ctx, text: str) -> dict[str, Any]:
+    """Type at the keyboard focus, and say how the keys were handed over: the helper's reply, which never holds
+    the text ({} when there is none to read).
+
+    The helper types through an ASCII keyboard layout so that an input method cannot compose the keys, and it
+    gave the person's own input source back as soon as the last key was posted. An app still 1-4 keys behind the
+    6 ms-a-key stream then read the last of them through the input method: 21 of 265 typing steps on 09-20..23
+    left the end of the text composing. Asked with `handback_ms` and `quiet_ms`, a helper of protocol 0.2.0 keeps
+    the layout until the focused element shows the keys, and says how that ended (`landed`, `handback_ms`,
+    `switched`); an older one ignores both and says none of it, which is how typing went before."""
+    res = ctx.helper.call("input.type", text=text, non_ascii=str(ctx.cfg.get("input.non_ascii", "paste")),
+                          handback_ms=int(ctx.cfg.get("input.handback_ms", 1000)),
+                          quiet_ms=int(ctx.cfg.get("input.handback_quiet_ms", 250)), timeout=60)
+    return res if isinstance(res, dict) else {}
 
 
 def _focus_field(ctx: Ctx, t: dict[str, Any]) -> None:
@@ -323,12 +336,12 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         _bring_forward(ctx, t["pid"])
         _focus_field(ctx, t)
         ctx.helper.call("input.key", combo="cmd+a")
-        _type(ctx, text)
+        typed = _type(ctx, text)
         if text.strip():   # Return once the field holds it — submitting a half-typed value is how a wrong search runs
             _until(ctx, lambda: text.strip() in str((ctx.helper.call("ax.get", ref=t["ref"], attribute="AXValue") or {}).get("value") or ""),
                    float(ctx.cfg.get("input.submit_wait_s", 0.8)))
         ctx.helper.call("input.key", combo="return")
-        return Outcome(True, watch_pid=t["pid"])
+        return Outcome(True, watch_pid=t["pid"], typed=typed)
     # like a person: focus the field, select what is in it, type. Setting the value behind the app's back looks
     # right in the Accessibility tree but many fields never hear of it (Finder's "Go to Folder", browser address
     # bars): the app keeps using its old text. The direct set is only the fallback when the app cannot be brought
@@ -338,8 +351,7 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
             _bring_forward(ctx, t["pid"])
             _focus_field(ctx, t)
             ctx.helper.call("input.key", combo="cmd+a")
-            _type(ctx, text)
-            return Outcome(True, watch_pid=t["pid"])
+            return Outcome(True, watch_pid=t["pid"], typed=_type(ctx, text))
         except NotInFront:
             pass
     try:
@@ -352,8 +364,7 @@ def window_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
     _bring_forward(ctx, t["pid"])
     _focus_field(ctx, t)
     ctx.helper.call("input.key", combo="cmd+a")
-    _type(ctx, text)
-    return Outcome(True, watch_pid=t["pid"])
+    return Outcome(True, watch_pid=t["pid"], typed=_type(ctx, text))
 
 
 @channel("keys")
@@ -362,10 +373,10 @@ def keys_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outcome:
         return _no_app("a key")
     _bring_forward(ctx, ctx.app["pid"])
     if a.verb in ("type", "type_submit"):
-        _type(ctx, str(params.get("text", "")))
+        typed = _type(ctx, str(params.get("text", "")))
         if a.verb == "type_submit":
             ctx.helper.call("input.key", combo="return")
-        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
+        return Outcome(True, watch_pid=(ctx.app or {}).get("pid"), typed=typed)
     ctx.helper.call("input.key", combo=a.target["combo"])
     return Outcome(True, watch_pid=(ctx.app or {}).get("pid"))
 
@@ -592,7 +603,7 @@ def menusearch_channel(ctx: Ctx, a: Affordance, params: dict[str, Any]) -> Outco
     try:
         ctx.helper.call("ax.set", ref=t["field_ref"], attribute="AXValue", value=str(params.get("text", "")))
     except HelperError:
-        ctx.helper.call("input.type", text=str(params.get("text", "")))
+        _type(ctx, str(params.get("text", "")))    # typed like every other text: the keyboard handed back once read
     return Outcome(True, watch_pid=t["pid"])
 
 
