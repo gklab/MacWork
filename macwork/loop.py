@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, NamedTuple
 
 from .appmodel import signature
@@ -1045,6 +1045,12 @@ class LoopMixin:
                 params[carried] = chosen.target[carried]
         return params, {k: s.desc for k, s in chosen.slots.items() if s.required and k not in params}
 
+    @staticmethod
+    def _held_with(chosen: Affordance, filled: dict[str, dict[str, Any]]) -> Affordance:
+        """The action as it waits on the caller, with the texts chosen for its empty slots (`target['filled']`): taken
+        up again, it is carried out with them, as the caller was asked about it, not with texts chosen again."""
+        return replace(chosen, target={**chosen.target, "filled": filled}) if filled else chosen
+
     def _pick(self, task: Task, look: Look, key: str, move: str, ranked: Callable[[], list[str]], risky_screen: float,
               progress: Progress) -> Affordance | _Again | dict[str, Any]:
         """The action to take, through the gates: reading the screen on request, floor actions the goal never asked
@@ -1132,25 +1138,23 @@ class LoopMixin:
                 return self._finish(task, "need_confirm", "this action is irreversible or outward-facing",
                                     self._confirm_pending(chosen.public(), gated, offer))
         params, missing = self._params(task, chosen)
+        # {slot: {text, planner: its source when the planner wrote it, else None}} for the slots filled below. Held
+        # with the action while the caller is asked (`_held_with`): the yes is to the step with that text in it, and
+        # asked for again after it, the decider chose again (with no window in its state now), and a text the caller
+        # never saw was typed, or none (offline, with fakes).
+        filled: dict[str, dict[str, Any]] = {}
         for k in list(missing):
-            # A text the task holds, the decider choosing which (`_which_text`); else, since Jev writes no text, the
-            # planner may write one; only then is the caller asked
-            held = self._which_text(task, ctx, obs, chosen, k)
-            if held is not None:
-                params[k] = held["text"]
-                if held.get("planner") is not None:   # where the injection checks look, as for any planner text typed
-                    task.outputs.setdefault("typed_by_planner", []).append(
-                        {"into": chosen.label, "text": held["text"], "source": held["planner"]})
-                missing.pop(k)
-                continue
-            text = self._fill(task, ctx, obs, chosen, k)
-            if text:
-                params[k] = text
-                task.outputs.setdefault("typed_by_planner", []).append(
-                    {"into": chosen.label, "text": text, "source": (task.memory.admitted.get(text) or {}).get("source", "")})
+            # The text chosen before the caller was asked; else a text the task holds, the decider choosing which
+            # (`_which_text`); else, since Jev writes no text, the planner may write one; only then is the caller asked
+            got = (chosen.target.get("filled") or {}).get(k) or self._which_text(task, ctx, obs, chosen, k)
+            if got is None:
+                text = self._fill(task, ctx, obs, chosen, k)
+                got = {"text": text, "planner": (task.memory.admitted.get(text) or {}).get("source", "")} if text else None
+            if got is not None:
+                params[k], filled[k] = got["text"], got
                 missing.pop(k)
         if missing:
-            task.held = chosen
+            task.held = self._held_with(chosen, filled)
             return self._finish(task, "need_input", "this step needs text only the caller can provide",
                                 {"affordance": chosen.public(), "inputs": missing})
         # a value the caller or planner supplied can change what the action does: typed text can be a command,
@@ -1170,17 +1174,21 @@ class LoopMixin:
                     return None
                 granted, offer = self.standing(task.id, ctx, typed, floor)    # …and so is a standing grant
                 if not granted:
-                    task.held = chosen
+                    task.held = self._held_with(chosen, filled)
                     task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
                     return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
                                         self._confirm_pending({**chosen.public(), "text": text[:200]}, floor, offer))
+        # Where the injection checks look: `evals.check` builds its trace from the step labels and typed_by_planner.
+        # Text typed from a move reached it only through its label, which keeps 40 characters of it, and 24 of the
+        # 139 typing moves chosen in the audit typed more than that. Written here, once the floor has passed the step
+        # with its text in it: text it held was not typed. A planner's text chosen or written for a slot was written
+        # before the floor judged it, and a step the floor declined was recorded as typed (offline, with fakes).
+        typed_by_planner = [{"into": chosen.label, "text": got["text"], "source": got["planner"]}
+                            for got in filled.values() if got.get("planner") is not None]
         if "text" in chosen.target and "try" in chosen.target:
-            # Where the injection checks look: `evals.check` builds its trace from the step labels and
-            # typed_by_planner. Text typed from a move reached it only through its label, which keeps 40
-            # characters of it, and 24 of the 139 typing moves chosen in the audit typed more than that. Written
-            # here, once the floor has passed the move with its text in it: text it held was not typed.
-            task.outputs.setdefault("typed_by_planner", []).append(
-                {"into": chosen.label, "text": chosen.target["text"], "source": chosen.target.get("source", "")})
+            typed_by_planner.append({"into": chosen.label, "text": chosen.target["text"], "source": chosen.target.get("source", "")})
+        if typed_by_planner:
+            task.outputs.setdefault("typed_by_planner", []).extend(typed_by_planner)
         # by the try it is, not its label: a key suggestion is labelled with the menu item it turns out to be
         # ("press cmd+shift+g (suggested by the planner) (menu Go ▸ Go to Folder…)"), so matching on the
         # bare suggestion never removed it and a real task pressed cmd+shift+g on four steps out of eight. Nor

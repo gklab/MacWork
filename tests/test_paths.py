@@ -88,3 +88,18 @@ def test_the_engine_does_not_decide_where_a_path_ends_by_script():
     from macwork import observe
     src = inspect.getsource(observe.files)
     assert "\\u4e00" not in src and "一" not in src, "the files provider still names one script"
+
+
+@pytest.mark.parametrize("goal", ["turn the volume down to ~30% in the Sound settings", "send the notes to ~alice"])
+def test_a_tilde_before_a_word_that_names_no_user_is_no_path(tmp_path, goal):
+    """Expanding 「~30%」 or 「~alice」 asks for the home of a user of that name, and raised when there is none: the
+    files provider failed the task with it, and once the texts a task holds were read from its goal on every step,
+    so did a task with no files provider at all."""
+    from macwork.engine import Engine
+    from macwork.observe import named_paths
+    from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+
+    assert named_paths(goal) == [] and found(tmp_path, goal) == set()
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([{"pick": "done"}]))
+    res = eng.do(goal)
+    assert res["status"] == "done", (res["status"], res.get("reason"))

@@ -268,7 +268,10 @@ planner:
     on_screen: 16                # entries from the app's own window, after one per name and long runs folded
     menu_entries: 17             # entries per top-level menu, those with a key equivalent first. The smallest count that
                                  # holds 95% of the 75 menu items the decider chose since c632ed9, placed as the brief
-                                 # orders them: 6 held 38, 12 held 63, 16 held 71, 17 holds 74. Finder's Go ▸ Go to
+                                 # orders them, one in a folded submenu where its fold stands: 6 held 38, 12 held 63,
+                                 # 16 held 71, 17 holds 74. By name it shows fewer: 24 of the 75 sat in a folded
+                                 # submenu (19 in Recent Items) whose entry names its first two, 6 of them; leaving out
+                                 # the 18 no count can name, 16 holds 53 of 57 and 17 holds 56. Finder's Go ▸ Go to
                                  # Folder…, 10 of the 75, stood 14th or 17th: its menu is nearly all keyed items
     fold_over: 4                 # a submenu, or a run of rows or cells, of more than this is one entry saying how many
     elsewhere: 3                 # lines for other processes' controls on screen, and the Services

@@ -226,16 +226,19 @@ def test_every_kind_of_move_is_said_as_what_it_is(tmp_path):
 
 # ----------------------------------------------------------------- moves name options by what they are
 class Form(FakeHelper):
-    """A window whose Return presses 「OK」 and whose Recipient field holds 'x', under a menu bar with a View menu
-    whose Scientific item is checked."""
+    """A window whose Return presses 「OK」 and whose Recipient field holds 'x', under a menu bar whose File menu
+    also has Save As… (written with the ellipsis) and whose View menu has Scientific and Show Guides... (three full
+    stops) checked."""
 
     def call(self, method, timeout=30.0, **p):
         if method == "ax.snapshot" and p.get("scope") == "menubar":
             self.calls.append((method, p))
-            view = [{"ref": "v1", "role": "AXMenuBarItem", "title": "View", "parent": "g1.0"},
+            view = [{"ref": "v0", "role": "AXMenuItem", "title": "Save As…", "cmd": {"char": "S", "mods": 1}, "parent": "g1.5"},
+                    {"ref": "v1", "role": "AXMenuBarItem", "title": "View", "parent": "g1.0"},
                     {"ref": "v2", "role": "AXMenu", "parent": "v1"},
                     {"ref": "v3", "role": "AXMenuItem", "title": "Scientific", "mark": "✓", "cmd": {"char": "2", "mods": 0},
-                     "parent": "v2"}]
+                     "parent": "v2"},
+                    {"ref": "v4", "role": "AXMenuItem", "title": "Show Guides...", "mark": "✓", "parent": "v2"}]
             return {"nodes": MENUBAR["nodes"] + view, "ms": 3}
         if method == "ax.snapshot" and p.get("scope") == "focused_window":
             self.calls.append((method, p))
@@ -342,19 +345,22 @@ def test_an_option_the_planner_names_by_its_place_or_its_steady_name_is_marked(t
     Document'), a field named without what it held at that moment, or a key named without what the look says it
     presses marked nothing, and was not pinned where the budget could not cut it. A move names an option by its
     exact label, else its name as the planner was shown it, else, for a menu item, its place; never by a part of
-    a label."""
+    a label. Three full stops are the ellipsis, on either side: 'Save As...' names the item titled 'Save As…', and
+    'Show Guides…' the checked item titled 'Show Guides...'."""
     eng = Engine(cfg(tmp_path), helper=Form(), decider=ScriptedDecider([]))
     task = eng._new_task("write to x", {}, None)
     task.tries = [{"action": "File ▸ New Document"}, {"action": "type into text field 「Recipient」"},
                   {"action": "press the return key"}, {"action": "View ▸ Scientific"}, {"action": "New"},
-                  {"action": "menu File ▸ Save As..."}]
+                  {"action": "menu File ▸ Save As..."}, {"action": "View ▸ Show Guides…"}]
     look = eng._look(task, eng._step_context(task))
     marked = sorted(look.by_id[k].label for k, v in look.options.items() if k in look.by_id and v.endswith(" — suggested by the planner"))
-    assert marked == ["menu File ▸ New Document (⌘N)", "menu View ▸ Scientific ✓ (⌘2)", "press the return key (default button 「OK」)",
+    assert marked == ["menu File ▸ New Document (⌘N)", "menu File ▸ Save As… (⇧⌘S)", "menu View ▸ Scientific ✓ (⌘2)",
+                      "menu View ▸ Show Guides... ✓", "press the return key (default button 「OK」)",
                       "type into text field 「Recipient」 (now: x)"], marked
     assert {look.by_id[k].label: i for k, i in look.moves.items()} == {
         "menu File ▸ New Document (⌘N)": 0, "type into text field 「Recipient」 (now: x)": 1,
-        "press the return key (default button 「OK」)": 2, "menu View ▸ Scientific ✓ (⌘2)": 3}
+        "press the return key (default button 「OK」)": 2, "menu View ▸ Scientific ✓ (⌘2)": 3,
+        "menu File ▸ Save As… (⇧⌘S)": 5, "menu View ▸ Show Guides... ✓": 6}
     assert set(look.moves) <= look.pinned
 
     from macwork.consult import find_named          # the same item, as the menus line of a brief writes it
@@ -427,6 +433,24 @@ def test_a_planners_text_is_offered_to_the_decider_not_typed_unasked(tmp_path):
     assert task.outputs["typed_by_planner"] == [{"into": "type into text field 「Recipient」", "text": "reports", "source": "the goal"}]
 
 
+def test_with_the_planner_writing_no_text_its_text_fills_no_field(tmp_path):
+    """planner.fill_inputs false: the planner writes no text a step needs, and such a step waits for the caller. Its
+    plan's text, held as the texts a task holds are, was offered for an empty field all the same, and for typing at
+    the cursor, and was typed there, the decider choosing it."""
+    d = Chooses(text="reports")
+    eng = Engine(cfg(tmp_path, config={**TYPING, "planner": {"fill_inputs": False}}), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([])
+    task = eng._new_task("name the new folder reports", {}, None)
+    eng._plan_inputs(task, eng._step_context(task), {"folder_name": "reports"})
+    look = eng._look(task, eng._step_context(task))
+    assert not [a.label for a in look.flat if a.channel == "keys" and a.verb in ("type", "type_submit")]
+    chosen = next(a for a in look.flat if a.label == "type into text field 「Recipient」")
+    res = eng._perform(task, look.ctx, look, chosen, lambda _: None)
+    assert res and res["status"] == "need_input" and not eng.helper.did("input.type")
+    assert not [o for offered in d.offered for o in offered if "reports" in o], d.offered
+    assert eng._brief(task, look.ctx, look.obs).get("texts_the_task_holds") == ["reports"], "what the planner is told it holds"
+
+
 def test_an_empty_field_takes_a_text_the_task_holds_before_the_planner_is_asked(tmp_path):
     """0ab712dadc94 ended need_input at the Go to Folder field while its plan's input held exactly the path it
     needed. With no planner at all, the field takes the goal's own path, the decider choosing it."""
@@ -436,6 +460,51 @@ def test_an_empty_field_takes_a_text_the_task_holds_before_the_planner_is_asked(
     res = eng.do(f"put {path} in the Recipient field")
     assert res["status"] == "done", (res["status"], res.get("reason"))
     assert eng.helper.did("input.type")[0]["text"] == path and len(d.offered) == 1
+
+
+def floor_stops(d, text: str) -> None:
+    """The floor, as this decider classifies it, stops a step with `text` typed in it (and nothing else)."""
+    d.what, d.what_when = {"execute": 0.9, "enter": 0.1}, f"typing 「{text}」"
+
+
+@pytest.mark.parametrize("how", ["chosen", "written"])
+def test_a_planners_text_the_floor_held_back_is_not_recorded_as_typed(tmp_path, how):
+    """typed_by_planner is what the injection checks read as the planner's text that was typed. The text a slot was
+    given — chosen among the texts the task holds, or written by the planner — was recorded as the slot was filled,
+    before the floor judged the step with it in: a step it declined (the goal never asked for it) typed nothing, and
+    the record said the text was typed."""
+    d = Chooses(text="reports" if how == "chosen" else None)
+    floor_stops(d, "reports")
+    d.calls_for = 0.0                                   # and the goal does not call for it: declined, not asked about
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([{"text": "reports"}])
+    task = eng._new_task("name the new folder reports", {}, None)
+    ctx = eng._step_context(task)
+    eng._plan_inputs(task, ctx, {"folder_name": "reports"})
+    assert eng._perform(task, ctx, None, field("Recipient"), lambda _: None) is None
+    assert len(eng._planner.prompts) == (1 if how == "written" else 0) and len(d.offered) == 1
+    assert not eng.helper.did("input.type") and "typed_by_planner" not in task.outputs, task.outputs.get("typed_by_planner")
+
+
+@pytest.mark.parametrize("how", ["chosen", "written"])
+def test_the_text_a_caller_says_yes_to_is_the_text_typed(tmp_path, how):
+    """The floor stops a step for the text in it, and the caller's yes is to that step with that text. Taken up
+    again, the step chose its text anew — the decider asked again, now with no window in its state, or the planner
+    asked to write it again — and what was typed, if anything, was not what the caller had said yes to; the text
+    was also recorded twice. The text goes with the step while the caller is asked."""
+    d = Chooses([{"pick": "Recipient"}, {"pick": "done"}], text="reports" if how == "chosen" else None)
+    floor_stops(d, "reports")
+    eng = Engine(cfg(tmp_path, config={"planner": {"second_opinion_on_done": False}}), helper=FakeHelper(), decider=d)
+    eng._planner = FakeBackend([{"text": "reports"}, {"text": "folders"}])   # asked twice, it writes another text
+    task = eng._new_task("name the new folder reports", {}, None)
+    eng._plan_inputs(task, eng._step_context(task), {"folder_name": "reports"})
+    res = eng._run_queued(task, None, None)
+    assert res["status"] == "need_confirm" and res["pending"]["confirm"]["text"] == "reports", res
+    res = eng.resume(task.id, confirm=True)
+    assert res["status"] == "done", (res["status"], res.get("reason"))
+    assert [p["text"] for p in eng.helper.did("input.type")] == ["reports"]
+    assert len(d.offered) == 1 and len(eng._planner.prompts) == (1 if how == "written" else 0)
+    assert task.outputs["typed_by_planner"] == [{"into": "type into text field 「Recipient」", "text": "reports", "source": "the goal"}]
 
 
 def test_which_text_is_asked_only_where_the_floor_rejudges_the_value(tmp_path):
@@ -466,21 +535,39 @@ def test_which_text_is_asked_only_where_the_floor_rejudges_the_value(tmp_path):
     assert d.offered == [["「hello」 — the caller's input 「note」", "none of these: the step needs another text"]], d.offered
 
 
+def test_the_choices_are_texts_to_type_each_once(tmp_path):
+    """What the decider chooses among is texts to type: the caller's answer to the engine's own question of what the
+    goal means ('clarification') is none, and a text the task holds more than once — under two of the caller's
+    inputs, and as a path the goal names — is one choice, the first. A link's slot is chosen for as a text's is."""
+    path = a_folder(tmp_path)
+    d = Chooses(text=path)
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=d)
+    task = eng._new_task(f"open {path}", {"folder": path, "where": path, "clarification": "the reports folder"}, None)
+    link = Affordance("u1", "file", "open", "open the given link", {"path": ""}, slots={"url": Slot("url", "the link to open")})
+    assert eng._which_text(task, eng._step_context(task), None, link, "url") == {"text": path, "from": "the caller's input 「folder」"}
+    assert d.offered == [[f"「{path}」 — the caller's input 「folder」", "none of these: the step needs another text"]], d.offered
+
+
 def test_no_planner_prompt_carries_the_callers_inputs(tmp_path):
     """A planner on another machine is sent what the redactor lets through, and it catches names and patterns, not a
     password or a token. The caller's inputs go to the decider, which is shown them on every look; the texts the
     planner is told the task holds are the goal's paths and its own traced text, never the caller's — nor a text of
-    its own that traces to them: told it back as held, a planner would learn what the caller's inputs hold."""
-    secret = "hunter2-Qx7-zz"
+    its own that traces to them: told it back as held, a planner would learn what the caller's inputs hold. Here the
+    planner's text is a piece of the caller's password, which no comparison with the caller's whole values finds.
+
+    What this does not cover: a caller's input the decider chooses for a field that shows what is typed into it is
+    then on the screen, and a planner is told the screen as it is (design-v5, the planner's protocol)."""
+    secret, piece = "hunter2-Qx7-zz", "hunter2-Qx7"
     d = Chooses([{"pick": "New Document", "move": "rethink"}, {"pick": "Recipient"}, {"pick": "done"}])
     eng = Engine(cfg(tmp_path, config={"planner": {"second_opinion_on_done": True}}), helper=FakeHelper(), decider=d)
-    eng._planner = FakeBackend([{"steps": ["fill in the recipient"], "inputs": {"folder_name": "reports", "guess": secret},
+    eng._planner = FakeBackend([{"steps": ["fill in the recipient"], "inputs": {"folder_name": "reports", "guess": piece},
                                  "try": [], "blocked": ""},
                                 {"text": "zw@example.com"}, {"done": True, "why": "it is filled in"}])
     res = eng.do("fill in the recipient for the reports folder", {"password": secret})
     assert len(eng._planner.prompts) == 3, (res["status"], len(eng._planner.prompts))
     assert d.offered and any(secret in o for o in d.offered[0]), "the caller's inputs are the decider's to choose among"
-    assert not [p for p in eng._planner.prompts if secret in p], "a planner prompt carried the caller's inputs"
+    assert eng.tasks[res["task_id"]].memory.admitted[piece]["source"] == "the caller's inputs"   # held, as theirs
+    assert not [p for p in eng._planner.prompts if piece in p], "a planner prompt carried the caller's inputs, or a piece of them"
     assert "texts_the_task_holds" in eng._planner.prompts[1] and "reports" in eng._planner.prompts[1]
 
 
@@ -516,10 +603,11 @@ def test_the_texts_a_task_holds_are_its_goals_paths_and_the_planners_traced_text
     assert held[0]["from"] == "a path the goal names" and held[1].get("planner") == "the goal"
 
 
-def test_a_text_no_screen_holds_any_more_is_told_back_as_not_available(tmp_path):
+def test_a_text_no_screen_holds_any_more_is_told_back_as_not_on_the_screen_now(tmp_path):
     """A move's text a screen held when the answer came is offered; once that screen shows something else and
-    nothing else the task saw holds it, the move is not offered, and the next replan hears it was not available —
-    not that it is never to be given again."""
+    nothing else the task saw holds it, the move is not offered, and the next replan hears that it is not on the
+    screen now — not that it is never to be given again, nor that it was not available when it was suggested,
+    which it was."""
     d = Judge()
     helper = Display()
     helper.shows = "391"
@@ -535,4 +623,49 @@ def test_a_text_no_screen_holds_any_more_is_told_back_as_not_available(tmp_path)
     assert not [a.label for a in look.flat if "391" in a.label]
     task.steps.append(went(0))
     assert eng._consult(task, look.ctx, look.obs, "the actions on screen do not lead toward the goal")
-    assert told(eng._planner.prompts[1]) == {"type 391": "not available when suggested"}
+    assert told(eng._planner.prompts[1]) == {"type 391": "not on the screen now, though it was earlier"}
+
+
+def test_an_option_a_move_named_on_an_earlier_look_is_told_back_as_not_on_the_screen_now(tmp_path):
+    """A move that named an option on one look and names none on a later one (its menu gone with another app in
+    front) was told back as not available when suggested: the planner heard that a move it could use had never been
+    there. It is not on the screen now; a move that has named nothing yet was not available when suggested."""
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    task = eng._new_task("make a new document", {}, None)
+    task.tries = [{"action": "File ▸ New Document"}, {"action": "File ▸ Import"}]
+    look = eng._look(task, eng._step_context(task))
+    assert [look.by_id[k].label for k in look.moves] == ["menu File ▸ New Document (⌘N)"]
+    assert task.memory.unusable == {"File ▸ Import": "not available when suggested"}
+    elsewhere = [a for a in look.affs if a.channel != "menu"]           # a look where the app's menus are not there
+    eng._named_by_planner(task, elsewhere)
+    assert task.memory.unusable == {"File ▸ Import": "not available when suggested",
+                                    "File ▸ New Document": "not on the screen now, though it was earlier"}, task.memory.unusable
+    task = load(dump(task))                                              # and across a restart
+    eng._named_by_planner(task, look.affs)
+    assert task.memory.unusable == {"File ▸ Import": "not available when suggested"}
+    eng._named_by_planner(task, elsewhere)
+    assert task.memory.unusable["File ▸ New Document"] == "not on the screen now, though it was earlier"
+
+
+def test_what_was_told_back_for_now_goes_with_the_answer_that_gave_it(tmp_path):
+    """A move told back as not available went on being told once a newer answer had replaced it: the option it named
+    came on screen, and the brief that listed the option said the move was not available. What can never be used is
+    still told."""
+    helper = Display()
+    eng = Engine(cfg(tmp_path), helper=helper, decider=ScriptedDecider([]))
+    eng._planner = FakeBackend([{"steps": ["open the report"], "inputs": {}, "blocked": "",
+                                 "try": [{"action": "button 「Open」"}, {"keys": "menu item 「General」"}]},
+                                {"steps": ["save it first"], "inputs": {}, "try": [{"keys": "cmd+s"}], "blocked": ""}])
+    task = eng._new_task("open the report", {}, None)
+    ctx = eng._step_context(task)
+    assert eng._consult(task, ctx, observe(ctx), "the actions on screen do not lead toward the goal")
+    look = eng._look(task, eng._step_context(task))                      # no Open button on this screen
+    assert task.memory.unusable == {"press menu item 「General」": "not a key combination: never repeat it",
+                                    "button 「Open」": "not available when suggested"}, task.memory.unusable
+    task.steps.append(went(0))
+    assert eng._consult(task, look.ctx, look.obs, "the actions on screen do not lead toward the goal")   # a newer answer
+    helper.extra = [{"ref": "g2.8", "role": "AXButton", "rdesc": "button", "title": "Open", "actions": ["AXPress"], "parent": "g2.0"}]
+    look = eng._look(task, eng._step_context(task))
+    brief = eng._brief(task, look.ctx, look.obs, look.affs)
+    assert "button 「Open」" in brief["on_screen"]
+    assert brief.get("moves_that_could_not_be_used") == {"press menu item 「General」": "not a key combination: never repeat it"}

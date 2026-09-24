@@ -2390,7 +2390,10 @@ def named_paths(text: str, max_words: int = 6, max_trim: int = 40) -> list[Path]
                     if here.exists():
                         found = here
                         break
-                except (OSError, ValueError):          # a candidate too long for the file system, a bad byte
+                # a candidate too long for the file system, a bad byte; a ~ before a word that names no user on this
+                # Mac (「~30%」, 「~alice」: RuntimeError), which failed the task — on every step once the texts a task
+                # holds were read from its goal (`held_texts`), with or without the files provider
+                except (OSError, ValueError, RuntimeError):
                     continue
             if found is not None:
                 if str(found) not in seen:

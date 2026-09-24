@@ -2,8 +2,9 @@
 
 The planner was shown the first `planner.context_actions` labels of the options, the window's first. After c632ed9
 made that 40, not one of the 97 plan and replan prompts in this Mac's audit held an item of the app's own menus:
-1,145 of their 3,742 labels were the Apple menu's, 965 of them its Recent Items, and 48 of the prompts had no menu
-item at all. Each place now has a share of its own, sized by planner.brief:
+1,145 of their 3,742 labels were the Apple menu's, 965 of them its Recent Items, and 52 of the prompts held no menu
+item at all, 48 of them because the window's options took all 40 labels. Each place now has a share of its own,
+sized by planner.brief:
 
 * apps_the_goal_names, first (30e3a4a): the options of the apps on this Mac the goal names;
 * on_screen: what the app's own window offers — every window or pointer option that names no other process, which
@@ -17,7 +18,13 @@ item at all. Each place now has a share of its own, sized by planner.brief:
 * elsewhere: a line for each other process with controls on screen, and one for the Services, naming those of
   the apps the goal names.
 
-The planner's own options are not in it: they are its moves already."""
+The planner's own options are not in it: they are its moves already.
+
+What it sends that the 40 labels never did is an app's own menu items, and a planner may be a cloud one. A browser's
+History, Bookmarks and Tab menus list the person's pages, bookmarks and tabs as items of the menu itself, which no
+fold of a submenu takes: rebuilt from this Mac's recorded looks, all 17 entries of Google Chrome's History line were
+items with no key equivalent directly in the menu, where that list stands. The redactor pseudonymises names and
+patterns in them, not a title (docs/design-v5.md, the planner's protocol)."""
 
 from __future__ import annotations
 

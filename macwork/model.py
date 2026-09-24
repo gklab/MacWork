@@ -391,8 +391,11 @@ class Memory:
                                                                # gave it]: asked about once until a step is taken
     # Moves the planner gave that could not be used, as they are said to it (`ConsultMixin._move_said`) -> why,
     # oldest first: what the next replan is told (`moves_that_could_not_be_used`). A move that was only not
-    # available yet leaves it once it is (`ConsultMixin._told_back`).
+    # available for now leaves it once it is, or once an answer no longer gives it (`ConsultMixin._told_back`).
     unusable: dict[str, str] = field(default_factory=dict)
+    was_usable: set[str] = field(default_factory=set)          # moves, said so, that could be used on some look: one
+                                                               # that cannot on a later look is told back as not on the
+                                                               # screen now, not as not available when suggested
     plan_moved_at: int = -1                                    # len(steps) when the plan last moved: a sub-goal was
                                                                # ticked off, or an answer spliced in. A sub-goal with
                                                                # no evidence is ticked off only after a step since

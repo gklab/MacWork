@@ -26,10 +26,13 @@ JUDGED = "judged to be what the task already had"   # the source of a text the d
 
 # Why a move the planner gave could not be used, as the next replan is told (`Memory.unusable`). Only a move that
 # can never be used is to be given up: a text no screen has shown yet, or an option not on any screen seen since,
-# may well be there later — 391 once the calculator shows it, a TextEdit menu item once TextEdit is in front.
+# may well be there later — 391 once the calculator shows it, a TextEdit menu item once TextEdit is in front. And a
+# move that could be used on an earlier look and cannot on this one (another app in front, the display cleared) was
+# there: told "not available when suggested", the planner heard that a move it could use never had been (fakes).
 NOT_A_KEY = "not a key combination: never repeat it"
 A_LABEL_TO_TYPE = "the name of an option on screen, written as text to type: act on the option instead, never type it"
 NOT_YET = "not available when suggested"
+NOT_NOW = "not on the screen now, though it was earlier"
 _NEVER = (NOT_A_KEY, A_LABEL_TO_TYPE)
 
 
@@ -265,12 +268,17 @@ class ConsultMixin:
                 brief["texts_the_task_holds"] = held
         return brief
 
-    def _held_for(self, task: Task) -> list[dict[str, str]]:
+    def _held_for(self, task: Task, typing: bool = True) -> list[dict[str, str]]:
         """The texts this task holds besides the caller's inputs, with where each came from (`observe.held_texts`):
         the paths its goal names that exist on this Mac and the planner's own text a place the task saw holds word
-        for word; at most observe.typing.max_texts."""
+        for word; at most observe.typing.max_texts.
+
+        `typing`: they are what an empty field may take, and with planner.fill_inputs off ("let the planner write text
+        a step needs"), the planner's own text is not among them. It was, and a field the setting left to the caller
+        took the plan's input instead, the decider choosing it (offline, with fakes)."""
         fc = self.cfg.section("observe.files")
-        return held_texts(task.goal, task.memory.admitted, exclude=[str(v) for v in task.inputs.values()],
+        admitted = task.memory.admitted if not typing or self.cfg.get("planner.fill_inputs", True) else {}
+        return held_texts(task.goal, admitted, exclude=[str(v) for v in task.inputs.values()],
                           limit=int(self.cfg.get("observe.typing.max_texts", 4)),
                           max_words=int(fc.get("max_path_words", 6)), max_trim=int(fc.get("max_path_trim", 40)))
 
@@ -278,7 +286,7 @@ class ConsultMixin:
         """What a planner is told the task holds (`_held_for`), and nothing else: never the caller's inputs. No planner
         prompt carried them at 7aa894d, and the redactor catches names and patterns, not a password or a token, while
         a planner may be a cloud one."""
-        return [t["text"] for t in self._held_for(task)]
+        return [t["text"] for t in self._held_for(task, typing=False)]
 
     def _may_still_wait(self, task: Task, ctx: Ctx | None, obs: Observation) -> bool:
         """This look read nothing of the app, and waiting may still change that: it is still starting, the next
@@ -460,6 +468,16 @@ class ConsultMixin:
         remembered all the same, and asked about again on that screen it was refused as already asked."""
         self.spend_allowance(task, "corrections" if asked.went_wrong else "replans")
         task.memory.consulted.add(asked.key)
+        if plan.get("steps") and task.plan_i != asked.plan_i_at:
+            # It landed after the plan moved on — asked beside the loop, taken in steps later — and is its moves only:
+            # its sub-goals are the rest of the plan as it stood before, and set in at the sub-goal it was asked at they
+            # would set the task back. Settled first, so that what is compared, remembered and counted below is what
+            # is taken in. Decided after those, an answer whose sub-goals were all it had, or whose moves the task had
+            # taken meanwhile, was a new route that added nothing (fakes): the standing tries went, the count of
+            # fruitless rethinks went back to 0, the stretch that got nowhere was not asked about at that look, and the
+            # dropped sub-goals, remembered as the route given, made the same answer asked again on time "the same".
+            log.info("planner: the plan moved on while it was asked; its moves only")
+            plan = {**plan, "steps": [], "evidence": []}
         # A key as the keyboard reads it, before anything is compared: 'cmd + n' is the move 'cmd+n' was.
         moves = [{**t, "keys": canonical_combo(t["keys"]) or t["keys"]} if t.get("keys") else t for t in plan.get("try") or []]
         # Asked again, the planner may give the plan it gave last time. A real task was handed the same two
@@ -484,6 +502,11 @@ class ConsultMixin:
             return Route.EMPTY
         task.memory.last_route = route
         task.blocked_reason, task.tries = blocked, tries
+        # What was told back for now was about moves this answer no longer gives. Kept, it went on being told once
+        # the option it named was on screen, the same brief listing that option (fakes); what can never be used stays.
+        given = {self._move_said(t) for t in tries}
+        for said in [s for s, why in task.memory.unusable.items() if why not in _NEVER and s not in given]:
+            del task.memory.unusable[said]
         # Something new, a route or the planner's word that only the user can go on: the rethinks that came to
         # nothing before it are behind the task (a rethink that got either reset the count, as before).
         task.pace.fruitless = 0
@@ -506,8 +529,11 @@ class ConsultMixin:
         for t in tries:
             if t.get("keys") and canonical_combo(t["keys"]) is None:
                 self._told_back(task, t, NOT_A_KEY)
-            elif t.get("type") and (facts is None or facts.source_of(t["type"]) is None):
-                self._told_back(task, t, NOT_YET)
+            elif t.get("type"):
+                if facts is not None and facts.source_of(t["type"]) is not None:
+                    self._usable_again(task, t)       # available when suggested, whatever a later look finds
+                else:
+                    self._not_here(task, t)
 
     def _splice(self, task: Task, plan: dict[str, Any], asked: Asked) -> int | None:
         """Take an answer's sub-goals in as the rest of the plan, from the sub-goal the plan was at when it was asked;
@@ -516,16 +542,12 @@ class ConsultMixin:
         Every answer replaced the whole plan and set the task back to sub-goal 1, an answer with moves only as well:
         of the 773 answers taken in in this Mac's audit, 59 came while the plan was past its first sub-goal, and put
         the task back at one it had done (none had moves only). The replan is told the plan (`_plan_view`) and gives
-        the rest of it. An answer with moves only leaves the plan where it is. One that lands after the plan has
-        moved on — asked beside the loop, taken in steps later — brings its moves: its sub-goals are the rest of a
-        plan as it stood before, and set in at the sub-goal it was asked at, they would set the task back."""
+        the rest of it. An answer with moves only leaves the plan where it is, and so does one that lands after the
+        plan has moved on: `_adopt` has taken its sub-goals out already."""
         steps = list(plan["steps"])
         if not steps:
             if task.plan is None:
                 task.plan = []                    # a plan was made, of moves only: the next question is a replan
-            return None
-        if task.plan_i != asked.plan_i_at:
-            log.info("planner: the plan moved on while it was asked; its moves only")
             return None
         old = list(task.plan or [])
         at = min(asked.plan_i_at, len(old))
@@ -675,9 +697,10 @@ class ConsultMixin:
 
         Asked only where the floor judges the step again with the value in it (a type or type_submit verb, a url
         slot: `LoopMixin._perform`), which is what any text typed or link opened has to pass. The options are the
-        caller's inputs — the decider sees them on every look already; a planner never does — then the texts the
-        task holds (`_held_for`), each with where it came from, and none. Typing at the cursor and pressing Return
-        is for the caller's text only."""
+        caller's inputs — the decider sees them on every look already; no planner prompt is built from them, though
+        one typed into a field that shows it is on the screen a planner is told of (design-v5, the planner's
+        protocol) — then the texts the task holds (`_held_for`), each with where it came from, and none. Typing at
+        the cursor and pressing Return is for the caller's text only."""
         if ctx is None or ctx.gate is None or not (slot == "url" or (slot == "text" and a.verb in ("type", "type_submit"))):
             return None
         texts = [{"text": str(v), "from": f"the caller's input 「{k}」"} for k, v in task.inputs.items()
@@ -813,10 +836,17 @@ class ConsultMixin:
             del gone[old]
 
     def _usable_again(self, task: Task, t: dict[str, Any]) -> None:
-        """A move that was not available when it was suggested is now: the planner is no longer told it was not."""
+        """This move can be used on this look: remembered so (`Memory.was_usable`), and the planner is no longer told
+        it could not be."""
         said = self._move_said(t)
-        if task.memory.unusable.get(said) == NOT_YET:
+        task.memory.was_usable.add(said)
+        if task.memory.unusable.get(said) in (NOT_YET, NOT_NOW):
             del task.memory.unusable[said]
+
+    def _not_here(self, task: Task, t: dict[str, Any]) -> None:
+        """This move cannot be used on this look, for now: told back as not available when it was suggested, or, once
+        it has been usable on a look (`Memory.was_usable`), as not on the screen now."""
+        self._told_back(task, t, NOT_NOW if self._move_said(t) in task.memory.was_usable else NOT_YET)
 
     def _named_by_planner(self, task: Task, affs: list[Affordance]) -> dict[str, int]:
         """{option id: the try that names it} for the options among `affs` that the planner's moves name: an
@@ -824,7 +854,7 @@ class ConsultMixin:
         provider offers (a named key alone is no option of the planner's own: `_suggested`).
 
         By id, not by label: labels repeat, and the planner writes the names it was shown, which are not the
-        labels. An action that names nothing here is told back as not available when suggested, until it does."""
+        labels. An action that names nothing here is told back (`_not_here`) until it does."""
         own = [a for a in affs if "try" not in a.target]
         keys: dict[str, list[Affordance]] = {}
         for a in own:
@@ -837,7 +867,7 @@ class ConsultMixin:
                 if found:
                     self._usable_again(task, t)
                 else:
-                    self._told_back(task, t, NOT_YET)
+                    self._not_here(task, t)
             elif t.get("keys"):
                 combo = canonical_combo(t["keys"])
                 found = keys.get(combo, []) if combo and "+" not in combo else []
@@ -896,7 +926,7 @@ class ConsultMixin:
                     continue
                 source = self._traced(task, obs, t["type"])
                 if source is None:
-                    self._told_back(task, t, NOT_YET)
+                    self._not_here(task, t)
                     continue
                 self._usable_again(task, t)
                 out.append(Affordance(f"try{i}", "keys", "type", self._suggestion_label(t),

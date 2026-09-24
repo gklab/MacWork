@@ -306,22 +306,60 @@ a word. Of the fills whose text the audit keeps (21 of 54 since c0e7011), 11 wro
 * **Each place has its share of the brief** (`macwork/brief.py`, `planner.brief`): the apps the goal names; the
   app's own window (`on_screen`: every window or pointer option that names no other process, one per name, a long
   run of rows or cells as one entry, never a keypad's buttons); one line per menu, items with a key equivalent
-  first, a long submenu as one entry (`menu_entries` 17: 74 of the 75 menu items chosen since c632ed9 are within
-  it, 38 within 6); and `elsewhere`, a line per other process and one for the Services.
+  first, a long submenu as one entry (`menu_entries` 17: of the 75 menu items chosen since c632ed9, 74 have their
+  entry within it, 38 within 6, an item in a folded submenu counted where its fold stands; by name the brief shows
+  56 of them at 17, since 24 sat in a folded submenu, 19 of those in the Apple menu's Recent Items, whose entry
+  names its first two items, 6 of the 24; and 21 of the 75 were placed from looks that listed fewer than 8 items of
+  their menu); and `elsewhere`, a line per other process and one for the Services.
 * **A move names an option by what it is** (`consult.find_named`): its label, else its name as the planner was
   shown it (`observe.plain_name`), else a menu item's place. A key is read as the keyboard reads it
   (`canonical_combo`), and a named key alone is the keys provider's key. The planner's mark and the pinned
   options go by id (`Look.moves`).
 * **What could not be used is told back** (`moves_that_could_not_be_used`): "never repeat" only for a key that is
   no key or an option's name put into type; a text no screen has shown yet or an option not on screen yet is "not
-  available when suggested", and leaves the list once it is.
+  available when suggested", and one that could be used on an earlier look and cannot now "not on the screen now,
+  though it was earlier" (`Memory.was_usable`). Either leaves the list once the move can be used again, or once an
+  answer no longer gives it.
 * **A replan is told the plan** (`Plan:` after `Goal:`, each sub-goal done, now or next, with what the screen was to
   show for the one it is at) and its answer is the rest of it, spliced in where the plan stood when it was asked;
   an answer with moves only leaves the plan where it is, and one that lands after the plan moved brings its moves
-  only. The sub-goals keep `{goal, evidence}`. A sub-goal with no evidence is ticked off at most once per step taken
-  since the plan last moved.
+  only: with none of them left to take, it is an empty answer (the tries that stood stand, and it counts toward
+  `engine.max_fruitless_rethinks`). The sub-goals keep `{goal, evidence}`. A sub-goal with no evidence is ticked off
+  at most once per step taken since the plan last moved.
 * **An empty field takes a text the task holds before the planner is asked** (`which_text`, the decider choosing
   among the caller's inputs, the paths the goal names and the planner's own text a screen or the goal holds word
   for word), only where the floor judges the step again with the value in it. Typing at the cursor is offered for
-  such texts where a field of the app has the keyboard. No planner prompt carries the caller's inputs, nor a text
-  of the planner's that traces to them.
+  such texts where a field of the app has the keyboard. With `planner.fill_inputs` off the planner's own text is not
+  among them. The text chosen, or written by the planner, goes with the step while the caller is asked to confirm
+  it, and is recorded as a planner's text typed (`typed_by_planner`) only once the floor has let the step through.
+* **What a planner is sent.** No planner prompt is built from the caller's inputs, nor from a text of the
+  planner's that traces to them (`texts_the_task_holds` is the goal's paths and the planner's traced text). What a
+  field shows is screen text, though, and a planner is told the screen: a caller's input typed into a field that
+  shows it reaches the next planner prompt (`field_contents`, `screen_text`, `seen_in_each_app`), and the redactor
+  pseudonymises names and patterns, not a password. That held at 7aa894d for `inputs.text` typed at the cursor;
+  since `which_text`, any of the caller's inputs may be chosen for any empty field (fakes: a password chosen for a
+  plain field was in the second opinion on done). And the menus share sends an app's own menu items, which none of
+  the 97 prompts at 7aa894d held: a browser's History, Bookmarks and Tab menus list pages, bookmarks and tabs as
+  items of the menu itself, which no fold of a submenu takes. Rebuilt from the recorded looks at `menu_entries` 17,
+  up to 17 of the 17 entries of Google Chrome's History line, 16 of its Bookmarks line and 14 of its Tab line were
+  items with no key equivalent directly in the menu, where those lists stand; 13 of the 17 of Safari's History line
+  were items of its submenus of four or fewer, which are not folded. No fold for a menu's own list is made yet: folding
+  every run of more than `fold_over` items with no key equivalent cost 1 of the 75 chosen items at 17 and left
+  Safari's History as it was, and what the Mac declares that tells a list from commands is not in the recorded
+  looks.
+
+Measured (M3: this Mac's local model, the 7 recorded plan and replan calls #3, #5, #15, #18, #20, #22 and #27 of
+09-23, each asked with the brief and templates of 7aa894d and with these, two rounds interleaved; scratchpad
+w5g/ab_protocol.py). Every answer parsed, 14 of 14 in each arm. Prompt tokens, against 7aa894d: #3 -27%, #5 -4%,
+#15 +20%, #18 +16%, #20 +38%, #22 +31%, #27 -18%; +7.5% in all, +11.8% without #27. The three that shrank are the
+calls whose look before them offered no menu item; where it offered some, the shares that replace the 40 labels are
+larger, the menus share (560-1,059 characters) most of all, and the capped full outline, every menu item the task's
+looks showed, is +29%. The rebuilt briefs are
+near, not exact: a recorded look keeps option texts only. Seconds are not established: +2.6% in all, a median
+call of 28.2 s against 23.6 s, on a GPU shared with another model's process, and the same prompt asked again was
+answered in 1.7 s against 7.0 s, the server keeping its prefix. #27's answers changed shape: told the plan, both
+rounds, and two more asks on 09-25, gave no sub-goal and one move, 「open app 计算器 (Calculator)」, the move for the
+sub-goal marked now; without its `Plan:` line the same prompt gave seven keystroke-level sub-goals, typing 391 among
+them. A moves-only answer leaves the plan where it is, so that answer keeps the plan and offers its move. The +10%
+target is met in all only through the calls without menus, and not per call; the seconds are to be measured again
+on a quiet machine before W6.

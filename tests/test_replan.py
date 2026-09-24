@@ -5,16 +5,20 @@ what the screen was to show for the sub-goal it was at (aff49b2812ff's replan kn
 nor that it was at sub-goal 1, and came back with nothing after 19.8 s). Its answer then replaced the whole plan
 and put the task back at sub-goal 1, and an answer with moves only did the same. Now the replan is told the plan,
 each sub-goal done, now or next, and its answer is spliced in from where the plan stood when it was asked; an
-answer that lands after the plan moved on brings its moves only. And a sub-goal the planner said nothing about the
-screen for is ticked off once per step taken: consecutive confident looks walked a whole plan that way.
+answer that lands after the plan moved on brings its moves only, and with none of them left to take it is an empty
+answer. And a sub-goal the planner said nothing about the screen for is ticked off once per step taken: consecutive
+confident looks walked a whole plan that way.
 """
 
 import json
 
-from macwork.consult import Asked
+import pytest
+
+from macwork.consult import Asked, Route
 from macwork.engine import Engine
 from macwork.model import Step
 from macwork.observe import observe
+from macwork.planner import PlannerCall
 from tests.english_mac import EnglishMac
 from tests.test_engine import FakeHelper, ScriptedDecider, cfg
 from tests.test_flex import FakeBackend
@@ -95,6 +99,52 @@ def test_an_answer_that_lands_after_the_plan_moved_adopts_only_its_moves(tmp_pat
     assert eng._adopt(task, None, answer, asked)
     assert task.plan == PLAN and task.plan_i == 2, (task.plan, task.plan_i)
     assert task.tries == [{"keys": "cmd+s"}], task.tries
+    assert "open Calculator again" not in task.memory.last_route, "a sub-goal not taken in is remembered as the route given"
+
+
+def landed(eng, task, answer, asked):
+    """`answer` has landed beside the loop, the answer to `asked`, for the next look to take in."""
+    call = PlannerCall(lambda stop: answer)
+    call.wait()
+    scope = eng.scope(task.id)
+    scope.planning, scope.planning_asked = call, asked
+
+
+@pytest.mark.parametrize("moves", [[], [{"keys": "return"}]], ids=["sub-goals only", "its move taken meanwhile"])
+def test_a_late_answer_with_no_move_left_is_an_empty_one(tmp_path, moves):
+    """An answer that lands after the plan moved on brings its moves only. With none left to take — it had sub-goals
+    alone, or the task took its moves meanwhile — nothing of it is taken in, and it is the empty answer it is: the
+    tries that stood still stand, it counts as a rethink that brought nothing new, and its sub-goals are not the
+    route given — asked again with the plan where it is now, they are the rest of the plan. It was a new route:
+    the tries went, the count went back to 0, and the same sub-goals asked again on time were 'the same route'."""
+    eng, task = planned(tmp_path, [], at=1)
+    task.tries, task.pace.fruitless = [{"keys": "cmd+s"}], 1
+    asked = Asked(key=("x",), kind="rethink", problem="?", went_wrong=False, first=False, steps_at=len(task.steps), plan_i_at=1)
+    task.steps.append(Step(1, "press the return key", ok=True, events=["x"], decision={"progress_after": 0.9}))
+    task.plan_i = 2                                     # a sub-goal was ticked off while the answer was on its way
+    answer = {"steps": ["clear the display", "compute 17×23"], "evidence": ["", ""], "inputs": {}, "blocked": "", "try": moves}
+    landed(eng, task, answer, asked)
+    assert eng._merge_beside(task, None) is Route.EMPTY
+    assert task.tries == [{"keys": "cmd+s"}] and task.pace.fruitless == 2, (task.tries, task.pace.fruitless)
+    assert task.plan == PLAN and task.plan_i == 2
+
+    on_time = Asked(key=("y",), kind="rethink", problem="?", went_wrong=False, first=False, steps_at=len(task.steps), plan_i_at=2)
+    assert eng._adopt(task, None, dict(answer), on_time) is Route.NEW
+    assert task.plan == PLAN[:2] + ["clear the display", "compute 17×23"] and task.plan_i == 2, task.plan
+
+
+def test_a_late_answer_with_no_move_left_does_not_stand_in_for_the_question_about_a_stretch(tmp_path):
+    """Taken in at a look that finds a stretch of steps that got nowhere, a route that just landed is tried before
+    that stretch is asked about. A late answer with no move left is no route to try: the stretch is asked about."""
+    eng, task = planned(tmp_path, [{"steps": ["open the report another way"], "inputs": {}, "try": [{"keys": "cmd+o"}], "blocked": ""}])
+    asked = Asked(key=("x",), kind="rethink", problem="?", went_wrong=False, first=False, steps_at=len(task.steps), plan_i_at=1)
+    task.steps += [Step(n, f"button 「B{n}」", ok=True, events=["x"], decision={"progress_after": 0.05}, before=f"sig{n}:x")
+                   for n in range(1, 4)]
+    task.plan_i = 2
+    landed(eng, task, {"steps": ["open Calculator", "compute 17×23"], "evidence": ["", ""], "inputs": {}, "blocked": "", "try": []}, asked)
+    eng._look(task, eng._step_context(task))
+    assert len(eng._planner.prompts) == 1, "the stretch that got nowhere was not asked about"
+    assert task.tries == [{"keys": "cmd+o"}]
 
 
 def test_a_sub_goal_without_evidence_advances_once_per_step_taken(tmp_path):
@@ -120,3 +170,18 @@ def test_a_sub_goal_without_evidence_advances_once_per_step_taken(tmp_path):
     assert seen[:3] == ["make a document", "make a document", "name it"], seen
     assert seen[3] == "name it", f"a sub-goal with no evidence was ticked off with no step taken: {seen}"
     assert res["status"] == "done" and res["steps"] == ["menu File ▸ New (⌘N)", "button 「Refresh」"], res["steps"]
+
+
+def test_a_first_answer_of_moves_only_makes_the_next_question_a_replan(tmp_path):
+    """The first plan works as it did: an answer of moves alone is a plan made, of no sub-goals, and what is asked
+    next is a replan, told what has been done — not a first plan asked again."""
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    eng._planner = FakeBackend([{"steps": [], "inputs": {}, "try": [{"keys": "cmd+n"}], "blocked": ""},
+                                {"steps": ["write it into the new document"], "inputs": {}, "try": [], "blocked": ""}])
+    task = eng._new_task("write 391 into a new document", {}, None)
+    assert replan(eng, task)
+    assert task.plan == [] and task.plan_i == 0 and task.tries == [{"keys": "cmd+n"}]
+    task.steps.append(Step(0, "press cmd+n (suggested by the planner)", ok=True, events=["x"], decision={"progress_after": 0.9}))
+    assert replan(eng, task)
+    assert "Done so far: " in eng._planner.prompts[1] and "Split the goal" not in eng._planner.prompts[1]
+    assert task.plan == ["write it into the new document"]

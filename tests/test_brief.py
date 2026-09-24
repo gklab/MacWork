@@ -2,8 +2,9 @@
 
 It was the first 40 labels of the options, the window's first: after c632ed9 made it 40, not one of the 97 plan and
 replan prompts in this Mac's audit held an item of the app's own menus, while 1,145 of their 3,742 labels were the
-Apple menu's (965 its Recent Items), and 48 held no menu item at all. Now the apps the goal names, the app's own
-window, one line per menu and one per other place each have a share, sized by planner.brief.
+Apple menu's (965 its Recent Items), and 52 held no menu item at all (48 of them 40 labels of the window's). Now the
+apps the goal names, the app's own window, one line per menu and one per other place each have a share, sized by
+planner.brief.
 """
 
 import json
@@ -12,7 +13,7 @@ import time
 from macwork.engine import Engine
 from macwork.model import Affordance
 from macwork.observe import observe
-from tests.test_engine import FakeHelper, ScriptedDecider, cfg
+from tests.test_engine import MENUBAR, FakeHelper, ScriptedDecider, cfg
 
 def menubar():
     """An Apple menu with 30 Recent Items and a Log Out key, a File menu of 20 items of which two have a key
@@ -140,3 +141,45 @@ def test_other_processes_and_services_are_a_line_each(tmp_path):
                                   "Services on this Mac: 40; of the apps the goal names: 「Look Up in Dictionary」 — a Service of Dictionary on this Mac"], \
         brief["elsewhere"]
     assert "Service 3" not in json.dumps(brief)
+
+
+class Crowded(FakeHelper):
+    """A window of two Name fields, each holding its own text, and eighteen buttons, under a menu bar whose View menu
+    has an item with no key, then one keyed by F5 alone and one by the escape key alone."""
+
+    def call(self, method, timeout=30.0, **p):
+        if method == "ax.snapshot" and p.get("scope") == "focused_window":
+            self.calls.append((method, p))
+            nodes = [{"ref": "w0", "role": "AXWindow", "title": "Form"}]
+            nodes += [{"ref": f"n{i}", "role": "AXTextField", "rdesc": "text field", "placeholder": "Name", "value": v, "parent": "w0"}
+                      for i, v in enumerate("ab")]
+            nodes += [{"ref": f"b{i}", "role": "AXButton", "rdesc": "button", "title": f"B{i}", "actions": ["AXPress"], "parent": "w0"}
+                      for i in range(18)]
+            return {"nodes": nodes, "ms": 1}
+        if method == "ax.snapshot" and p.get("scope") == "menubar":
+            self.calls.append((method, p))
+            view = [{"ref": "v1", "role": "AXMenuBarItem", "title": "View", "parent": "g1.0"}, {"ref": "v2", "role": "AXMenu", "parent": "v1"},
+                    {"ref": "v3", "role": "AXMenuItem", "title": "Basic", "parent": "v2"},
+                    {"ref": "v4", "role": "AXMenuItem", "title": "Refresh", "cmd": {"char": "", "mods": 8}, "parent": "v2"},
+                    {"ref": "v5", "role": "AXMenuItem", "title": "Exit Full Screen", "cmd": {"char": "\x1b", "mods": 8}, "parent": "v2"}]
+            return {"nodes": MENUBAR["nodes"] + view, "ms": 3}
+        return super().call(method, timeout, **p)
+
+
+def test_the_apps_window_is_one_entry_per_name_up_to_its_share(tmp_path):
+    """Two fields called Name are one entry, whatever each holds now, and a window with more names than its share
+    (planner.brief.on_screen, 16) is cut there, saying how many more there are."""
+    shown = brief_of(tmp_path, Crowded())["on_screen"]
+    assert shown == ["type into text field 「Name」", "type into text field 「Name」 and press Return"] + \
+        [f"button 「B{i}」" for i in range(14)] + ["(+4 more)"], shown
+
+
+def test_a_key_pressed_alone_is_a_menu_items_key_equivalent(tmp_path):
+    """A menu item keyed by a function key or by a key the Mac shows a glyph for, pressed with no ⌘, has a key
+    equivalent all the same: it is listed with the keyed items, before the rest of its menu, and a move names the
+    item without it."""
+    from macwork.observe import plain_name
+
+    assert brief_of(tmp_path, Crowded())["menus"]["View"] == "Refresh (F5) · Exit Full Screen (⎋) · Basic"
+    assert [plain_name(x) for x in ("menu View ▸ Refresh (F5)", "menu View ▸ Exit Full Screen (⎋)")] == \
+        ["View ▸ Refresh", "View ▸ Exit Full Screen"]
