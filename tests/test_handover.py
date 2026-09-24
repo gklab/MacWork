@@ -514,3 +514,25 @@ def test_the_texts_a_task_holds_are_its_goals_paths_and_the_planners_traced_text
     held = eng._held_for(task)
     assert [h["text"] for h in held] == [path, "notes"], held
     assert held[0]["from"] == "a path the goal names" and held[1].get("planner") == "the goal"
+
+
+def test_a_text_no_screen_holds_any_more_is_told_back_as_not_available(tmp_path):
+    """A move's text a screen held when the answer came is offered; once that screen shows something else and
+    nothing else the task saw holds it, the move is not offered, and the next replan hears it was not available —
+    not that it is never to be given again."""
+    d = Judge()
+    helper = Display()
+    helper.shows = "391"
+    eng = Engine(cfg(tmp_path), helper=helper, decider=d)
+    eng._planner = FakeBackend([{"steps": ["write the product down"], "inputs": {}, "try": [{"type": "391"}], "blocked": ""},
+                                {"steps": ["work it out again"], "inputs": {}, "try": [], "blocked": ""}])
+    task = eng._new_task("compute 17×23 in the calculator, then write the result into a new document", {}, None)
+    look = eng._look(task, eng._step_context(task))              # the display shows 391, and the task has seen it
+    assert eng._consult(task, look.ctx, look.obs, "the actions on screen do not lead toward the goal")
+    assert "type 391" not in task.memory.unusable
+    helper.shows = "0"                                           # cleared: nothing the task saw holds 391 now
+    look = eng._look(task, eng._step_context(task))
+    assert not [a.label for a in look.flat if "391" in a.label]
+    task.steps.append(went(0))
+    assert eng._consult(task, look.ctx, look.obs, "the actions on screen do not lead toward the goal")
+    assert told(eng._planner.prompts[1]) == {"type 391": "not available when suggested"}

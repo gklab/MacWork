@@ -853,8 +853,7 @@ class ConsultMixin:
             if t.get("keys"):
                 combo = canonical_combo(t["keys"])
                 if combo is None:
-                    self._told_back(task, t, NOT_A_KEY)
-                    continue
+                    continue                  # no key on any look: told back once, as the answer was taken in (`_admit_moves`)
                 if "+" not in combo and combo in on_offer:
                     continue                  # the keys provider's own option is the planner's (`_named_by_planner`)
                 # named by the app's own menu item where it has one: a bare combo is invisible to both the
