@@ -531,6 +531,16 @@ def probe_planners(cfg: Config, helper: Any) -> list[dict[str, Any]]:
     return out
 
 
+def answered_here(planner: Any) -> bool:
+    """May a question to this planner be worked on by a model on this Mac: is any planner that could end up
+    answering it local? Any, since which one answers is settled only during the call (`Chain.complete` moves on
+    past one that refuses). That is what `engine._planner_lock` is taken on, since a local server asked twice at
+    once works on both answers. Not `Chain.local`, which asks whether every one of them is (whether a prompt may
+    stay as it is): planner.auto_order puts the local server before deepseek, and a chain of the two says it is not
+    local. Asked on that, a newer question was sent to the local server beside a stopped one that had not let go."""
+    return any(bool(getattr(p, "local", False)) for p in (getattr(planner, "members", None) or [planner]))
+
+
 class Chain:
     """Several usable planners in preference order. One whose credentials are rejected is dropped for the rest of
     the session and the next answers instead, so a stale key degrades planning rather than switching it off."""

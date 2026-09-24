@@ -10,12 +10,13 @@ it, for the run it is the ledger of.
 
 A rethink vote stopped the task for a planner call, and when a route came the action chosen with it was dropped. On
 09-22..23, 23 rethink looks chose the planner's own suggestion (7 waited for a call), and 96 chose an action on offer
-with nothing gone wrong (60 calls, 575 s). And every rethink that brought nothing counted toward the no_route ending
-alike: 16 of the 20 no_route endings came on a question refused as asked already, with its allowance left. So the
-planner's own suggestion is taken unasked; with nothing gone wrong, an action the floor lets through and a screen not
-judged risky, the route is asked for beside the loop while the action goes through every gate; otherwise it is waited
-for, never past the run's time; and a question refused as asked already on this exact screen is no rethink that found
-nothing.
+where the step before had not failed and was not judged below progress_bad (60 calls, 575 s). And every rethink that
+brought nothing counted toward the no_route ending alike: 16 of the 20 no_route endings came on a question refused as
+asked already, with its allowance left. So the planner's own suggestion is taken unasked; after a step that got
+somewhere (none of what the no-progress rule counts), on an action that needs no text from the planner, that the floor
+lets through, on a screen not judged risky, the route is asked for beside the loop while the action goes through every
+gate; otherwise it is waited for, never past the run's time; and a question refused as asked already on this exact
+screen is no rethink that found nothing.
 """
 
 import json
@@ -114,6 +115,20 @@ class Still(Lands):
             self.calls.append((method, p))
             return {"events": [], "timed_out": True}
         return super().call(method, timeout, **p)
+
+
+class Writes(Held):
+    """A planner that writes the text for a slot at once (`fills`), and answers any other question as Held does."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.fills = []
+
+    def complete(self, system, prompt, schema, stop=None):
+        if "text" in schema.get("properties", {}):
+            self.fills.append(prompt)
+            return {"text": "zw@example.com"}
+        return super().complete(system, prompt, schema, stop=stop)
 
 
 def beside_engine(tmp_path, script, back, helper=None, **config):
@@ -215,6 +230,45 @@ def test_a_second_local_call_is_not_sent_while_one_runs(tmp_path):
     assert cloud.most == 2, "a question to a cloud planner waited for one it can only drop"
     cloud.release.set()
     assert other.wait(time.monotonic() + 5)
+
+
+def test_a_chain_a_local_server_may_answer_is_asked_one_call_at_a_time(tmp_path):
+    """planner.auto_order puts the local server before deepseek, so a Mac with both has a chain of the two, and that
+    chain is not local throughout (`Chain.local`, which decides redaction). Read as not local, it had a newer question
+    sent to the local server while the one it replaced was still there, and the floor's words too."""
+    from macwork.planner import Chain
+
+    class Cloud:                    # behind it, never reached while the local server answers
+        name, local, beside = "cloud", False, True
+
+        def complete(self, system, prompt, schema):
+            raise AssertionError("the planner behind the local server was asked")
+
+    eng = Engine(cfg(tmp_path), helper=FakeHelper(), decider=ScriptedDecider([]))
+    local = Held(line_s=0.2)
+    eng._planner = Chain([local, Cloud()])
+    task = eng._new_task("open the settings", {}, None)
+    first = eng._planner_call(task, plan(task), beside=True)
+    assert local.asked.wait(2)
+    second = eng._planner_call(task, plan(task))                     # stops the first, and waits for it to let go
+    deadline = time.monotonic() + 2
+    while len(local.prompts) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    local.release.set()
+    assert eng._planner_wait(task, second, until=time.monotonic() + 5)["steps"] == ["open the settings"]
+    assert first.stopped and local.most == 1, "two questions were at the local server at once"
+
+    local.release.clear()
+    local.asked.clear()
+    third = eng._planner_call(task, plan(task), beside=True)
+    assert local.asked.wait(2)
+    words = threading.Thread(target=eng._derive_floor_words, args=("de", {"delete": "removes something for good"}))
+    words.start()
+    time.sleep(0.3)
+    assert len(local.prompts) == 3, "the floor's words were asked while a question was at the local server"
+    local.release.set()
+    words.join(5)
+    assert third.wait(time.monotonic() + 5) and len(local.prompts) == 4 and local.most == 1
 
 
 def test_a_chain_is_beside_only_if_every_member_is_and_stop_reaches_the_ones_that_can_stop(tmp_path):
@@ -409,12 +463,13 @@ def test_the_planners_own_suggestion_is_tried_before_it_is_asked_again(tmp_path)
 def test_a_step_that_got_nowhere_is_waited_on_but_never_past_the_runs_time(tmp_path):
     """After a step judged to have got nowhere the route is waited for, and the action chosen with the rethink
     waits with it — but never past the run's time: the question is stopped then, and the run ends on its budget."""
-    back = Held(patience=5.0)
+    back = Held(patience=10.0)
     script = [{"pick": "press the tab key"}, {"pick": "press the space key", "move": "rethink", "progress": 0.1}] + [{"pick": "done"}] * 3
-    eng = beside_engine(tmp_path, script, back, engine={"budget_s": 1.5})
+    eng = beside_engine(tmp_path, script, back, engine={"budget_s": 3.0})
+    eng.decider.what = {"navigate": 1.0}      # the floor is not what this is about (see the late questions below)
     t0 = time.monotonic()
     res = eng.do("open the settings")
-    assert time.monotonic() - t0 < 4, "the loop waited out the planner past the run's time"
+    assert time.monotonic() - t0 < 5.5, "the loop waited out the planner past the run's time"
     assert res.get("cause") == "budget", (res["status"], res.get("cause"), res.get("reason"))
     assert back.stops and back.stops[0] is not None and back.stops[0].is_set(), "the question was not stopped"
     assert "press the space key" not in res["steps"], "on evidence the chosen action waits for the route"
@@ -537,38 +592,49 @@ def test_with_beside_off_a_rethink_waits_and_decides_again_with_the_route(tmp_pa
     assert spent["waited"] >= 0.3 and spent["beside"] == 0.0, spent
 
 
-def test_a_route_that_just_landed_is_tried_before_the_planner_is_asked_again(tmp_path):
+@pytest.mark.parametrize("landing_look", ["ends the task", "waits", "lands during a rethink"])
+def test_a_route_that_just_landed_is_tried_before_the_planner_is_asked_again(tmp_path, landing_look):
     """A route asked for beside the loop landed on the look where three steps had got nowhere, and was replaced by
-    the answer to a question about those steps, asked and waited for before the decider ever saw it."""
+    the answer to a question about those steps, asked and waited for before the decider ever saw it. Nor is it
+    replaced on the look after a wait there, with no step taken in between: the look it was taken in at judged the
+    step before it, which made the stretch one step longer, and marked by its length that was a new stretch to ask
+    about. One that lands while a rethink is decided is decided with at once, and marks the stretch the same way."""
     back = Held([PLAN, {**PLAN, "steps": [{"goal": "something else", "evidence": ""}]}], patience=5.0)
-    seen = {}
+    seen = []
 
     def lands(state, questions):
         back.release.set()
         landed(eng)
-        return {"pick": "press the down key", "progress": 0.1}
+        return {"pick": "press the down key", "progress": 0.1, "move": "rethink" if landing_look == "lands during a rethink" else "act"}
 
-    def fifth(state, questions):
-        seen["plan"] = state.get("plan")
+    def waits(state, questions):
+        seen.append(state.get("plan"))
+        return {"pick": "press the left key", "move": "wait", "progress": 0.1}
+
+    def then(state, questions):
+        seen.append(state.get("plan"))
         return {"pick": "done", "progress": 0.1}
 
-    script = [TAB, {"pick": "press the space key", "progress": 0.1}, {"pick": "press the up key", "progress": 0.1}, lands, fifth]
-    eng = beside_engine(tmp_path, script, back, helper=FakeHelper())
+    script = [TAB, {"pick": "press the space key", "progress": 0.1}, {"pick": "press the up key", "progress": 0.1}, lands] \
+        + ([waits] if landing_look == "waits" else []) + [then]
+    eng = beside_engine(tmp_path, script, back, helper=FakeHelper(), engine={"wait_s": 0})
     eng.do("open the settings")
-    assert len(back.prompts) == 1 and seen["plan"] == ["open the settings"], (len(back.prompts), seen)
+    assert len(back.prompts) == 1 and seen == [["open the settings"]] * (2 if landing_look == "waits" else 1), \
+        (len(back.prompts), seen)
 
 
-def test_a_route_that_lands_while_the_decider_decides_is_decided_with(tmp_path):
-    """The route asked for beside the loop landed while the decider was answering, and it voted rethink again: the
-    decision is made again with that route, not a new question sent — which would have stopped the call the route
-    came in on and lost it."""
+@pytest.mark.parametrize("move", ["rethink", "blocked", "impossible", "ask_user"])
+def test_a_route_that_lands_while_the_decider_decides_is_decided_with(tmp_path, move):
+    """The route asked for beside the loop landed while the decider was answering, and it voted rethink again — or
+    blocked, impossible, or ask the user with one candidate: the decision is made again with that route, not a new
+    question sent, which would have stopped the call the route came in on and lost it unread."""
     back = Held([PLAN, {**PLAN, "steps": [{"goal": "something else", "evidence": ""}]}], patience=5.0)
     seen = {}
 
     def lands(state, questions):
         back.release.set()
         landed(eng)
-        return {"pick": "press the space key", "move": "rethink"}
+        return {"pick": "press the space key", "move": move}
 
     def then(state, questions):
         seen["plan"] = state.get("plan")
@@ -578,6 +644,113 @@ def test_a_route_that_lands_while_the_decider_decides_is_decided_with(tmp_path):
     res = eng.do("open the settings")
     assert res["steps"] == ["press the tab key"] and len(back.prompts) == 1 and seen["plan"] == ["open the settings"], \
         (res["steps"], len(back.prompts), seen)
+
+
+def test_a_route_that_lands_while_nothing_is_left_to_act_on_is_decided_with(tmp_path):
+    """Nothing is left to act on, and the planner is asked for a route before the task says so: a route that
+    landed beside the loop while the decider decided is that route. Asked again, the call it came in on was
+    stopped, and it was lost unread."""
+    back = Held([PLAN, {**PLAN, "steps": [{"goal": "something else", "evidence": ""}]}], patience=5.0)
+    seen = {}
+
+    def lands(state, questions):         # the key did nothing, so it is not offered here again: nothing is left
+        back.release.set()
+        landed(eng)
+        return {"pick": "none"}
+
+    def then(state, questions):
+        seen["plan"] = state.get("plan")
+        return {"pick": "done"}
+
+    helper = Still()
+    eng = beside_engine(tmp_path, [TAB, lands, then], back, helper=helper, observe={"providers": ["keys"], "keys": ["tab"]})
+    helper.engine = None                 # the route lands while the decider decides, not while the key is pressed
+    res = eng.do("open the settings")
+    assert res["steps"] == ["press the tab key"] and len(back.prompts) == 1 and seen["plan"] == ["open the settings"], \
+        (res["steps"], len(back.prompts), seen)
+
+
+def test_a_route_that_landed_is_not_lost_to_a_question_for_text(tmp_path):
+    """Text for a slot, the answer and the opinion on "done" are no routes: asked while a route that has landed is
+    waiting for the next look, they leave it there. Asked for the text of the action chosen meanwhile, the planner's
+    question stopped the call the route came in on, and it was dropped unread."""
+    back, seen = Writes(patience=5.0), {}
+
+    def lands(state, questions):
+        back.release.set()
+        landed(eng)
+        return {"pick": "Recipient"}
+
+    def then(state, questions):
+        seen["plan"] = state.get("plan")
+        return {"pick": "done"}
+
+    eng = beside_engine(tmp_path, [TAB, lands, then], back, helper=FakeHelper())
+    res = eng.do("write to zw@example.com")
+    assert len(back.fills) == 1 and res["steps"] == ["press the tab key", "type into text field 「Recipient」"], res["steps"]
+    assert seen["plan"] == ["open the settings"], "the route that had landed was dropped by the question for the text"
+
+
+def test_a_rethink_on_an_action_whose_text_the_planner_writes_waits_for_its_route(tmp_path):
+    """Taken beside its route, an action whose text the planner is asked to write asks for that text in the same
+    step, and that question stopped the route before it came; on a local server the text then waited for the
+    stopped call to let go. Such a rethink waits for its route, and decides again with it."""
+    back, seen = Writes(patience=0.5), {}          # the route takes half a second; the text would come at once
+
+    def then(state, questions):
+        seen["plan"] = state.get("plan")
+        return {"pick": "done"}
+
+    eng = beside_engine(tmp_path, [{"pick": "Recipient", "move": "rethink"}, then], back, helper=FakeHelper())
+    res = eng.do("write to zw@example.com")
+    assert not back.stops[0].is_set(), "the route was stopped by the question for the text"
+    assert res["steps"] == [] and not back.fills and seen["plan"] == ["open the settings"], (res["steps"], seen)
+
+
+def test_a_decider_that_answers_through_a_local_planner_has_its_rethinks_wait(tmp_path):
+    """decider.kind: local (or auto, once it has fallen back to it) answers every decision through a backend built
+    from planner.endpoints, the same local server, and takes no turn at it: a route asked beside the loop would be
+    worked on there beside the loop's own decisions. Its rethinks wait for their route, and decide again with it."""
+    from macwork.localdecider import LocalDecider
+
+    class Local(LocalDecider):
+        """The local decider, its answers read from a script: where it would send them is what matters here."""
+        calibrated = True                # so the floor asks it what it asks any decider in these tests
+
+        def __init__(self, c, backend, script):
+            super().__init__(c, backend=backend)
+            self.scripted = ScriptedDecider(script)
+
+        def decide(self, state, questions):
+            self.calls += 1
+            return self.scripted.decide(state, questions)
+
+    back = at_once()
+    c = cfg(tmp_path, config={"planner": {"second_opinion_on_done": False}})
+    local = Local(c, back, [TAB, {"pick": "done"}])
+    helper = Lands()
+    eng = Engine(c, helper=helper, decider=local)
+    eng._planner, helper.engine = back, eng
+    res = eng.do("open the settings")
+    assert res["steps"] == [] and local.scripted.seen[1][0].get("plan") == ["open the settings"], res["steps"]
+    assert len(back.prompts) == 1
+
+
+def test_a_first_plan_that_failed_is_not_asked_again_before_the_first_step(tmp_path):
+    """planner.when: always asks for the first plan after the first look, once a run, whatever it came to. Remembered
+    as asked only once answered, one that failed was asked again on every look before the first step — four times
+    across three waits — and each can cost the planner's whole timeout_s (45 s local, 60 s deepseek)."""
+    class TimesOut(Held):
+        def complete(self, system, prompt, schema, stop=None):
+            self.prompts.append(prompt)
+            raise PlannerError("local: no reply within 45 s", kind="timeout")
+
+    back = TimesOut()
+    script = [{"pick": "press the tab key", "move": "wait"}] * 3 + [{"pick": "press the tab key"}, {"pick": "done"}]
+    eng = beside_engine(tmp_path, script, back, planner={"when": "always"}, engine={"wait_s": 0})
+    res = eng.do("open the settings")
+    assert res["steps"] == ["press the tab key"] and len(back.prompts) == 1, (res["steps"], len(back.prompts))
+    assert len(res["outputs"]["planner_errors"]) == 1
 
 
 def test_a_rethink_that_decides_whether_the_task_ends_waits_for_its_answer(tmp_path):
@@ -621,7 +794,9 @@ LATE = {  # a waited question, and what the task had done when it was asked
     "blocked": ({}, Lands, [{"pick": "press the tab key", "move": "blocked"}], 0),
     "ask the user": ({}, Lands, [{"pick": "press the tab key", "move": "ask_user"}], 0),
     "nothing left": ({"observe": {"providers": ["keys"], "keys": []}}, Lands, [{"pick": "none"}], 0),
-    "no progress": ({}, Still, [{"pick": f"press the {k} key"} for k in KEYS[:4]], 3),
+    # three whole steps before the question: a run of 1.5 s asked it 1.4-1.5 s in, and one in a full suite ran out
+    # before it was sent. Every other one here is asked on the first look.
+    "no progress": ({"engine": {"budget_s": 3.0}}, Still, [{"pick": f"press the {k} key"} for k in KEYS[:4]], 3),
 }
 
 
@@ -632,12 +807,16 @@ def test_a_late_first_plan_or_blocked_second_opinion_decides_again(tmp_path, ask
     nowhere — is given up on, and the loop's own budget check says what happens next. Each was waited out as long
     as the planner took, and then the task went on to act, or ended on its own terms, with its time gone."""
     config, helper, script, steps = LATE[asked]
-    back = Held(patience=5.0)
-    eng = beside_engine(tmp_path, script + [{"pick": "done"}] * 2, back, helper=helper(),
-                        **{**config, "engine": {"budget_s": 1.5}})
+    engine = {"budget_s": 1.5, **config.get("engine", {})}
+    back = Held(patience=10.0)
+    eng = beside_engine(tmp_path, script + [{"pick": "done"}] * 2, back, helper=helper(), **{**config, "engine": engine})
+    # The floor is not what this is about, and the fake classifies each action by reading the policy from disk: that
+    # was about 1.1 of the 1.4 s before the stretch of "no progress" was asked about. Here it says navigation of every
+    # action, as it did of the keys, the only actions these tasks take.
+    eng.decider.what = {"navigate": 1.0}
     t0 = time.monotonic()
     res = eng.do("open the settings")
-    assert time.monotonic() - t0 < 4, "waited for the planner past the run's time"
+    assert time.monotonic() - t0 < engine["budget_s"] + 2.5, "waited for the planner past the run's time"
     assert res.get("cause") == "budget" and len(res["steps"]) == steps, (res["status"], res.get("cause"), res.get("reason"), res["steps"])
     assert back.stops and back.stops[0].is_set(), "the question was not stopped"
 
@@ -691,14 +870,22 @@ def test_a_blocked_that_lands_beside_the_loop_is_an_opinion(tmp_path):
 
 
 def test_a_stretch_that_got_nowhere_is_asked_about_once(tmp_path):
-    """The no-progress rule asks the planner once per stretch: seen again after a sub-goal is ticked off (or a look
-    into a group, or a wait), it is the question already asked. And a rethink on the look where it asked adds no
-    second question: that answer stands."""
+    """The no-progress rule asks the planner once per stretch: seen again with no step taken since — after a sub-goal
+    is ticked off, a wait, or a look into a group — it is the question already asked. And a rethink on the look where
+    it asked adds no second question: that answer stands."""
     two = {**PLAN, "steps": [{"goal": "open the settings", "evidence": "a window titled Settings"},
                              {"goal": "turn it on", "evidence": "the switch is on"}]}
     ticked = {"pick": "press the down key", "step_done": 0.9, "step_evidence": 0.9}
     eng = beside_engine(tmp_path, [{"pick": f"press the {k} key"} for k in KEYS[:3]] + [ticked, {"pick": "done"}], at_once([two]),
                         helper=Still())
+    res = eng.do("open the settings")
+    assert len(eng._planner.prompts) == 1 and res["status"] == "done", (len(eng._planner.prompts), res["status"])
+
+    # Steps judged to have got nowhere count once the look after them has judged them, and the look that asks judges
+    # the newest step as well: the look after it, with no step in between, finds the same stretch one step longer.
+    script = [{"pick": "press the tab key"}] + [{"pick": f"press the {k} key", "progress": 0.1} for k in KEYS[1:4]] \
+        + [{**ticked, "progress": 0.1}, {"pick": "done"}]
+    eng = beside_engine(tmp_path, script, at_once([two]), helper=FakeHelper())
     res = eng.do("open the settings")
     assert len(eng._planner.prompts) == 1 and res["status"] == "done", (len(eng._planner.prompts), res["status"])
 

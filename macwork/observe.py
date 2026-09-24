@@ -948,8 +948,14 @@ def windows(ctx: Ctx, obs: Observation) -> None:
     obs.notes["open_windows"] = titles
     if undescribed:
         obs.notes["undescribed_windows"] = [{k: w[k] for k in ("id", "title", "frame")} for w in undescribed]
-        if not nodes:            # its tree lists no window at all: the one in front stands in for it (see vision)
-            obs.notes["window_stand_in"] = dict(obs.notes["undescribed_windows"][0])
+        if not nodes:
+            # Its tree lists no window at all: the one in front stands in for it and is read as the canvas it then
+            # is, click targets and all (see vision) — where observe.windows.read_by_sight lets such a window be
+            # read. At 0 it is listed and not read, as nothing was read of it before it was listed: whether it is
+            # a window anybody sees is what the survey that read_by_sight waits for counts, and one nobody sees
+            # would be read on every look and its text offered to click.
+            read = int(ctx.cfg.get("observe.windows.read_by_sight", 0)) > 0
+            obs.notes["window_stand_in"] = dict(obs.notes["undescribed_windows"][0]) if read else None
         else:
             _read_undescribed(ctx, obs, undescribed)
     # running without a window: macOS "reopen" brings its main window back — unless it is still starting,
@@ -1600,13 +1606,15 @@ def vision(ctx: Ctx, obs: Observation) -> None:
         return
     # No window means nothing to read. The capture waits for one that is not there — measured at 1.5 s on
     # an app with none — and an empty Accessibility tree reads as "sparse", so this used to run every time.
+    # Nor does a window the tree does not give with none standing in for it (`window_stand_in` None: nothing on
+    # screen of an app that does not answer, or the window of one whose tree lists none, not to be read).
     stand = obs.notes.get("window_stand_in")
-    if obs.notes.get("open_windows") == [] or (obs.notes.get("window_not_answering") and not stand):
+    if obs.notes.get("open_windows") == [] or ("window_stand_in" in obs.notes and not stand):
         return
     # A window the tree does not give — the one on screen of an app that does not answer, or of one whose tree
-    # lists no window (observe.windows) — is read as the canvas it then is, by its number. It was not read at
-    # all: the decider was told only that the app did not answer (b_head_probe scenario 3). The next glance
-    # is taken of it too.
+    # lists no window where observe.windows.read_by_sight allows (observe.windows) — is read as the canvas it
+    # then is, by its number. It was not read at all: the decider was told only that the app did not answer
+    # (b_head_probe scenario 3). The next glance is taken of it too.
     blind = bool(obs.notes.get("window_not_answering"))
     adopted = _stand_in(obs)
     if adopted:

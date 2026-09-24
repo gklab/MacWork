@@ -516,7 +516,7 @@ def test_reopen_is_not_offered_while_a_window_of_the_app_is_on_screen(tmp_path):
     obs = look(tmp_path, Starting(answer_on=0, windowless=True, screen=[MAIN]), ["window", "windows"])
     assert not reopened(obs), "the main window was offered back while a window of the app was on screen"
     assert obs.notes["open_windows"] == ["「Untitled」 (on screen; Accessibility does not describe it)"]
-    assert obs.notes["window_stand_in"] == {"id": 501, "title": "Untitled", "frame": [100, 100, 600, 400]}
+    assert obs.notes["window_stand_in"] is None, "listed, and at observe.windows.read_by_sight 0 not to be read"
     # the guard: a status item, a toolbar strip and a tooltip are not its windows, and alone they leave reopen
     # offered (observe.windows.min_size: the harness counted strips of 1512x33 and tooltips of 100x30 as windows)
     status_item = {**MAIN, "id": 502, "layer": 25, "ordinary": False, "frame": [900, 0, 30, 24]}
@@ -565,11 +565,19 @@ def test_an_app_that_does_not_answer_is_read_from_its_window_on_screen(tmp_path)
     assert cut.notes["read_by_sight_lines"] == 2, "lines the cap cut were counted as read into the screen text"
 
 
-def test_an_app_whose_tree_lists_no_window_is_read_from_the_one_on_screen(tmp_path):
+def test_an_app_whose_tree_lists_no_window_is_read_from_the_one_on_screen_where_read_by_sight_allows(tmp_path):
     """It answers, and its window on screen is one its tree does not give: read by its number as the canvas it
-    then is, with what is read on it offered to point at, as for any window the tree says nothing about."""
+    then is, with what is read on it offered to point at, as for any window the tree says nothing about — where
+    observe.windows.read_by_sight lets a window the tree does not describe be read. At 0, until a survey has
+    counted how many such windows are ones nobody sees, it is listed and not read, as nothing of it was read
+    before it was listed; it was read all the same, on every look, and its text offered to click."""
     h = Answering(screen=[MAIN], listed=[], focused=[], drawn={501: VERSION})
     ctx, obs = seen(tmp_path, h, ["window", "windows", "vision"])
+    assert not h.did("screen.ocr") and "Version" not in obs.screen_text, "a window the tree does not describe was read at 0"
+    assert not [a for a in obs.affordances if a.channel == "pointer"] and obs.notes["window_stand_in"] is None
+    assert obs.notes["open_windows"] == ["「Untitled」 (on screen; Accessibility does not describe it)"] and not reopened(obs)
+    h = Answering(screen=[MAIN], listed=[], focused=[], drawn={501: VERSION})
+    ctx, obs = seen(tmp_path, h, ["window", "windows", "vision"], windows={"read_by_sight": 1})
     assert h.read_by_number() == [501] and "Version 10.9.12865" in obs.screen_text and obs.window == "Untitled"
     clicks = [a.label for a in obs.affordances if a.channel == "pointer" and a.verb == "click"]
     assert "click the text 「Version 10.9.12865」" in " ".join(clicks), clicks

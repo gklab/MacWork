@@ -21,7 +21,7 @@ from .decider import DeciderError, choice, noul
 from .helper import HelperError
 from .model import Affordance, Task
 from .observe import Ctx, apps_named, known_apps, names_of
-from .planner import Planning
+from .planner import Planning, answered_here
 from .privacy import Redactor
 from .words import languages_wanted
 
@@ -158,9 +158,10 @@ class PolicyMixin:
         if backend is None:
             return None
         planning = Planning(self.cfg, backend, None, self.audit)
-        if not getattr(backend, "local", False):
+        if not answered_here(backend):
             return planning.floor_words(lang, meanings)
-        # No task's question and nothing to stop: it only waits its turn at a local server (consult._planner_call)
+        # No task's question and nothing to stop: it only waits its turn at a local server (consult._planner_call),
+        # which any member of a chain may be
         with self._planner_lock:
             return planning.floor_words(lang, meanings)
 

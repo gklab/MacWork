@@ -17,7 +17,7 @@ from .decider import DeciderError, noul
 from .model import Affordance, Observation, Step, Task, exact_state
 from .observe import Ctx, named_combo
 from .onscreen import unreadable
-from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, make_planner
+from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, answered_here, make_planner
 
 log = logging.getLogger(__name__)
 
@@ -117,21 +117,28 @@ class ConsultMixin:
         return Planning(self.cfg, backend, self.redactor(task.id), self.audit, task.id, usage=use)
 
     # ------------------------------------------------------------- one planner call at a time
-    def _planner_call(self, task: Task, ask: Callable[[Planning, threading.Event], Any], beside: bool = False) -> PlannerCall:
+    def _planner_call(self, task: Task, ask: Callable[[Planning, threading.Event], Any], beside: bool = False,
+                      route: bool = True) -> PlannerCall:
         """Every question this task puts to its planner goes out through here, on a thread of its own
         (`PlannerCall`). `ask(planning, stop)` is the question; `beside`: it runs while the loop goes on, as the
         task's one call in flight (`TaskScope.planning`), and is taken in at a later look.
 
         Whatever this task still has running beside the loop is stopped first: a newer question replaces it. A
         local server asked twice at once works on both answers — one plan took 87 s that takes 11 s on its own
-        (`OpenAICompatPlanner._stream`) — so a call to a local planner is sent only once the one before it has
-        let go (`engine._planner_lock`), which a stopped call does at its next line. A call to one that is not on
-        this Mac does not wait for it: the doubling is a local server's, and a cloud planner asked without a
-        stream (deepseek's endpoint, Anthropic) cannot be stopped, so the next question would sit out an answer
-        that is dropped anyway. Nothing is sent once the call has been stopped."""
-        self._stop_planning(task)
+        (`OpenAICompatPlanner._stream`) — so a call that a local planner may answer (`planner.answered_here`: any
+        member of a chain) is sent only once the one before it has let go (`engine._planner_lock`), which a
+        stopped call does at its next line. A call to one that is not on this Mac does not wait for it: the
+        doubling is a local server's, and a cloud planner asked without a stream (deepseek's endpoint, Anthropic)
+        cannot be stopped, so the next question would sit out an answer that is dropped anyway. Nothing is sent
+        once the call has been stopped.
+
+        A question that is not for a route (`route=False`: text for a slot, the answer, an opinion on "done")
+        replaces none: a route that has already landed is left for the next look to take in, and only one still
+        running is stopped. Stopped all the same, a route that landed while the decider chose an action needing
+        text was dropped unread by the question for that text."""
+        self._stop_planning(task, keep_landed=not route)
         planning = self._planning(task)
-        lock = self._planner_lock if getattr(self.planning_backend, "local", False) else contextlib.nullcontext()
+        lock = self._planner_lock if answered_here(self.planning_backend) else contextlib.nullcontext()
 
         def run(stop: threading.Event) -> Any:
             with lock:
@@ -158,13 +165,14 @@ class ConsultMixin:
             raise call.error
         return call.result
 
-    def _stop_planning(self, task: Task) -> None:
+    def _stop_planning(self, task: Task, keep_landed: bool = False) -> None:
         """Stop the call this task has running beside the loop, if it has one: a newer question replaces it, or
         its run is over. The seconds it ran are the planner's work beside the loop (`planner_use.beside_ms`),
-        unless the loop sat waiting on it, when they were counted as waited already."""
+        unless the loop sat waiting on it, when they were counted as waited already. `keep_landed`: one that has
+        landed, and nothing stopped, is left where it is for `_merge_beside`."""
         scope = self._scopes.get(task.id)
         call = scope.planning if scope is not None else None
-        if call is None:
+        if call is None or (keep_landed and call.done() and not call.stopped):
             return
         scope.planning = scope.planning_asked = None
         call.cancel()
@@ -241,10 +249,14 @@ class ConsultMixin:
         return bool(task.steps) and self._nowhere(task.steps[-1])
 
     def _may_ask_beside(self) -> bool:
-        """May a route be asked for while the loop goes on? `planner.beside` (the switch: off, a rethink with nothing
-        gone wrong waits for its route too) and a planner that may be asked so (`beside`: not one that answers
-        through the helper)."""
-        return bool(self.cfg.get("planner.beside", True)) and bool(getattr(self.planning_backend, "beside", False))
+        """May a route be asked for while the loop goes on? `planner.beside` (the switch: off, every rethink waits
+        for its route), a planner that may be asked so (`beside`: not one that answers through the helper), and a
+        decider that does not answer through a local planner itself. `decider.kind: local`, or `auto` once it has
+        fallen back to it, builds its backend from `planner.endpoints` and asks that server for every decision
+        without `engine._planner_lock`: with routes asked beside the loop, 4 of a task's 7 decisions were sent to the
+        server while a route was there (fakes), and none with `planner.beside` off."""
+        return bool(self.cfg.get("planner.beside", True)) and bool(getattr(self.planning_backend, "beside", False)) \
+            and not answered_here(getattr(getattr(self, "_decider", None), "backend", None))
 
     def _run_deadline(self, task: Task) -> float:
         """When this run's time is up (engine.budget_s from its start): a route waited for is given up then."""
@@ -432,7 +444,8 @@ class ConsultMixin:
             # provided", and it is also what the answer is checked against afterwards.
             brief["seen_in_each_app"] = task.memory.facts.brief()
         try:     # waited for with no deadline: the task owes the caller its answer
-            answer = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.answer(task.goal, brief)))
+            answer = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.answer(task.goal, brief),
+                                                                 route=False))
         except PlannerError as exc:
             log.info("planner answer: %s", exc)
             return
@@ -508,7 +521,8 @@ class ConsultMixin:
             brief["seen_in_each_app"] = task.memory.facts.brief()   # the real values this task saw; nothing may be invented
         try:     # waited for with no deadline: the step cannot be taken without it
             text = self._planner_wait(task, self._planner_call(
-                task, lambda planning, stop: planning.fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief))) or None
+                task, lambda planning, stop: planning.fill(task.goal, step, f"{a.label} — {a.slots[slot].desc}", brief),
+                route=False)) or None
         except PlannerError as exc:
             log.info("planner fill: %s", exc)
             return None

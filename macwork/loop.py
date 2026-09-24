@@ -131,6 +131,7 @@ class LoopMixin:
         e = self.cfg.section("engine")
         deadline = task.run_started + float(e.get("budget_s", 90))   # this run's share, for the yield wait
         last_look: Look | None = None             # the last screen, for the final diagnosis
+        first_asked = False                       # the first plan (planner.when: always) was put to the planner this run
         while True:
             if task.id in self._cancelled:
                 return self._finish(task, "cancelled", "cancelled by the caller")
@@ -160,13 +161,19 @@ class LoopMixin:
                 last_look = look
                 check_look(task, look.affs, look.sig, look.ctx.app)
                 check_options(task, look.affs, look.flat, look.folded)
-                if task.plan is None and not task.steps and self.cfg.get("planner.when", "auto") == "always":
+                if task.plan is None and not task.steps and not first_asked and self.cfg.get("planner.when", "auto") == "always":
                     # The plan that sets the whole trajectory was written before the first look — with no
                     # app, no screen and no running apps in the brief, while every later plan saw all three.
                     # It is written after the first look now, and the look is taken again with the plan in
                     # the state (one observation, once per task). Too late for this run, the loop's own
                     # budget check says what happens next, as for any route that came too late.
                     got = self._consult(task, look.ctx, look.obs, "", look.affs, kind="first")
+                    # Asked once a run, whatever it came to; after that the rethinks ask. A question is remembered as
+                    # asked only once it is answered, so one that failed was asked again on every look before the
+                    # first step (offline, a planner that timed out was asked four times across three waits), and
+                    # each costs its timeout_s: 45 s local, 60 s deepseek. A look nobody could read asks it once the
+                    # app answers.
+                    first_asked = got is not Route.UNREADABLE
                     if got or got is Route.LATE:
                         continue
                 if look.aside is not None:        # something in the way that can simply be dismissed: do that first.
@@ -375,7 +382,7 @@ class LoopMixin:
         # the decider is told. Each of the three counts was a guess at what "stuck" looks like from one
         # angle; this is what it is.
         stuck = self._no_progress_run(task)
-        mark = f"{len(task.steps)}:{len(stuck)}"      # this stretch: steps taken, and how many of them got nowhere
+        mark = self._stretch_mark(task, stuck)
         if merged:                                    # the route that just landed is tried before it is asked again
             task.memory.stuck_at = mark
         consulted = False
@@ -384,8 +391,9 @@ class LoopMixin:
                 if st.before:
                     task.memory.note_no_progress(st.before.split(":")[0], st.handle)
             # Asked once per stretch, not once per look: the same stretch seen again after a look into a group, a
-            # wait or a sub-goal ticked off is the question already asked, and a stretch one step longer is a new
-            # one. Its answer spends nothing and ends nothing; what a rethink vote brings is counted there.
+            # wait or a sub-goal ticked off, with no step taken since, is the question already asked; after a step
+            # it is asked again. Its answer spends nothing and ends nothing; what a rethink vote brings is counted
+            # there.
             if task.memory.stuck_at != mark:
                 where = ""
                 if task.plan and task.plan_i < len(task.plan):   # the planner is told which sub-goal they failed to reach
@@ -610,6 +618,27 @@ class LoopMixin:
             run.append(st)
         return list(reversed(run))
 
+    @staticmethod
+    def _stretch_mark(task: Task, stuck: list[Step]) -> str:
+        """Which stretch of steps that got nowhere a look finds (`Memory.stuck_at`): how many steps have been taken,
+        and the first step after the last one known to have got somewhere, where the stretch begins or would begin.
+        The newest step is known either way only once the look after it has judged it (`_no_progress_run` leaves
+        it out until then).
+
+        Not how long the stretch is. A look taken again with no step in between — after a wait, a group opened or a
+        sub-goal ticked off — judges the newest step then: judged to have got nowhere it lengthens the stretch at
+        its end, judged to have got somewhere it ends it, and neither moves where it begins. Marked by its length,
+        the same stretch was asked about again on that look, and a route that had just landed beside the loop was
+        replaced before it was tried."""
+        steps = task.steps
+        if stuck:
+            start = stuck[0].n
+        elif steps and "progress_after" not in steps[-1].decision:
+            start = steps[-1].n
+        else:
+            start = len(steps)
+        return f"{len(steps)}:{start}"
+
     def _taken_here(self, task: Task, sig: str) -> dict[str, int]:
         """How many times each action has already been taken *from this very screen*.
 
@@ -770,7 +799,9 @@ class LoopMixin:
             # meant "do it anyway". The planner gets its say first (it may know a route, or that only the
             # user can continue); failing that, the caller is asked to say more, and the answer comes back
             # as an input — the one channel besides the goal that comes from the user. Waited for: there is
-            # nothing to act on meanwhile.
+            # nothing to act on meanwhile. A route that landed beside the loop meanwhile is decided with first.
+            if self._landed_meanwhile(task, look):
+                return AGAIN
             got = self._rethink_now(task, look)
             if got or got is Route.LATE:
                 return AGAIN
@@ -866,7 +897,8 @@ class LoopMixin:
             return ""
         try:     # waited for with no deadline: it is what a "done" is checked against, owed before the task ends
             brief = self._brief(task, look.ctx, look.obs, look.affs, acting=False)
-            agrees, why = self._planner_wait(task, self._planner_call(task, lambda planning, stop: planning.judge_done(task.goal, brief)))
+            call = self._planner_call(task, lambda planning, stop: planning.judge_done(task.goal, brief), route=False)
+            agrees, why = self._planner_wait(task, call)
         except Exception as exc:  # noqa: BLE001  (an opinion that could not be had is no opinion; it never fails the task)
             log.info("second opinion on done: %s", exc)
             return ""
@@ -878,7 +910,10 @@ class LoopMixin:
         return doubt
 
     def _on_blocked(self, task: Task, look: Look, move: str) -> _Again | dict[str, Any]:
-        """Before giving up, a second opinion: the planner may know another way in (it never signs in for the user)."""
+        """Before giving up, a second opinion: the planner may know another way in (it never signs in for the user).
+        A route that landed beside the loop while the decider decided is decided with first (`_landed_meanwhile`)."""
+        if self._landed_meanwhile(task, look):
+            return AGAIN
         tried = [s.action for s in task.steps]
         problem = ("only the user seems able to continue here" if move == "blocked" else "the goal looks unreachable here") + \
             (": tried " + "; ".join(tried[-6:]) if tried else "")
@@ -902,20 +937,25 @@ class LoopMixin:
         dropped. On 09-22..23 (62 tasks, held-out goals left out), 23 rethink looks chose one of the planner's own
         suggestions and 7 of them waited for a call, 57 s in all — among them both of 09-23's key tasks, whose
         replans no longer held the 「type 17」 and 「type serendipity」 they had chosen. 96 chose an action on offer
-        with nothing gone wrong and waited for 60 calls, 575 s, and after 24 of those the next look chose the same
-        action again. On 20 of the 96 the floor's last verdict on the chosen action stopped for it, and no screen
-        was judged risky (0.09 at most). So:
+        where the step before had not failed and was not judged below progress_bad (0.2), and waited for 60 calls,
+        575 s; after 24 of those the next look chose the same action again. On 20 of the 96 the floor's last verdict
+        on the chosen action stopped for it, and no screen was judged risky (0.09 at most), so at most 76 of them go
+        beside the loop: that measure left out the steps that broke their promise or only led back, which wait
+        here. So:
 
         * the planner's own suggestion is taken as it stands, with no question asked and nothing counted;
-        * with nothing gone wrong and an action on offer the floor lets through, on a screen not judged risky, the
-          route is asked for beside the loop, the action goes through every gate as before, and the route is taken
-          in at a later look (`_consult_beside`, `_merge_beside`);
+        * when the last step got somewhere by every measure the no-progress rule has (`_nowhere`: it did not fail,
+          break its promise or only lead back, and was not judged below progress_bad) and the action on offer needs
+          no text the planner writes for it, and the floor lets it through on a screen not judged risky, the route
+          is asked for beside the loop, the action goes through every gate as before, and the route is taken in at
+          a later look (`_consult_beside`, `_merge_beside`);
         * otherwise the route is waited for (`_rethink_now`): a step that got nowhere, nothing to act on, an action
-          the floor stops for or a screen judged risky — taken, it would stop at the confirmation rather than be
-          thought over — a planner that cannot be asked beside the loop (`planner.beside` off, or one that answers
-          through the helper), a call still on its way, the planner already asked at this look, or no fruitless
-          rethink left, when what this one brings decides whether the task ends here (the ending below reads a
-          count a pending answer would leave untouched).
+          whose text the planner is asked to write (`_fill`: that question would stop the route before it came; 3
+          of the 96 chose an action that takes text), an action the floor stops for or a screen judged risky —
+          taken, it would stop at the confirmation rather than be thought over — a planner that cannot be asked
+          beside the loop (`_may_ask_beside`), a call still on its way, the planner already asked at this look, or
+          no fruitless rethink left, when what this one brings decides whether the task ends here (the ending below
+          reads a count a pending answer would leave untouched).
 
         A rethink that asked and brought nothing new, or had no planner or allowance to ask, counts toward
         `engine.max_fruitless_rethinks` (`consult.FRUITLESS`); one refused as asked already on this exact screen,
@@ -923,16 +963,13 @@ class LoopMixin:
         chosen = look.by_id.get(key)
         if chosen is not None and self._planners_own(look, chosen):
             return None
-        if self._merge_beside(task, look.ctx):
-            # The route asked for beside the loop landed while the decider was deciding: the decision is made again
-            # with it, and it is tried before the stretch is asked about (`_look`). Left where it was, the next
-            # question would have stopped the call it came in on, and the answer would have been lost with it.
-            task.memory.stuck_at = f"{len(task.steps)}:{len(self._no_progress_run(task))}"
+        if self._landed_meanwhile(task, look):
             return AGAIN
         th = float(self.cfg.get("engine.thresholds.risky_screen", 0.6))
         # the floor's verdict last: it may be a request, and it is the one `_pick` reads next, from the same cache
         beside = (chosen is not None and not self._went_wrong(task) and self._may_ask_beside()
                   and self.scope(task.id).planning is None and not look.consulted and self.allowance_left(task, "fruitless")
+                  and not self._planner_writes(task, chosen)
                   and risky_screen < th and not self._floor(task.id, look.ctx, chosen, look.obs.window))
         if beside:
             got = self._consult_beside(task, look.ctx, look.obs, self._rethink_problem(task), look.affs)
@@ -970,6 +1007,32 @@ class LoopMixin:
         tried = [s.action for s in task.steps]
         return "the actions on screen do not lead toward the goal" + (": tried " + "; ".join(tried[-6:]) if tried else "")
 
+    def _landed_meanwhile(self, task: Task, look: Look) -> bool:
+        """Did the route asked for beside the loop land while the decider was deciding, with something new in it?
+        Then the decision is made again with it, before the planner is asked anything else at this look, and it is
+        tried before the stretch that got nowhere is asked about (`_look`). The next question — a rethink's, the
+        second opinion on blocked or impossible, the one-candidate ask-the-user's, nothing left to act on — would
+        have stopped the call it came in on, and the answer would have been lost with it, unread."""
+        if not self._merge_beside(task, look.ctx):
+            return False
+        task.memory.stuck_at = self._stretch_mark(task, self._no_progress_run(task))
+        return True
+
+    def _planner_writes(self, task: Task, chosen: Affordance) -> bool:
+        """Will carrying this action out ask the planner to write its text first (`_fill`): a slot it needs that
+        nothing the caller or the planner's move gave fills?"""
+        return bool(self._params(task, chosen)[1]) and bool(self.cfg.get("planner.fill_inputs", True))
+
+    @staticmethod
+    def _params(task: Task, chosen: Affordance) -> tuple[dict[str, Any], dict[str, str]]:
+        """What an action is carried out with — the caller's inputs its slots name, and the text or link a planner's
+        move carries — and the slots it needs that none of those fill, each with what it wants."""
+        params = {k: task.inputs[k] for k in chosen.slots if k in task.inputs}
+        for carried in ("text", "url"):   # a planner suggestion carries its own text or link
+            if carried in chosen.target and "try" in chosen.target:
+                params[carried] = chosen.target[carried]
+        return params, {k: s.desc for k, s in chosen.slots.items() if s.required and k not in params}
+
     def _pick(self, task: Task, look: Look, key: str, move: str, ranked: Callable[[], list[str]], risky_screen: float,
               progress: Progress) -> Affordance | _Again | dict[str, Any]:
         """The action to take, through the gates: reading the screen on request, floor actions the goal never asked
@@ -979,6 +1042,8 @@ class LoopMixin:
             key = next(iter(ranked()), "")
             if not key:                           # nothing to act on: a different route, if there is one, else say so
                 if move != "rethink" and not look.consulted:
+                    if self._landed_meanwhile(task, look):     # one that landed beside the loop, before asking
+                        return AGAIN
                     look.consulted = True
                     got = self._consult(task, look.ctx, look.obs, "nothing left to try on this screen", look.affs, kind="nothing_left")
                     if got is Route.LATE or (got and not task.blocked_reason):
@@ -1054,11 +1119,7 @@ class LoopMixin:
                 task.held = chosen
                 return self._finish(task, "need_confirm", "this action is irreversible or outward-facing",
                                     self._confirm_pending(chosen.public(), gated, offer))
-        params = {k: task.inputs[k] for k in chosen.slots if k in task.inputs}
-        for carried in ("text", "url"):   # a planner suggestion carries its own text or link
-            if carried in chosen.target and "try" in chosen.target:
-                params[carried] = chosen.target[carried]
-        missing = {k: s.desc for k, s in chosen.slots.items() if s.required and k not in params}
+        params, missing = self._params(task, chosen)
         for k in list(missing):                   # Jev writes no text: the planner may, before we bother the caller
             text = self._fill(task, ctx, obs, chosen, k)
             if text:

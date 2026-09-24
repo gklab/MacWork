@@ -115,9 +115,11 @@ observe:
     min_size: [100, 60]          # smaller is not one of its windows: the harness's own floor, set after it counted
                                  # toolbar strips, tooltips and unrealised panels at [0, 0, 100, 30] as windows
     read_by_sight: 0             # how many windows on screen that the tree of an answering app does not describe
-                                 # are read off the screen, by their number, on each look; 0 lists them unread.
-                                 # Stays 0 until a read-only survey of this Mac's apps has counted how many such
-                                 # windows are ones nobody sees: each of those would cost a read per action
+                                 # are read off the screen, by their number, on each look; 0 lists them unread, the
+                                 # one standing in for a tree that lists no window included (read, it is read as a
+                                 # canvas, with click targets). Stays 0 until a read-only survey of this Mac's apps
+                                 # has counted how many such windows are ones nobody sees: each of those would cost a
+                                 # read per action
   apps:
     # launchservices: Spotlight finds the bundles, LaunchServices says which copy it would open for each
     #   bundle id — that copy is the one reported. Finds apps wherever they are (405 here against 146 by
@@ -267,11 +269,14 @@ planner:
                                  # and says whether it agrees; a "no" sends the decider back with "done" off the
                                  # table. Real runs ended done with the Open dialog up, or 144 still on the display
   max_done_opinions: 2           # per run; past this the decider's own verdict stands
-  beside: true                   # a rethink with nothing gone wrong, on an action the floor lets through and a screen
-                                 # not judged risky, takes that action and asks for the route while it is carried out;
-                                 # the route is taken in at a later look. false: such a rethink waits for its route and
-                                 # decides again with it, as every rethink did. A planner that answers through the helper
-                                 # (foundation) is always waited for; the planner's own suggestion is taken unasked either way
+  beside: true                   # a rethink after a step that got somewhere (none of what the no-progress rule counts:
+                                 # it did not fail, break its promise or only lead back, and was not judged below
+                                 # progress_bad), on an action that needs no text from the planner and that the floor
+                                 # lets through, on a screen not judged risky, takes that action and asks for the route
+                                 # while it is carried out; the route is taken in at a later look. false: such a rethink
+                                 # waits for its route and decides again with it, as every rethink did. A planner that
+                                 # answers through the helper (foundation), or a decider that answers through a local
+                                 # planner, is always waited for; the planner's own suggestion is taken unasked either way
   fill_inputs: true              # let the planner write text a step needs instead of asking the caller
   trust_on_device: true          # on-device planners see unredacted text; cloud planners never do
   endpoints:                     # any OpenAI-compatible chat API

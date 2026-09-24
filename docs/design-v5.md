@@ -211,10 +211,13 @@ outside every node make a canvas) or not read at all (a tree that covers the win
   (helper 0.2.0's `window_id`). That is 0 until a read-only survey of this Mac's apps has counted how many such
   windows are ones nobody sees: they are listed, not read.
 * **A window the tree does not give stands in for it** (`window_stand_in`): the one on screen of an app that
-  does not answer, or of one whose tree lists no window. It is read by its number, with no fingerprint asked (of
-  a silent app that is three 0.5 s timeouts), keyed on the look's glance as well, since no action is taken while
-  the engine waits. From an app that does not answer it is text only: a busy app applies the events it is sent
-  to whatever it shows once it catches up.
+  does not answer, and, where `observe.windows.read_by_sight` allows, the one on screen of an answering app whose
+  tree lists no window. It is read by its number, with no fingerprint asked (of a silent app that is three 0.5 s
+  timeouts), keyed on the look's glance as well, since no action is taken while the engine waits. From an app
+  that does not answer it is text only: a busy app applies the events it is sent to whatever it shows once it
+  catches up. An answering app's is read as the canvas it then is, its text offered to click; nothing of it was
+  read before it was listed, so while `read_by_sight` is 0 it is listed and not read, like any other window its
+  tree does not describe.
 * **What a step drew is read where the picture changed.** `sight.compare` says where (`region`), and after a step
   that changed the picture and no word of the tree, the text there that the tree does not hold is read — ten lines
   at most — and put first in the screen text, where the cap cannot cut it. What the tree holds is every word it
@@ -235,27 +238,40 @@ A rethink vote stopped the task for a planner call, and when a route came the ac
 On 09-22..23 (62 tasks, held-out goals left out) the loop sat waiting on the planner for most of the two key tasks:
 28.8 of 44.3 s and 27.3 of about 35 s. Of 201 rethink looks, 23 chose the planner's own suggestion (7 waited for a
 call, 57 s: both key tasks among them, and both replans dropped the 「type 17」 and 「type serendipity」 chosen), 96
-chose an action on offer with nothing gone wrong (60 calls, 575 s; after 24 of them the next look chose the same
-action again), 47 came after a step that got nowhere (26 calls, 291 s), 8 had nothing to act on and 27 looked into
-a group of options. And every rethink that brought nothing counted toward the ending alike: of the 20 `no_route`
-endings, 16 came on a question refused as asked already with its allowance left, 2 of them on the planner's own
-suggestion.
+chose an action on offer where the step before had not failed and was not judged below `progress_bad` (0.2) (60
+calls, 575 s; after 24 of them the next look chose the same action again), 47 came after a step that got nowhere
+(26 calls, 291 s), 8 had nothing to act on and 27 looked into a group of options. And every rethink that brought
+nothing counted toward the ending alike: of the 20 `no_route` endings, 16 came on a question refused as asked
+already with its allowance left, 2 of them on the planner's own suggestion.
 
 * **A question to the planner is one call at a time, and can be stopped** (`planner.PlannerCall`,
   `ConsultMixin._planner_call`). It runs on a thread of its own; a newer question stops the one before it, and a
-  local server is sent the next only once the stopped one has let go, at its next line (`engine._planner_lock`):
-  asked twice at once it works on both answers. The on-device planner answers through the helper's main
-  connection and is never asked beside the loop.
+  question a local server may answer — any planner of a chain that could end up answering it
+  (`planner.answered_here`), not only a chain that is local throughout — is sent only once the stopped one has let
+  go, at its next line (`engine._planner_lock`): asked twice at once a local server works on both answers. A
+  question that is not for a route (text for a slot, the answer, the opinion on "done") stops a route still
+  running and leaves one that has landed for the next look. The on-device planner answers through the helper's
+  main connection and is never asked beside the loop.
 * **The planner's own suggestion is taken** with no question asked and nothing counted.
-* **With nothing gone wrong, an action the floor lets through and a screen not judged risky, the route is asked
-  for beside the loop** (`planner.beside`, the switch) while the action goes through every gate as before, and it
-  is taken in at the first look after it lands (`_merge_beside`). That route is tried before the planner is asked
-  again: the stretch the no-progress rule found is not asked about at that look.
+* **When the last step got somewhere by every measure the no-progress rule has, the action needs no text the
+  planner writes, the floor lets it through and the screen is not judged risky, the route is asked for beside the
+  loop** (`planner.beside`, the switch) while the action goes through every gate as before. Got somewhere means
+  none of what `_nowhere` counts: it did not fail, break its promise or only lead back, and was not judged below
+  `progress_bad`. The 96 above were counted by a narrower measure, the step before not failed and judged 0.2 or
+  more, which leaves out broken promises and steps that only led back; the floor stopped for the chosen action on
+  20 of them, so at most 76 go beside. The route is taken in at the first look after it lands (`_merge_beside`),
+  or, when it lands while the decider decides, before the planner is asked anything else at that look. It is
+  tried before the planner is asked again: the stretch the no-progress rule found is not asked about again until a
+  step has been taken (`Memory.stuck_at` marks a stretch by the steps taken and the step it begins at, which the
+  newest step's judgement on a later look does not move).
 * **Otherwise the route is waited for, and never past the run's time** (`engine.budget_s`): a step that got
-  nowhere (`_nowhere`, what the no-progress rule counts), nothing to act on, an action the floor stops for (20 of
-  the 96 above, by the floor's last verdict before the look), a planner that cannot be asked beside the loop, a
+  nowhere (`_nowhere`, what the no-progress rule counts), nothing to act on, an action whose text the planner is
+  asked to write (that question would stop the route before it came), an action the floor stops for (20 of the 96
+  above, by the floor's last verdict before the look), a planner that cannot be asked beside the loop or a decider
+  that answers through a local planner (it would be asked at the same server as the route, without the lock), a
   call still on its way, or no fruitless rethink left. An answer too late for its run is `late`, and the loop's own
-  budget check says what happens next.
+  budget check says what happens next. The first plan (`planner.when: always`) is asked once a run, whatever it
+  came to; a look the app did not answer asks it again once the app answers.
 * **A question says what it came to** (`consult.Route`): a new route, blocked, the same route, an empty answer
   (the last one stands), asked already (on this exact screen, structure and text, for this reason), the allowance
   spent, no planner, an error, late, pending, or not asked because the app could not be read. The fruitless count
