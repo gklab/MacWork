@@ -562,11 +562,17 @@ class PolicyMixin:
         icon in a Finder window. A menu item or a control whose own name is the name of another app on this
         Mac opens that app; the Mac's list of apps says which names those are.
         """
+        here = (ctx.app or {}).get("bundle_id")
         if a.channel in ("app", "shortcut"):
+            # Bringing back the main window of the app in front, or switching to it, stays in it: 34 of 125
+            # serves_goal questions in this Mac's audit asked that, and one was declined (0.22), so Finder, with
+            # no window open, was not given one back. Only by bundle, and only where the app in front has one: a
+            # Shortcut carries none, and neither does every app.
+            if here and a.target.get("bundle_id") == here:
+                return None
             return str(a.target.get("name") or "")
         if a.channel == "service":      # content handed to another app, which usually comes to the front with it
             return ""
-        here = (ctx.app or {}).get("bundle_id")
         if a.channel == "file" and a.verb in ("open", "reveal"):
             # whoever the system hands a file or a link to comes to the front — for a web link, the browser
             return None if here and a.target.get("bundle_id") == here else ""
