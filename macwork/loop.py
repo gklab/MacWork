@@ -741,8 +741,13 @@ class LoopMixin:
         # has to be judged to show it too: the expected evidence against the observed screen.
         evidence_ok = "step_evidence" not in d or d["step_evidence"] >= float(th.get("step_evidence", 0.6))
         blind = unreadable(look.obs)              # the app answered nothing on this look: it shows no evidence
-        if task.steps and task.plan and d.get("step_done", 0.0) >= float(th.get("done", 0.8)) and evidence_ok and not blind:
+        # …and a sub-goal the planner said nothing about the screen for is under no such check: it is ticked off
+        # only once a step has been taken since the plan last moved, or confident looks walk the plan again.
+        moved = bool(self._expected_evidence(task)) or len(task.steps) > task.memory.plan_moved_at
+        if task.steps and task.plan and d.get("step_done", 0.0) >= float(th.get("done", 0.8)) and evidence_ok and not blind \
+                and moved:
             task.plan_i += 1                      # a sub-goal is done; only "done" ends the task
+            task.memory.plan_moved_at = len(task.steps)
             progress(f"sub-goal done: {task.plan[task.plan_i - 1]}")
             return AGAIN
         if look.locked and move in ("blocked", "impossible", "rethink", "ask_user"):

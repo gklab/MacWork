@@ -393,6 +393,9 @@ class Memory:
     # oldest first: what the next replan is told (`moves_that_could_not_be_used`). A move that was only not
     # available yet leaves it once it is (`ConsultMixin._told_back`).
     unusable: dict[str, str] = field(default_factory=dict)
+    plan_moved_at: int = -1                                    # len(steps) when the plan last moved: a sub-goal was
+                                                               # ticked off, or an answer spliced in. A sub-goal with
+                                                               # no evidence is ticked off only after a step since
 
     # ---- the one way in and the one way out. The keys were built by hand in six places ("sig|handle",
     # "sig|label" before that) and read back in five; one of them still used the label a day after the

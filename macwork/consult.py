@@ -4,6 +4,7 @@ turning its concrete suggestions into options for the decider."""
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import threading
@@ -117,6 +118,7 @@ class Asked:
     brief: dict[str, Any] = field(default_factory=dict)
     asks_first: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
+    plan: list[dict[str, Any]] = field(default_factory=list)   # the plan as it stood (`_plan_view`): a replan is told it
 
 
 class ConsultMixin:
@@ -333,13 +335,28 @@ class ConsultMixin:
         # in the part of the prompt a local server keeps.
         return Asked(key=key, kind=kind, problem=problem, went_wrong=went_wrong, first=task.plan is None,
                      steps_at=len(task.steps), plan_i_at=task.plan_i, brief=self._brief(task, ctx, obs, affs),
-                     asks_first=list(self.floor_categories().values()), done=[s.action for s in task.steps])
+                     asks_first=list(self.floor_categories().values()), done=[s.action for s in task.steps],
+                     plan=self._plan_view(task))
+
+    def _plan_view(self, task: Task) -> list[dict[str, Any]]:
+        """The plan as a replan is told it: each sub-goal done, now or next, and for the one it is at, what the
+        screen was to show once it is done.
+
+        The replan was told the goal, what had been done and the problem, and never the plan: aff49b2812ff's knew
+        neither that 168 was expected nor that it was at sub-goal 1, and came back with nothing after 19.8 s."""
+        view: list[dict[str, Any]] = []
+        for i, sub in enumerate(task.plan or []):
+            view.append({"sub_goal": sub, "status": "done" if i < task.plan_i else "now" if i == task.plan_i else "next"})
+            if i == task.plan_i and self._expected_evidence(task):
+                view[-1]["expected_on_screen"] = self._expected_evidence(task)
+        return view
 
     def _ask_route(self, task: Task, asked: Asked) -> Callable[[Planning, threading.Event], Any]:
         goal = task.goal
         if asked.first:
             return lambda planning, stop: planning.plan(goal, asked.brief, asked.asks_first, stop=stop)
-        return lambda planning, stop: planning.replan(goal, asked.brief, asked.done, asked.problem, asked.asks_first, stop=stop)
+        return lambda planning, stop: planning.replan(goal, asked.brief, asked.done, asked.problem, asked.asks_first,
+                                                      plan=asked.plan, stop=stop)
 
     def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str,
                  affs: list[Affordance] | None = None, kind: str = "rethink", bounded: bool = True) -> Route:
@@ -412,11 +429,13 @@ class ConsultMixin:
         remembered all the same, and asked about again on that screen it was refused as already asked."""
         self.spend_allowance(task, "corrections" if asked.went_wrong else "replans")
         task.memory.consulted.add(asked.key)
+        # A key as the keyboard reads it, before anything is compared: 'cmd + n' is the move 'cmd+n' was.
+        moves = [{**t, "keys": canonical_combo(t["keys"]) or t["keys"]} if t.get("keys") else t for t in plan.get("try") or []]
         # Asked again, the planner may give the plan it gave last time. A real task was handed the same two
         # sub-goals three times running, 25-40 s apiece on this Mac's local model, and each time looked again
         # instead of acting. The same answer is no new route — which is what `max_fruitless_rethinks` counts,
         # and past it the task says why it is stuck instead of asking a fourth time.
-        route = list(plan["steps"]) + [self._suggestion_label(t) for t in plan.get("try") or []]
+        route = list(plan["steps"]) + [self._suggestion_label(t) for t in moves]
         if route and route == task.memory.last_route and not plan.get("blocked"):
             log.info("planner: the same route as last time")
             return Route.SAME
@@ -425,7 +444,7 @@ class ConsultMixin:
         # are built (`Memory.withheld_reason`): a suggestion that did nothing on this screen is withheld on it and
         # offered on any other. Dropped here, it was dropped from every screen.
         since = [s.action for s in task.steps[asked.steps_at:]]
-        tries = [t for t in plan.get("try") or [] if not self._done_since(t, since)]
+        tries = [t for t in moves if not self._done_since(t, since)]
         blocked = str(plan.get("blocked") or "")
         if not plan["steps"] and not tries and not blocked:
             # Nothing in it: the tries it gave before are still on offer. Answered this way, every try was
@@ -439,18 +458,65 @@ class ConsultMixin:
         task.pace.fruitless = 0
         if blocked:
             return Route.BLOCKED
-        if plan["steps"]:
-            task.plan, task.plan_evidence = plan["steps"], list(plan.get("evidence") or [])
-        task.plan, task.plan_i = (task.plan or []), 0
         self._plan_inputs(task, ctx, plan.get("inputs") or {})
-        self.audit.record("plan", task=task.id, steps=plan["steps"], problem=asked.problem)
+        self._admit_moves(task, tries)
+        at = self._splice(task, plan, asked)
+        # where it went in, and how big each part of what the planner was told was: on this Mac's local model the
+        # prompt is most of what a plan costs (160-200 tokens a second to read)
+        self.audit.record("plan", task=task.id, steps=plan["steps"], problem=asked.problem, at=at,
+                          brief_chars={k: len(json.dumps(v, ensure_ascii=False, default=str)) for k, v in asked.brief.items()})
         return Route.NEW
+
+    def _admit_moves(self, task: Task, tries: list[dict[str, Any]]) -> None:
+        """What of an answer's moves cannot be used yet, told back from the moment it is taken in (`_told_back`): a key
+        that is no key, and text nothing the task has seen holds, which waits until a screen shows it (`_suggested`
+        looks again at every look, and takes back what it then finds)."""
+        facts = task.memory.facts
+        for t in tries:
+            if t.get("keys") and canonical_combo(t["keys"]) is None:
+                self._told_back(task, t, NOT_A_KEY)
+            elif t.get("type") and (facts is None or facts.source_of(t["type"]) is None):
+                self._told_back(task, t, NOT_YET)
+
+    def _splice(self, task: Task, plan: dict[str, Any], asked: Asked) -> int | None:
+        """Take an answer's sub-goals in as the rest of the plan, from the sub-goal the plan was at when it was asked;
+        where they went in, or None when they did not.
+
+        Every answer replaced the whole plan and set the task back to sub-goal 1, an answer with moves only as well:
+        of the 773 answers taken in in this Mac's audit, 59 came while the plan was past its first sub-goal, and put
+        the task back at one it had done (none had moves only). The replan is told the plan (`_plan_view`) and gives
+        the rest of it. An answer with moves only leaves the plan where it is. One that lands after the plan has
+        moved on — asked beside the loop, taken in steps later — brings its moves: its sub-goals are the rest of a
+        plan as it stood before, and set in at the sub-goal it was asked at, they would set the task back."""
+        steps = list(plan["steps"])
+        if not steps:
+            if task.plan is None:
+                task.plan = []                    # a plan was made, of moves only: the next question is a replan
+            return None
+        if task.plan_i != asked.plan_i_at:
+            log.info("planner: the plan moved on while it was asked; its moves only")
+            return None
+        old = list(task.plan or [])
+        at = min(asked.plan_i_at, len(old))
+        had = (list(task.plan_evidence or []) + [""] * len(old))[: len(old)]
+        said = (list(plan.get("evidence") or []) + [""] * len(steps))[: len(steps)]
+        task.plan, task.plan_evidence, task.plan_i = old[:at] + steps, had[:at] + said, at
+        task.memory.plan_moved_at = len(task.steps)
+        return at
 
     def _done_since(self, t: dict[str, Any], since: list[str]) -> bool:
         """Was this try taken among the steps `since`? By the label it is offered under, which for a key also
-        names the menu item it turns out to be ("press cmd+n (suggested by the planner) (menu File ▸ New)")."""
+        names the menu item it turns out to be ("press cmd+n (suggested by the planner) (menu File ▸ New)") — or as
+        the option on screen it names (`find_named`, less a menu item's place, which a step's label does not keep):
+        an action by that option's name, a named key alone by the keys provider's key."""
         label = self._suggestion_label(t)
-        return bool(label) and any(a == label or a.startswith(label + " (") for a in since)
+        if not label:
+            return False
+        key = canonical_combo(t["keys"]) if t.get("keys") else None
+        alone = key if key and "+" not in key else None
+        name = plain_name(t["action"]) if t.get("action") else None
+        return any(a == label or a.startswith(label + " (") or (name and plain_name(a) == name)
+                   or (alone and canonical_combo(plain_name(a)) == alone) for a in since)
 
     def _write_answer(self, task: Task, ctx: Ctx | None, obs: Observation | None) -> None:
         """The goal asked for information: the planner states it from what the screen (and the web) showed.

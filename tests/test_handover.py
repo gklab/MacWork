@@ -305,6 +305,7 @@ def test_moves_that_could_not_be_used_are_told_to_the_planner(tmp_path, shown):
     task = eng._new_task("compute 17×23 in the calculator, then write the result into a new document", {}, None)
     ctx = eng._step_context(task)
     assert eng._consult(task, ctx, observe(ctx), "the actions on screen do not lead toward the goal")
+    assert list(task.memory.unusable) == ["press menu item 「General」", "type 391"], "not told back until a look"
     eng._look(task, eng._step_context(task))                             # neither there yet
     if shown:
         helper.shows, helper.extra = "391", [{"ref": "g2.8", "role": "AXButton", "rdesc": "button", "title": "Open",

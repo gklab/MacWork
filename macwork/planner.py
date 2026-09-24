@@ -686,9 +686,12 @@ class Planning:
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}
 
     def replan(self, goal: str, context: dict[str, Any], done: list[str], problem: str,
-               asks_first: list[str] | None = None, stop: threading.Event | None = None) -> dict[str, Any]:
-        out = self._ask("planner_replan", PLAN_SCHEMA, stop=stop, goal=goal, context=context, done=done, problem=problem,
-                        asks_first=list(asks_first or []))
+               asks_first: list[str] | None = None, plan: list[dict[str, Any]] | None = None,
+               stop: threading.Event | None = None) -> dict[str, Any]:
+        """`plan`: the plan so far, each sub-goal said done, now or next (`ConsultMixin._plan_view`). The answer is the
+        rest of it, from the sub-goal marked now."""
+        out = self._ask("planner_replan", PLAN_SCHEMA, stop=stop, goal=goal, plan=list(plan or []), context=context, done=done,
+                        problem=problem, asks_first=list(asks_first or []))
         steps, evidence = _steps(out.get("steps"), self.max_steps)
         return {"steps": steps, "evidence": evidence, "inputs": {str(k): str(v) for k, v in (out.get("inputs") or {}).items()},
                 "try": _tries(out.get("try"))[: self.max_steps], "blocked": str(out.get("blocked") or "").strip()}
