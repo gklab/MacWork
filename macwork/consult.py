@@ -6,7 +6,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -15,13 +14,42 @@ from typing import Any, Callable
 
 from .decider import DeciderError, noul
 from .model import Affordance, Observation, Step, Task, exact_state
-from .observe import Ctx, named_combo
+from .observe import Ctx, canonical_combo, named_combo, plain_name
 from .onscreen import unreadable
 from .planner import ERROR_KINDS, PlannerCall, Planning, PlannerError, make_planner
 
 log = logging.getLogger(__name__)
 
 JUDGED = "judged to be what the task already had"   # the source of a text the decider let through
+
+# Why a move the planner gave could not be used, as the next replan is told (`Memory.unusable`). Only a move that
+# can never be used is to be given up: a text no screen has shown yet, or an option not on any screen seen since,
+# may well be there later — 391 once the calculator shows it, a TextEdit menu item once TextEdit is in front.
+NOT_A_KEY = "not a key combination: never repeat it"
+A_LABEL_TO_TYPE = "the name of an option on screen, written as text to type: act on the option instead, never type it"
+NOT_YET = "not available when suggested"
+_NEVER = (NOT_A_KEY, A_LABEL_TO_TYPE)
+
+
+def find_named(affs: list[Affordance], said: str) -> list[Affordance]:
+    """The options a planner's move names: those with that very label; else those with that name, as the planner
+    was shown it (`observe.plain_name`: no 'menu ' before a menu item's place, no key equivalent, nothing the
+    engine adds about what a control shows or where a key goes, '...' as '…'); else, for a menu item, the one at
+    that place in the menus (`target['menu_path']`: a checked item's mark is not part of its place). Never an
+    option whose label merely holds the words."""
+    said = str(said or "").strip()
+    if not said:
+        return []
+    exact = [a for a in affs if a.label == said]
+    if exact:
+        return exact
+    want = plain_name(said)
+    named = [a for a in affs if plain_name(a.label) == want]
+    if named:
+        return named
+    place = [x.strip() for x in want.split(" ▸ ")]
+    return [a for a in affs if a.channel == "menu" and len(place) > 1
+            and [str(x).replace("...", "…").strip() for x in a.target.get("menu_path") or []] == place]
 
 
 def _where(obs: Observation, name: str) -> tuple[float, float] | None:
@@ -215,6 +243,12 @@ class ConsultMixin:
             brief["done_so_far"] = [s.action for s in task.steps[-8:]]
             if acting:
                 brief["tried_without_effect"] = sorted({s.action for s in task.steps if not s.ok or not s.events})[:20]
+        if acting and task.memory.unusable:
+            # A move that could not be used was dropped without a word — a key that is no key (14 of the 251 key
+            # moves the decider was told of in this Mac's audit: 13 labels such as 'menu item 「General」', and
+            # '⌘\b'), text no screen had shown, an action naming nothing on screen — and the next replan was asked
+            # as if it had never been given.
+            brief["moves_that_could_not_be_used"] = dict(task.memory.unusable)
         return brief
 
     def _may_still_wait(self, task: Task, ctx: Ctx | None, obs: Observation) -> bool:
@@ -593,13 +627,13 @@ class ConsultMixin:
     @staticmethod
     def _planners_own(look: Any, a: Affordance) -> bool:
         """Is this one of the planner's current suggestions: a move it proposed (it carries the try it is), or an
-        action on screen it named (`Look.suggested`)? Known by what it is, not by an id prefix: the window's "read
-        all the text" option is t<n>, as the suggestions were."""
-        return "try" in a.target or a.label in look.suggested
+        option on screen one of its moves names (`Look.moves`, by id)? Known by what it is, not by an id prefix:
+        the window's "read all the text" option is t<n>, as the suggestions were."""
+        return "try" in a.target or a.id in look.moves
 
     def _suggestion_label(self, t: dict[str, Any]) -> str:
         if t.get("keys"):
-            return f"press {t['keys'].lower()} (suggested by the planner)"
+            return f"press {canonical_combo(t['keys']) or t['keys'].lower()} (suggested by the planner)"
         if t.get("type"):
             return f"type 「{t['type'][:40]}」 at the cursor (suggested by the planner)"
         if t.get("open_url"):
@@ -623,28 +657,83 @@ class ConsultMixin:
             return f"drag {t['drag'][0]} onto {t['drag'][1]}"
         return str(t.get("action") or "")
 
+    def _told_back(self, task: Task, t: dict[str, Any], why: str) -> None:
+        """This move could not be used, and why: what the next replan is told (`Memory.unusable`), the newest
+        `planner.max_steps` of them — one answer's worth of moves. A reason it can never be used stands over one
+        that is only for now."""
+        said, gone = self._move_said(t), task.memory.unusable
+        if gone.get(said) in _NEVER:
+            return
+        gone.pop(said, None)
+        gone[said] = why
+        for old in list(gone)[: max(0, len(gone) - int(self.cfg.get("planner.max_steps", 8)))]:
+            del gone[old]
+
+    def _usable_again(self, task: Task, t: dict[str, Any]) -> None:
+        """A move that was not available when it was suggested is now: the planner is no longer told it was not."""
+        said = self._move_said(t)
+        if task.memory.unusable.get(said) == NOT_YET:
+            del task.memory.unusable[said]
+
+    def _named_by_planner(self, task: Task, affs: list[Affordance]) -> dict[str, int]:
+        """{option id: the try that names it} for the options among `affs` that the planner's moves name: an
+        action by the option's label, name or place (`find_named`), and a key pressed alone by the key the keys
+        provider offers (a named key alone is no option of the planner's own: `_suggested`).
+
+        By id, not by label: labels repeat, and the planner writes the names it was shown, which are not the
+        labels. An action that names nothing here is told back as not available when suggested, until it does."""
+        own = [a for a in affs if "try" not in a.target]
+        keys: dict[str, list[Affordance]] = {}
+        for a in own:
+            if a.channel == "keys" and a.verb == "key":
+                keys.setdefault(canonical_combo(a.target.get("combo")) or "", []).append(a)
+        moves: dict[str, int] = {}
+        for i, t in enumerate(task.tries):
+            if t.get("action"):
+                found = find_named(own, t["action"])
+                if found:
+                    self._usable_again(task, t)
+                else:
+                    self._told_back(task, t, NOT_YET)
+            elif t.get("keys"):
+                combo = canonical_combo(t["keys"])
+                found = keys.get(combo, []) if combo and "+" not in combo else []
+            else:
+                continue
+            for a in found:
+                moves.setdefault(a.id, i)
+        return moves
+
     def _suggested(self, task: Task, obs: Observation | None = None) -> list[Affordance]:
-        """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (its suggested
-        labels are marked on the matching screen actions). The decider chooses; nothing runs unasked. A drag is
+        """The planner's keystroke, typing and drag suggestions, as options beside what is on screen (the options on
+        screen its moves name are marked: `_named_by_planner`). The decider chooses; nothing runs unasked. A drag is
         offered only when both of its ends are found on the live screen, and text to type only once the goal, the
         caller's inputs or a screen the task saw holds it word for word.
 
         Each is try<n> and carries which try it is (`target['try']`), and that marker is what the loop reads: the
         window's "read all the text" option is t<n>, as the suggestions were, and one taken removed the other."""
         out: list[Affordance] = []
-        # modifiers are fixed; the key itself is anything one character long or a name the helper knows —
-        # a whitelist of US-ANSI punctuation here rejected "cmd+ö" and every non-ASCII layout's keys
-        rx = self.cfg.get("engine.key_pattern",
-                          r"(?i)((cmd|shift|alt|option|opt|ctrl|control|fn)\+)+(.|f[0-9]{1,2}|return|enter|escape|esc"
-                          r"|tab|space|delete|backspace|forwarddelete|up|down|left|right|home|end|pageup|pagedown)")
+        # A key as the keyboard reads it (`canonical_combo`): 'Cmd + Shift + G', '⇧⌘G' and 'command+shift+g' are one
+        # key. A pattern over the words took 'cmd+ö' but none of those, and no named key pressed alone: of the 251
+        # key moves the decider was told of in this Mac's audit, it marked 73; 127 were a named key alone ('return',
+        # which the planner is told to add after typing into a search field) and 37 a combination written another
+        # way. A named key alone is the keys provider's own option, marked as the planner's.
+        on_offer = {canonical_combo(a.target.get("combo")) for a in (obs.affordances if obs is not None else [])
+                    if a.channel == "keys" and a.verb == "key"}
         for i, t in enumerate(task.tries):
-            if t.get("keys") and re.fullmatch(rx, t["keys"]):
+            if t.get("keys"):
+                combo = canonical_combo(t["keys"])
+                if combo is None:
+                    self._told_back(task, t, NOT_A_KEY)
+                    continue
+                if "+" not in combo and combo in on_offer:
+                    continue                  # the keys provider's own option is the planner's (`_named_by_planner`)
                 # named by the app's own menu item where it has one: a bare combo is invisible to both the
                 # word list and the classifier, which is how a suggested cmd+s was released as an edit
-                named = named_combo(obs, t["keys"]) if obs is not None else None
+                named = named_combo(obs, combo) if obs is not None else None
                 out.append(Affordance(f"try{i}", "keys", "key",
                                       self._suggestion_label(t) + (f" ({named})" if named else ""),
-                                      {"combo": t["keys"].lower(), "try": i}))
+                                      {"combo": combo, "try": i}))
             elif t.get("type"):
                 # Only text the goal, the caller's inputs or a screen the task saw holds word for word, checked
                 # again on every look (no request): until then the move waits, and 391 is offered once a screen
@@ -658,10 +747,18 @@ class ConsultMixin:
                 # Text it lets through is never a move on offer: it goes only into a slot a plan's fill gives it
                 # for (`_fill`), and typing it there is judged by the floor again with the text in its label. The
                 # verdict is kept (`Memory.admitted`): the same text is not judged again, for that slot or another.
+                # Either way the next replan hears of it (`_told_back`): an option's own name put into type is not
+                # text to type, ever; a text no screen has shown yet may be once one does.
+                if obs is not None and find_named(obs.affordances, t["type"]):
+                    self._told_back(task, t, A_LABEL_TO_TYPE)
+                    continue
                 source = self._traced(task, obs, t["type"])
-                if source is not None:
-                    out.append(Affordance(f"try{i}", "keys", "type", self._suggestion_label(t),
-                                          {"text": t["type"], "source": source, "try": i}))
+                if source is None:
+                    self._told_back(task, t, NOT_YET)
+                    continue
+                self._usable_again(task, t)
+                out.append(Affordance(f"try{i}", "keys", "type", self._suggestion_label(t),
+                                      {"text": t["type"], "source": source, "try": i}))
             elif t.get("open_url"):
                 # the planner sees this Mac's home as `~` (privacy.replace) and writes it back that way — a
                 # real run suggested `file://~/Library/...`, which nothing can open. Pseudonyms are restored

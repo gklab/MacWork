@@ -117,7 +117,8 @@ class Look:
     floor_state: dict[str, Any] = field(default_factory=dict)    # no screen text: the floor is judged on the action alone
     aside: Affordance | None = None           # a control that sets an interruption aside: taken before the goal is asked about
     pinned: set[str] = field(default_factory=set)   # ids offered on their own for the planner: in no group's pages
-    suggested: set[str] = field(default_factory=set)   # the labels of the actions on screen the planner named
+    moves: dict[str, int] = field(default_factory=dict)   # option id -> the planner's try that names it
+                                                          # (ConsultMixin._named_by_planner)
     consulted: bool = False                   # the planner was asked at this look: nothing asks it again here
 
     @property
@@ -401,6 +402,7 @@ class LoopMixin:
         declare_keys(ctx, obs, offered_by_planner)   # a suggested key goes where this look's keys go
         affs = [a for a in obs.affordances + offered_by_planner if not self._denied(a, ctx.app)]
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
+        named = self._named_by_planner(task, affs)   # of what is on screen, withheld here or not
         # Keyed on what an action *is* (its identity, else its steady name), not on what it says right now.
         # Facts about this screen — did nothing here, got nowhere from here, could not be done here, came back
         # from here — take the action out, and so does "not what the goal asked for"; each is said to the
@@ -425,7 +427,8 @@ class LoopMixin:
             if not affs:
                 return self._finish(task, "failed", "the screen is locked", cause="screen_locked")
 
-        suggested = {t.get("action") for t in task.tries if t.get("action")}
+        offered_ids = {a.id for a in affs}
+        moves = {k: i for k, i in named.items() if k in offered_ids}
         took_back = set(self._retracted_here(task, here))
         # What the planner suggested is offered on its own, wherever it lives: its own options and the actions
         # it named, by id, never their whole groups. A named action pinned its group: in a real task 'type into
@@ -433,7 +436,7 @@ class LoopMixin:
         # read-all's t{n}, which pinned the app's area. Pinned groups went first in the order they were found,
         # so the planner's own options, appended after every provider, were what the budget cut: in that task,
         # on each of the 11 looks that had one.
-        pinned = {a.id for a in offered_by_planner} | {a.id for a in affs if a.label in suggested}
+        pinned = {a.id for a in offered_by_planner} | set(moves)
         opened = self._opened_here(task, ctx, obs)
         fold_over = int(e.get("fold_groups_over", 60))   # also the least of an opened group shown at a time
         flat, folded = arrange(affs, int(e.get("max_options", 200)) - 1, {opened["group"]: opened["start"]} if opened else {},
@@ -442,7 +445,7 @@ class LoopMixin:
         if left_out > 0:
             look_note = f"{left_out} more actions did not fit and are not listed"
         options = {"done": "done: the goal is accomplished, stop"} | \
-            {a.id: a.describe() + (" — suggested by the planner" if a.label in suggested else "")
+            {a.id: a.describe() + (" — suggested by the planner" if a.id in moves else "")
              + (" — chosen from this exact screen before, and the task then came back here" if a.handle() in took_back else "")
              for a in flat}
         groups = {f"g{i}": k for i, k in enumerate(folded)}
@@ -450,7 +453,7 @@ class LoopMixin:
         if len(options) < 2:                      # nothing left to do here that has not been tried
             options["none"] = "none: nothing available here helps"
 
-        state = self._state(task, ctx, obs, sig, flat, withheld_here, suggested, locked)
+        state = self._state(task, ctx, obs, sig, flat, withheld_here, locked)
         if len(stuck) >= int(self.cfg.get("engine.max_no_progress", 3)):
             state["no_progress"] = f"the last {len(stuck)} actions got the task nowhere: what was tried is not the way"
         if withheld:   # an option that vanishes without a word reads as never having been there
@@ -495,7 +498,7 @@ class LoopMixin:
         look = Look(ctx, obs, sig, locked, affs, flat, folded, groups, options, state, questions, fp_seen, dead_before, timing)
         look.floor_map, look.floor_questions, look.floor_state = floor_map, floor_q, floor_state
         look.aside, look.pinned = aside, pinned
-        look.suggested, look.consulted = {x for x in suggested if x}, consulted
+        look.moves, look.consulted = moves, consulted
         return look
 
     def _judge_led_back(self, task: Task, sig: str) -> None:
@@ -514,7 +517,7 @@ class LoopMixin:
         task.memory.first_seen.setdefault(sig, len(task.steps))
 
     def _state(self, task: Task, ctx: Ctx, obs: Observation, sig: str, flat: list[Affordance],
-               withheld_here: dict[str, set[str]], suggested: set[str | None], locked: bool) -> dict[str, Any]:
+               withheld_here: dict[str, set[str]], locked: bool) -> dict[str, Any]:
         """What the decider is shown. goal and inputs come from the user; everything else is what the Mac shows."""
         hist = self._history(task)
         state: dict[str, Any] = {"goal": task.goal, "screen_locked": locked,
@@ -1101,9 +1104,11 @@ class LoopMixin:
         # by the try it is, not its label: a key suggestion is labelled with the menu item it turns out to be
         # ("press cmd+shift+g (suggested by the planner) (menu Go ▸ Go to Folder…)"), so matching on the
         # bare suggestion never removed it and a real task pressed cmd+shift+g on four steps out of eight. Nor
-        # by an id: "read all the text" is t<n>, as the suggestions were, and taking it took one of them away
-        task.tries = [t for i, t in enumerate(task.tries)
-                      if chosen.target.get("try") != i and self._suggestion_label(t) != chosen.label]
+        # by an id: "read all the text" is t<n>, as the suggestions were, and taking it took one of them away.
+        # An option on screen a move names is that move (`Look.moves`), whatever it is labelled now
+        taken = look.moves.get(chosen.id) if look is not None else None
+        taken = chosen.target.get("try") if taken is None else taken
+        task.tries = [t for i, t in enumerate(task.tries) if taken != i and self._suggestion_label(t) != chosen.label]
         task.pace.redo = 0
         progress(chosen.label)
         t0 = time.monotonic()

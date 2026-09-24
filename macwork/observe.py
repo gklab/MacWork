@@ -26,7 +26,7 @@ from typing import Any, Callable
 from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
-from .model import Affordance, Observation, Slot, clip, with_state, TaskScope
+from .model import Affordance, Observation, Slot, clip, steady, with_state, TaskScope
 from .onscreen import app_windows, input_method_panel, same_place, still_launching, unreadable
 from .sight import compare as compare_pictures
 
@@ -225,6 +225,13 @@ def _shortcut(cmd: dict[str, Any] | None) -> str:
     m = int(cmd.get("mods") or 0)
     keys = "".join(sym for bit, sym in _MODS if m & bit) + ("" if m & 8 else "⌘")
     return f" ({keys}{shown})"
+
+
+# What `_shortcut` puts at the end of a menu item's label, and only that: modifiers then one key, or a key the Mac
+# has a glyph for, pressed alone (see `plain_name`).
+_KEY_EQUIVALENT = re.compile(r" \((?:[⇧⌥⌃]*⌘|[⇧⌥⌃]+)(?:F\d{1,2}|\S)\)$|"
+                             r" \((?:F\d{1,2}|[" + re.escape("".join(sorted({g for g in _KEY_GLYPHS.values() if len(g) == 1})))
+                             + r"])\)$")
 
 
 _COMBO_MODS = [(8, None), (4, "ctrl"), (2, "alt"), (1, "shift")]
@@ -1985,6 +1992,20 @@ def plain_key(label: str) -> str:
     is — for a routine, which finds a key by its label (a key has no other identity) and was recorded with the
     key wherever it was then."""
     return _KEY_SAID.sub("", label or "")
+
+
+@lru_cache(maxsize=8192)
+def plain_name(label: str) -> str:
+    """An option's name as a planner writes it back: its label without what the engine adds to it — 'menu '
+    before a menu item's place, the key equivalent after it (`_shortcut`), what `declare_keys` says of a key
+    (`plain_key`), what a control shows right now (`model.steady`) — and with '...' written '…'.
+
+    A move names an option as the planner saw it: a menu item by its place, a field as it stood when the plan was
+    written. Matched on the whole label, 'File ▸ New Document' named nothing where the option is 'menu File ▸ New
+    Document (⌘N)', nor a field whose label had gained '(now: x)' since, and a key named nothing once its label
+    said which button Return presses."""
+    x = _KEY_EQUIVALENT.sub("", steady(plain_key(label or "")).strip())
+    return x.removeprefix("menu ").replace("...", "…").strip()
 
 
 def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:

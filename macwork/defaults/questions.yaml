@@ -170,7 +170,8 @@ planner_replan: |-
   actions_available>"}}, {{"keys": "<key combo>"}}, {{"type": "text to type"}}, or {{"drag": ["<label to drag>",
   "<label to drop onto>"]}}. Prefer entry points that actually appear in actions_available (its menus list the
   real shortcuts) over habits from other apps. After typing into a command palette or search field, add
-  {{"keys": "return"}}. Never repeat anything in tried_without_effect.
+  {{"keys": "return"}}. Never repeat anything in tried_without_effect. moves_that_could_not_be_used says why moves
+  you gave before could not be used: give none again that it says never to repeat.
   If what was tried shows the app is gated by something only the user can do (a sign-in or sign-up screen, a
   password, a system permission, a purchase), put a one-line explanation of what the user must do in "blocked"
   and leave "try" empty; otherwise leave "blocked" empty. The engine will not do the following without stopping
