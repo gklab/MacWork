@@ -26,7 +26,7 @@ from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
 from .model import Affordance, Observation, Slot, clip, with_state, TaskScope
-from .onscreen import app_windows, input_method_panel, still_launching
+from .onscreen import app_windows, input_method_panel, still_launching, unreadable
 
 log = logging.getLogger(__name__)
 
@@ -354,7 +354,10 @@ def menu(ctx: Ctx, obs: Observation) -> None:
                                                       {"ref": c, "pid": ctx.app["pid"], "combo": _combo(n.get("cmd")), "title": title,
                                                        "path": " ▸ ".join(place), "menu_path": place},
                                                       context=' ▸ '.join(path[:1]),
-                                                      key=_identity(ident, n.get("role"), n.get("subrole"), title)))
+                                                      key=_identity(ident, n.get("role"), n.get("subrole"), title),
+                                                      # the selector behind the command, as the app names it; a
+                                                      # "_NS:" one is AppKit's numbering where the app gave no name
+                                                      facts={"identifier": ident} if ident and not ident.startswith("_NS:") else {}))
                     if n.get("mark"):
                         obs.notes.setdefault("checked", []).append(' ▸ '.join(path + [title]))
             elif n.get("role") == "AXMenu":
@@ -427,6 +430,12 @@ def _label(n: dict[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
+def _kind(n: dict[str, Any]) -> str:
+    """An element's role and subrole as the Mac declares them: 'AXWindow/AXStandardWindow', 'AXSheet'."""
+    role, sub = str(n.get("role") or ""), str(n.get("subrole") or "")
+    return f"{role}/{sub}" if role and sub else role
+
+
 def _context_of(n: dict[str, Any], by_ref: dict[str, dict[str, Any]]) -> str:
     parts, p = [], n.get("parent")
     while p and len(parts) < 2:
@@ -485,6 +494,36 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         if p and (p in in_row or by_ref.get(p, {}).get("role") in select_roles):
             in_row.add(n["ref"])
 
+    # Where an element sits, as the Mac declares it: the nearest sheet or window above it, and whether a web
+    # page lies on the way, where the page writes the roles and identifiers itself. Worked out once per node.
+    placed: dict[str, tuple[str, bool]] = {}
+
+    def place(ref: str) -> tuple[str, bool]:
+        if ref not in placed:
+            placed[ref] = ("", False)              # a tree that led back to itself would stop here
+            up = by_ref.get(by_ref.get(ref, {}).get("parent"))
+            if up is not None:
+                holder, web = place(up["ref"])
+                placed[ref] = (_kind(up) if up.get("role") in ("AXSheet", "AXWindow") else holder,
+                               web or up.get("role") == "AXWebArea")
+        return placed[ref]
+
+    def declared(n: dict[str, Any]) -> dict[str, Any]:
+        """What the Mac declares about an element, for every action it offers (`Affordance.facts`). An
+        identifier only where the app wrote it for a control: content builds its identifiers from its data
+        (content_roles), and a page writes its own."""
+        holder, web = place(n["ref"])
+        web = web or n.get("role") == "AXWebArea"
+        ident = str(n.get("ident") or "")
+        out: dict[str, Any] = {"control": _kind(n)}
+        if holder:
+            out["in"] = holder
+        if ident and not ident.startswith("_NS:") and n.get("role") not in content_roles and not web:
+            out["identifier"] = ident
+        if web:
+            out["_web_content"] = True            # never sent: see PolicyMixin._declared
+        return out
+
     for n in nodes:
         role = n.get("role", "")
         rd = n.get("rdesc") or role.removeprefix("AX").lower()
@@ -496,6 +535,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
         if n["ref"] in in_row and (role in text_roles or role in read_roles or role in ("AXCell", "AXImage", "AXGroup")):
             continue
         ctx_text = _context_of(n, by_ref) or where
+        facts = declared(n)
         # A control named only by its tooltip is shown by it, but the tooltip is not the control's own words:
         # 「此按钮也可以执行缩放窗口的操作」 names the full-screen button, and its 执行 is a floor word for running
         # code, which raised the bar the button had to clear to 0.9: 29 of the 42 verdicts recorded for it since
@@ -513,7 +553,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                     target["floor_text"] = with_state(f"select {rd}" + (f" 「{shown[:80]}」" if shown else ""), state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select",
                                                   with_state(f"select {rd} 「{name[:80]}」", state),
-                                                  target, context=ctx_text, key=ikey))
+                                                  target, context=ctx_text, key=ikey, facts=dict(facts)))
         if role in text_roles and n.get("editable") is False and not by_capability:   # shows text, cannot be typed into
             role = "AXStaticText"
         if typeable(n, role):
@@ -524,17 +564,21 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                 obs.notes.setdefault("fields", []).append(f"{label}: {str(n['value'])[: int(wcfg.get('field_chars', 300))]}")
             obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type",
                                               with_state(f"type into {rd} 「{label}」", current),
-                                              target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
+                                              target, slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey,
+                                              facts=dict(facts)))
             if has_range(n, role) and n.get("value") and n.get("editable") is not False:
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "select_text",
                                                   f"select part of the text in {rd} 「{label}」", dict(target),
-                                                  slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text, key=ikey))
+                                                  slots={"selection": Slot("text", "the exact text to select, as it appears there")}, context=ctx_text, key=ikey,
+                                                  facts=dict(facts)))
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "cursor_end",
-                                                  f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text, key=ikey))
+                                                  f"put the cursor at the end of the text in {rd} 「{label}」", dict(target), context=ctx_text, key=ikey,
+                                                  facts=dict(facts)))
             if role in set(wcfg.get("submit_roles") or []):
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "type_submit",
                                                   with_state(f"type into {rd} 「{label}」 and press Return", current), dict(target),
-                                                  slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey))
+                                                  slots={"text": Slot("text", f"what to type into 「{label}」")}, context=ctx_text, key=ikey,
+                                                  facts=dict(facts)))
             # An element can be both: a table cell takes text *and* has a context menu. Probing capabilities
             # finds many more typing targets than the role list did, so swallowing their actions here would
             # quietly take away what they could already do.
@@ -564,7 +608,7 @@ def element_affordances(ctx: Ctx, obs: Observation, nodes: list[dict[str, Any]],
                     target["floor_text"] = with_state(f"{verb + ' ' if verb else ''}{rd}"
                                                       + (f" 「{by_subrole}」" if by_subrole else "") + goes, state)
                 obs.affordances.append(Affordance(f"{prefix}{len(obs.affordances)}", "window", "press", text,
-                                                  target, context=ctx_text, key=ikey))
+                                                  target, context=ctx_text, key=ikey, facts=dict(facts)))
         if role in read_roles or (n.get("role") in text_roles and n.get("editable") is False):
             t = str(n.get("value") or n.get("title") or n.get("desc") or "").strip()
             if t and n.get("url"):   # where a link goes is the thing worth knowing about it
@@ -765,6 +809,7 @@ def window(ctx: Ctx, obs: Observation) -> None:
             ctx.cache.setdefault("window_frame_by_pid", {})[ctx.app["pid"]] = nodes[0]["frame"]
         if nodes[0].get("document"):      # the file this window is showing, as the app itself reports it
             obs.notes["window_document"] = nodes[0]["document"]
+        _note_window_kind(obs, s, nodes)
     n0 = len(obs.affordances)
     element_affordances(ctx, obs, nodes, "w")
     _own_prompts(ctx, obs, nodes, n0)
@@ -782,6 +827,42 @@ def window(ctx: Ctx, obs: Observation) -> None:
     _note_launching(ctx, obs, s)
     obs.notes["window_ms"] = s.get("ms")
     obs.notes["window_truncated"] = s.get("truncated")
+
+
+def _note_window_kind(obs: Observation, s: dict[str, Any], nodes: list[dict[str, Any]]) -> None:
+    """What kind of window a key pressed now goes to, as the Mac declares it, and which buttons Return and
+    Escape press there.
+
+    - `window_kind`: the role and subrole of the sheet in front if one is up ('AXSheet'), else of the window
+      ('AXWindow/AXStandardWindow', 'AXWindow/AXDialog'). A key was judged by its name alone, so its first
+      verdict in an app served every window of it, and every sheet.
+    - 'a window read only in part' when the walk was cut and no sheet was seen. A sheet is among the window's
+      last children and the walk reaches it last, so a cut walk loses it first: a window read in part is not
+      known to be the window without the sheet.
+    - `default_button` and `cancel_button`: the title of the button that sheet or window names as the one
+      Return or Escape presses (helper 0.2.0), never its tooltip. An older helper names none, and neither does
+      a walk cut before it reached the button; a disabled button is not pressed by its key."""
+    by_ref = {n.get("ref"): n for n in nodes}
+
+    def depth(n: dict[str, Any]) -> int:
+        d, p = 0, n.get("parent")
+        while p in by_ref and d < 64:
+            d, p = d + 1, by_ref[p].get("parent")
+        return d
+    sheets = [(depth(n), i, n) for i, n in enumerate(nodes) if n.get("role") == "AXSheet"]
+    if sheets:
+        holder = max(sheets, key=lambda x: x[:2])[2]    # a sheet on a sheet: the one in front
+    elif s.get("truncated") or nodes[0].get("more_children"):
+        obs.notes["window_kind"] = "a window read only in part"
+        return
+    else:
+        holder = nodes[0]
+    obs.notes["window_kind"] = _kind(holder)
+    for key in ("default_button", "cancel_button"):
+        button = by_ref.get(holder.get(key)) or {}
+        title = str(button.get("title") or "").strip()
+        if title and button.get("enabled", True) is not False:
+            obs.notes[key] = title
 
 
 def _note_launching(ctx: Ctx, obs: Observation, said: dict[str, Any]) -> None:
@@ -1613,6 +1694,68 @@ def keys(ctx: Ctx, obs: Observation) -> None:
                                           {"combo": combo}))
 
 
+def _keys_in(ctx: Ctx, obs: Observation) -> str:
+    """Where a key pressed now goes: the kind of window the look read (`_note_window_kind`), 'no window open',
+    or 'a window that could not be read'. The last when the app did not answer or is still starting with
+    nothing on screen yet (`onscreen.unreadable`), and when its tree came back empty while the window server
+    shows a window of its own: the look on which an app first times out returns an empty tree and nothing
+    else, and was taken for one with no window."""
+    if unreadable(obs):
+        return "a window that could not be read"
+    if obs.notes.get("window_kind"):
+        return str(obs.notes["window_kind"])
+    pid = (ctx.app or {}).get("pid")
+    if pid:
+        size = ctx.cfg.get("observe.windows.min_size") or [100, 60]
+        if app_windows(ctx.helper, pid, (int(size[0]), int(size[1]))):
+            return "a window that could not be read"
+    return "no window open"
+
+
+def declare_keys(ctx: Ctx, obs: Observation, affs: list[Affordance]) -> None:
+    """What the Mac declares about where each key and each keystroke of typing goes, as `Affordance.facts`:
+    `in` (`_keys_in`), `keyboard_on` (the role and subrole of the focused element, when the focus is in the
+    app being worked in) and `window_shows_a_file`. The floor keys its verdicts on them (policy._floor_key):
+    a key's verdict was formed once per app and served every window, sheet and field after it. 9 key picks in
+    this Mac's audit were judged by a verdict formed while the app had no window up, 7ffdee1b's Return at 0.58
+    among them.
+
+    A plain key's label also says what it triggers, where the Mac says so: the button a sheet or window names
+    for Return or Escape, and the kind of field the keyboard is in, by its role only — a field's name is the
+    page's or the app's text. Asked for every look's keys, the planner's suggested keys and the keys a way back
+    is chosen among, from the same look."""
+    keyed = [a for a in affs if a.channel == "keys"]
+    if not keyed:
+        return
+    if "keys_in" not in obs.notes:            # once a look: its keys and the planner's go to the same place
+        obs.notes["keys_in"] = _keys_in(ctx, obs)
+    where = str(obs.notes["keys_in"])
+    f = obs.focused or {}
+    here = (ctx.app or {}).get("pid")
+    on = _kind(f) if here and f.get("pid") == here and f.get("role") else ""
+    text_roles = set(ctx.cfg.get("observe.window.text_roles") or [])
+    field = (str(f.get("rdesc") or "") or str(f["role"]).removeprefix("AX").lower()) if on and f.get("role") in text_roles else ""
+    facts: dict[str, Any] = {"in": where, "window_shows_a_file": bool(obs.notes.get("window_document"))}
+    if on:
+        facts["keyboard_on"] = on
+    readable = where == obs.notes.get("window_kind")
+    for a in keyed:
+        a.facts.update(facts)
+        combo = canonical_combo(a.target.get("combo")) if a.verb == "key" else None
+        if not combo or "+" in combo:         # a combination is a command: its menu item says what it does
+            continue
+        said = []
+        if combo == "return" and readable and obs.notes.get("default_button"):
+            said.append(f"default button 「{obs.notes['default_button']}」")
+        if combo == "escape" and readable and obs.notes.get("cancel_button"):
+            said.append(f"cancel button 「{obs.notes['cancel_button']}」")
+        if field:
+            said.append(f"keyboard in {field}")
+        for s in said:
+            if f"({s})" not in a.label:
+                a.label += f" ({s})"
+
+
 @provider("focus")
 def focus(ctx: Ctx, obs: Observation) -> None:
     """Where the keyboard actually goes.
@@ -1645,7 +1788,7 @@ def focus(ctx: Ctx, obs: Observation) -> None:
     name = next((str(node[k]) for k in ("title", "desc", "placeholder")
                  if node.get(k) and not str(node[k]).startswith("_NS:")), "")
     obs.focused = {"pid": r.get("pid"), "app": r.get("app") or "", "bundle_id": r.get("bundle_id") or "",
-                   "role": node.get("role"), "rdesc": node.get("rdesc"), "label": name,
+                   "role": node.get("role"), "subrole": node.get("subrole"), "rdesc": node.get("rdesc"), "label": name,
                    "ref": node.get("ref"), "secure_input": bool(r.get("secure_input"))}
 
 
@@ -2220,6 +2363,7 @@ def observe(ctx: Ctx) -> Observation:
             log.info("provider %s failed: %s", name, exc)
         obs.notes[f"{name}_n"] = len(obs.affordances) - n0
         obs.notes[f"{name}_ms"] = round((time.monotonic() - t) * 1000)
+    declare_keys(ctx, obs, obs.affordances)   # after every provider: where the keys go is read from all of them
     _disambiguate(obs.affordances)
     ids = [a.id for a in obs.affordances]
     if len(ids) != len(set(ids)):

@@ -29,6 +29,13 @@ confirm:
                                       # which is what makes a German "Löschen" at 0.34 stop.
   classify_step_level: true   # mac_act classifies the action too (one request the first time it sees one).
                               # false: the words alone, which is only as wide as the two languages below
+  # Whether the classifier is told what the Mac declares about an action (`the_mac_declares`): the window or
+  # sheet it is in, the control's role and subrole, a menu item's identifier. Sending them changes the
+  # classifier's input, and how it scores with them is not measured yet: that takes a floor benchmark with
+  # this on and off, and the owner's go-ahead, before it is turned on. Keying cached verdicts on those facts
+  # is on regardless, because it is a safety property: a key judged in one kind of window is judged again
+  # in another, and a verdict formed while the window could not be read never serves one that can be.
+  declared_facts: false
   other: it does something else irreversible or outward-facing
   navigate: >-
     it only opens, shows, selects, plays or navigates to something (a folder, a page, a view, a setting, a list

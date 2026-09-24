@@ -121,6 +121,10 @@ class Affordance:
     yields: str = ""               # for an action that only *returns* something (a file's text, a window's): what
                                    # exactly it would return, as an identity that changes when the source does.
                                    # Once a task holds that, the action is complete and is not offered again
+    facts: dict[str, Any] = field(default_factory=dict)   # what the Mac declares about it: the window or sheet it
+                                   # is in, the control's role and subrole, a menu item's identifier, where the
+                                   # keyboard is for a key. Part of the floor's verdict key (policy._floor_key);
+                                   # never in a label or public(). A key starting with "_" is never sent anywhere
 
     def name(self) -> str:
         """What this action is called, without what it happens to show right now."""
