@@ -26,6 +26,7 @@ from .config import Config
 from .helper import Helper, HelperError
 from .appmodel import parse_services
 from .model import Affordance, Observation, Slot, with_state, TaskScope
+from .onscreen import app_windows, still_launching
 
 log = logging.getLogger(__name__)
 
@@ -743,8 +744,16 @@ def window(ctx: Ctx, obs: Observation) -> None:
             obs.notes["undescribed_frame"] = region
     if s.get("not_answering"):   # the app did not answer Accessibility in time; the helper will not ask again soon
         obs.notes["window_not_answering"] = True
+    _note_launching(ctx, obs, s)
     obs.notes["window_ms"] = s.get("ms")
     obs.notes["window_truncated"] = s.get("truncated")
+
+
+def _note_launching(ctx: Ctx, obs: Observation, said: dict[str, Any]) -> None:
+    """An app that has not finished launching may have no window *yet*: not the same as having none. The
+    helper says so (0.2.0), believed for engine.open_front_s after the launch (`onscreen.still_launching`)."""
+    if still_launching(said, ctx.running, ctx.app["pid"], float(ctx.cfg.get("engine.open_front_s", 6))):
+        obs.notes["app_launching"] = True
 
 
 @provider("windows")
@@ -753,6 +762,21 @@ def windows(ctx: Ctx, obs: Observation) -> None:
     if not ctx.app:
         return
     s = ctx.helper.call("ax.snapshot", pid=ctx.app["pid"], scope="windows", max_depth=0, max_nodes=50, actions=False)
+    _note_launching(ctx, obs, s)
+    if s.get("not_answering"):
+        # An app that did not answer has told nothing about its windows, and an empty list here used to say
+        # it had none: the decider read "none: the app has no window open" and was offered "bring back the
+        # main window" for an app that was starting or busy (reopen was chosen on 45 of the 158 such looks
+        # since 22ce357, against 49 of 2,338 answering ones). The window server needs no answer from the app,
+        # so what it has on screen is asked there; with nothing there, what it has open stays unknown.
+        obs.notes["window_not_answering"] = True
+        size = ctx.cfg.get("observe.windows.min_size") or [100, 60]
+        shown = app_windows(ctx.helper, ctx.app["pid"], (int(size[0]), int(size[1])))
+        obs.notes["window_stand_in"] = {k: shown[0][k] for k in ("id", "title", "frame")} if shown else None
+        if shown:
+            obs.notes["open_windows"] = [(f"「{w['title']}」" if w["title"] else "a window") + " (on screen; the app is not answering yet)"
+                                         for w in shown]
+        return                   # and nothing is reopened for an app that has not said what it has open
     titles = []
     for n in s.get("nodes", []):
         t = n.get("title") or ""
@@ -761,7 +785,9 @@ def windows(ctx: Ctx, obs: Observation) -> None:
             obs.affordances.append(Affordance(f"x{len(obs.affordances)}", "window", "raise", f"switch to the window 「{t}」",
                                               {"ref": n["ref"], "pid": ctx.app["pid"], "action": "AXRaise"}, context=ctx.app.get("name", "")))
     obs.notes["open_windows"] = titles
-    if not titles and ctx.app.get("path"):   # running without a window: macOS "reopen" brings its main window back
+    # running without a window: macOS "reopen" brings its main window back — unless it is still starting,
+    # when no window *yet* is not no window
+    if not titles and ctx.app.get("path") and not obs.notes.get("app_launching"):
         obs.affordances.append(Affordance(f"x{len(obs.affordances)}", "app", "reopen", f"bring back the main window of {ctx.app.get('name', 'the app')}",
                                           {"pid": ctx.app["pid"], "path": ctx.app["path"], "bundle_id": ctx.app.get("bundle_id"),
                                            "name": ctx.app.get("name")}, context=ctx.app.get("name", "")))

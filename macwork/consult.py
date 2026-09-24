@@ -11,6 +11,7 @@ from typing import Any
 from .decider import DeciderError, noul
 from .model import Affordance, Observation, Task
 from .observe import Ctx, named_combo
+from .onscreen import unreadable
 from .planner import Planning, PlannerError, make_planner
 
 log = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class ConsultMixin:
         if obs:
             brief["window"] = obs.window
             brief["screen_text"] = obs.screen_text[: int(self.cfg.get("planner.context_chars", 600))]
+            seen = self._evidence(obs)
             if acting:
                 skip = set(self.cfg.get("planner.context_skip_channels") or ["app", "shortcut", "file"])   # listed separately / noise
                 # …except the apps the goal names, first. Shown only the apps that happened to be running, a
@@ -81,9 +83,12 @@ class ConsultMixin:
                 pool = named + [a for a in (affs or obs.affordances) if a.channel not in skip]
                 brief["actions_available"] = [a.label for a in pool][: int(self.cfg.get("planner.context_actions", 120))]
             else:
-                brief.update({k: v for k, v in self._evidence(obs).items() if k != "controls_on_screen"})
-            if "open_windows" in obs.notes:
-                brief["open_windows"] = obs.notes["open_windows"] or "none: the app has no window open"
+                brief.update({k: v for k, v in seen.items() if k != "controls_on_screen"})
+            # What the app has open, and whether it answered at all, in the decider's words for either kind of
+            # question. The route prompts logged at 07:24:35 and 07:25:18 on 09-23 said only "open_windows:
+            # none: the app has no window open" of an app that was starting, and both plans began by opening
+            # its window.
+            brief.update({k: seen[k] for k in ("open_windows", "app_not_answering") if k in seen})
         if acting:
             routines = [sk["goal"] for sk in self.skills.for_app((ctx.app or {}).get("bundle_id") if ctx else None)]
             if routines:
@@ -94,10 +99,27 @@ class ConsultMixin:
                 brief["tried_without_effect"] = sorted({s.action for s in task.steps if not s.ok or not s.events})[:20]
         return brief
 
+    def _may_still_wait(self, task: Task, ctx: Ctx | None, obs: Observation) -> bool:
+        """This look read nothing of the app, and waiting may still change that: it is still starting, the next
+        look may wait for it (`ready_waits` left, and it has not stayed silent through one), or the decider may
+        (`waits` left). Once none of that holds, the planner may be asked with the app's silence in its brief:
+        for an app that never answers, a way around it is the only way on."""
+        why = unreadable(obs)
+        if not why:
+            return False
+        pid = (ctx.app or {}).get("pid") if ctx is not None else None
+        ready_wait = pid is not None and pid not in ctx.scope.silent and self.allowance_left(task, "ready_waits")
+        return why == "starting" or ready_wait or self.allowance_left(task, "waits")
+
     def _consult(self, task: Task, ctx: Ctx | None, obs: Observation | None, problem: str, affs: list[Affordance] | None = None) -> bool:
         """Ask the planner for (new) sub-goals. False when there is none, or it has been asked enough."""
         backend = self.planning_backend
         if backend is None or self.cfg.get("planner.when", "auto") == "never":
+            return False
+        if obs is not None and self._may_still_wait(task, ctx, obs):
+            # Before anything is spent or remembered as asked: the same question can be asked once the app
+            # answers. 53 plans since 22ce357 were made right after a look the app had not answered.
+            log.info("planner: not asked while the app cannot be read and can still be waited for")
             return False
         # Two different reasons to think again, and they used to draw on one allowance. "I am not sure about
         # this screen" can be said before anything has been tried; "what I just did went wrong" comes with

@@ -27,6 +27,7 @@ ALLOWANCES: dict[str, tuple[str, int, int]] = {
     "corrections": ("planner.max_corrections", 3, 0),     # replans that followed a step judged to have gone wrong
     "done_opinions": ("planner.max_done_opinions", 2, 0), # second opinions on "done"
     "redo": ("engine.verify.max_redo", 1, 0),             # decisions discarded because the screen moved meanwhile
+    "ready_waits": ("engine.max_ready_waits", 6, 0),      # looks that first waited for a starting or busy app to answer
 }
 
 # the hard ceilings, for the ledger's report; `_overspent` enforces them
