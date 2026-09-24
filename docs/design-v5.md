@@ -192,9 +192,8 @@ until it asks again and says whether an app is still launching:
   that a rethink takes the chosen option without a planner call, and the others end as before, with cause
   `app_not_answering` and a reason naming the app. `_consult` does not ask the planner while a wait is still
   possible. Two votes are still taken as on any look: done, behind the verify and second-opinion gates (the
-  second opinion asks the planner's judge about that look), and a low progress vote, which marks the step before
-  it as having had no effect on the screen it was taken from, and as having gone wrong when the planner is next
-  asked.
+  second opinion asks the planner's judge about that look), and a low progress vote, which counts the step before
+  it toward the no-progress rule and as having gone wrong when the planner is next asked.
 
 Reading the windows Accessibility does not describe — by window number, by sight — waits for a read-only survey
 of how often such windows are phantoms.

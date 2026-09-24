@@ -127,9 +127,10 @@ def unreadable(obs: Any) -> str:
     did not answer Accessibility, and 'starting' when it answered while still launching with no window open
     yet. What such a look lacks is not evidence about the app, and this is what its readers do with it: the
     decider is not told that the app has no window (observe.windows), no sub-goal advances on it, a rethink,
-    ask-user, blocked or impossible vote on it waits first (loop._judge), and the planner is not asked about
-    it while a wait is still possible (consult._consult). A done vote and a progress vote made on it are taken
-    as on any other look."""
+    ask-user, blocked or impossible vote on it waits first (loop._judge), the planner is not asked about it
+    while a wait is still possible (consult._consult), and the floor's verdict on a key or on typing sent on
+    it serves only looks that could not read the window either (observe._keys_in). A done vote and a progress
+    vote made on it are taken as on any other look."""
     notes = obs.notes
     if notes.get("window_not_answering"):
         return "starting" if notes.get("app_launching") else "busy"
