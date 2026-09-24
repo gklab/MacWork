@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any, Callable
 
 from .decider import DeciderError, choice, noul
@@ -68,20 +69,48 @@ class PolicyMixin:
         bundle = (app or {}).get("bundle_id")
         return bool(bundle) and bool(deny.get("host_app", True)) and bundle in self._host_bundles()
 
+    def _bundle_of(self, pid: Any, app: dict[str, Any] | None) -> str | None:
+        """The bundle of the process `pid`: the working app's when it is that one, else what the Mac lists for
+        every running process — the menu bar's extras and the prompts of other processes belong mostly to
+        processes with no Dock icon, which the list of regular apps leaves out. The list is kept for a minute
+        and asked again for a process it does not hold: a process number is given out again only once the
+        system's counter has gone round, not within a minute."""
+        if app and app.get("pid") == pid:
+            return app.get("bundle_id")
+        known = self.cache.get("bundles.by_pid")
+        now = time.monotonic()
+        if known is None or now - known[0] > 60 or pid not in known[1]:
+            try:
+                running = self.helper.call("apps.running", all=True) or []
+            except HelperError:
+                running = []
+            known = (now, {a.get("pid"): a.get("bundle_id") for a in running if a.get("pid")})
+            known[1].setdefault(pid, None)            # a process the Mac does not list: not asked again for it
+            self.cache["bundles.by_pid"] = known
+        return known[1].get(pid)
+
     def _denied(self, a: Affordance, app: dict[str, Any] | None) -> bool:
         deny = self.cfg.policy.get("deny", {}) or {}
         allow = self.cfg.policy.get("allow", {}) or {}
-        # Which app this action touches: the one it names, else — for a channel that drives the UI — the one
-        # in front. A channel that works through the system touches neither unless it names one.
+        # Which app this action touches, and so whose rules judge it: the app it names (a link, the app that
+        # declares its scheme); else the process it names, by that process's bundle; else, for a channel that
+        # drives the UI, the app being worked in. A channel that works through the system touches none of them
+        # unless it names one. The menu bar's extras name only their owner's pid, and were charged to the
+        # working app, so the host's own status menu was judged as whatever app was being worked in.
         from .act import THROUGH_THE_SYSTEM
-        if app is None and a.channel not in THROUGH_THE_SYSTEM and not (a.target.get("bundle_id") or a.target.get("pid")):
-            # No app is being worked in, and this drives whatever is in front — which, when a task begins in
-            # no app because the one in front runs this engine, is the engine's own terminal. The host rule
-            # below charges such an action to the working app, and with none it charges it to nobody: measured
-            # offline with the host in front, the thirteen physical keys went from none offered to all of them,
-            # and so did the planner's typing. An action that names its own app or process is judged by that.
-            return True
-        bundle = a.target.get("bundle_id") or (None if a.channel in THROUGH_THE_SYSTEM else (app or {}).get("bundle_id"))
+        bundle = a.target.get("bundle_id") or a.target.get("declared_by")
+        if not bundle and a.target.get("pid"):
+            bundle = self._bundle_of(a.target["pid"], app)
+        if not bundle and a.channel not in THROUGH_THE_SYSTEM:
+            if app is None:
+                # No app is being worked in, and this drives whatever is in front — which, when a task begins
+                # in no app because the one in front runs this engine, is the engine's own terminal — or a
+                # process that no bundle names. Charged to nobody, nothing below would judge it. Measured
+                # offline with the host in front: the thirteen physical keys went from none offered to all of
+                # them, and so did the planner's typing; and while an action naming a pid was let through
+                # unjudged, the host's own status menu was offered, and a task pressed it.
+                return True
+            bundle = app.get("bundle_id")
         if bundle and bundle in (deny.get("bundle_ids") or []):
             return True
         if bundle and deny.get("host_app", True) and bundle in self._host_bundles():

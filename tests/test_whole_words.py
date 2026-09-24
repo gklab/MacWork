@@ -75,6 +75,15 @@ def test_a_word_that_holds_the_same_letters_is_left_whole():
     assert r.text("在第一个单元格里输入 42") == "在第一个单元格里输入 42"
 
 
+def test_a_word_only_the_carrier_calls_a_name_is_left_whole_too():
+    """「次方根」 ("n-th root") is a name to the tagger in the carrier sentence and not in the second. Both are
+    asked: of this Mac's values the carrier alone called names, the second turned away 次方根, 释义, 排列 and
+    添加列. Asked in the carrier alone, such a word goes out as a pseudonym wherever it is glued into running text."""
+    r = redactor(tagger({"我和次方根开会。": [("次方根", "PERSON")]}))
+    r.text("次方根")
+    assert r.text("计算次方根的值") == "计算次方根的值"
+
+
 def test_a_name_found_glued_into_text_is_replaced_there():
     """A privacy guard: where a name was found glued, it is replaced where it sits that way, in any string —
     also where it was found in a run of one script of a mixed clause, read in a sentence of its own."""

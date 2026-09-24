@@ -177,3 +177,30 @@ def test_an_option_for_one_kind_of_link_opens_no_other(tmp_path, monkeypatch):
 
     done = act.CHANNELS["file"](ctx, link, {"url": "THINGS:///add?title=milk"})
     assert done.ok and opened == [["open", "THINGS:///add?title=milk"]], "a scheme is the same scheme in any case"
+
+
+class Declares:
+    """Stands in for AppModels: TextEdit declares a URL scheme of its own in its Info.plist."""
+
+    def get(self, app):
+        return {"url_schemes": ["x-text"] if (app or {}).get("bundle_id") == "com.apple.TextEdit" else []}
+
+
+def test_the_working_apps_own_link_is_asked_about_like_any_other_way_out(tmp_path, monkeypatch):
+    """「open a 「x-text:」 link with TextEdit」 is opened with a plain `open`, and LaunchServices hands a link to
+    the scheme's handler, which need not be the app that declares it: a browser that is not the default one
+    declares https: too. Naming the declaring app on the option, so that the host's own links are charged to
+    the host, also made the link count as staying in the app, and whether leaving served the goal went unasked."""
+    opened = []
+    real = act.subprocess.run
+    monkeypatch.setattr(act.subprocess, "run", lambda args, *a, **k: opened.append(args) or real(["true"], *a, **k))
+    d = ScriptedDecider([{"pick": "x-text:"}, {"pick": "New Document"}, {"pick": "done"}])
+    d.serves = 0.05
+    eng = Engine(cfg(tmp_path, config={"observe": {"providers": ["menu", "schemes"]}}), helper=Mac(), decider=d)
+    eng.cache["appmodels"] = Declares()
+    res = eng.do("make a new document")
+
+    assert res["status"] == "done" and res["steps"] == ["menu File ▸ New Document (⌘N)"], res
+    asked = next(s for s, q in d.side if "serves" in q)
+    assert "open a 「x-text:」 link with TextEdit" in asked["action"]
+    assert not [args for args in opened if args[0] == "open"], "the link was opened"

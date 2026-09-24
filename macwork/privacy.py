@@ -171,10 +171,24 @@ class Redactor:
         for name in r.get("names") or []:        # names the user always wants hidden, whatever the tagger thinks
             self._token("PERSON", str(name))
             self._anywhere.add(str(name))
+        self.identity = identity                 # this Mac's serial number and hardware UUID, asked of the Mac
+        self._mine: list[str] = []
+        self._know_mine()
+
+    def _know_mine(self) -> None:
+        """This Mac's own identifiers, hidden wherever they occur — and asked for again while none is known.
+
+        They were asked for once, when the redactor was built. A task's redactor is built for each task, but the
+        engine's own for what mac_observe and mac_act hand a caller lives as long as the process: built while
+        the helper could not say them (an older one does not know the question), it went on sending the serial
+        number after the helper was rebuilt and restarted. The engine keeps an answer once it has one, so asking
+        again costs a lookup; while the helper cannot say, it costs the question, once per request."""
+        if self._mine or self.identity is None:
+            return
         try:
-            mine = [str(v) for v in (identity() if identity else []) if v]   # this Mac's serial number and hardware UUID
+            mine = [str(v) for v in (self.identity() or []) if v]
         except Exception:  # noqa: BLE001  (nothing to add; what the tagger and the patterns find still stands)
-            mine = []
+            return
         self._mine = sorted(mine, key=len, reverse=True)
         for value in mine:
             self._token("DEVICE", value)
@@ -500,6 +514,7 @@ class Redactor:
         if not self.enabled or not s:
             return s
         with self._lock:
+            self._know_mine()
             self._learn([s])
             return self._redact(s)
 
@@ -509,6 +524,7 @@ class Redactor:
         if not self.enabled:
             return v
         with self._lock:
+            self._know_mine()
             self._learn(list(_strings(v)))
             return self._apply(v, {} if tally is None else tally)
 

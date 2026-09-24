@@ -163,6 +163,32 @@ final class UnresponsiveTests: XCTestCase {
         XCTAssertNil(entry(u, 7), "and ping no longer lists it")
     }
 
+    func testAQuestionWhoseElementHasGoneIsAnAnswer() {
+        // The window that timed out has closed since. The app, still running, answers the question asked again
+        // with .invalidUIElement: it read the question, and the element is no longer there. Taken for no answer,
+        // the mark stood for good — the same gone element was asked every 0.5 s, and only another call the app
+        // answered could end it, which a background app never gets — and every snapshot came back not_answering.
+        let mac = Mac()
+        let u = marks(mac)
+        let window = AXUIElementCreateSystemWide()          // stands in for a window of pid 7, as below
+        u.saw(.cannotComplete, window, kAXRoleAttribute, pid: 7)
+        mac.answer = .invalidUIElement
+        var skipped = 0
+        for _ in 0..<Int(60 / 0.25) {                      // a look every 0.25 s for 60 s
+            mac.tick(0.25)
+            skipped += u.skip(7) ? 1 : 0
+        }
+        XCTAssertEqual(skipped, 1, "believed for 0.5 s, then read: the app answered")
+        XCTAssertEqual(mac.asked.count, 1, "and not asked again")
+        XCTAssertEqual(entry(u, 7)?["cleared_by"] as? String, "reask", "ping says the question asked again ended it")
+
+        mac.running.remove(7)                               // the same reply from an app that has exited
+        u.saw(.cannotComplete, window, kAXRoleAttribute, pid: 7)
+        mac.tick(0.5)
+        XCTAssertFalse(u.skip(7))
+        XCTAssertEqual(mac.lines.last, "pid 7 has exited: its mark is dropped", "is its end, not an answer")
+    }
+
     func testAFailureKeepsTheMarkWithoutGrowingIt() {
         let mac = Mac()
         let u = marks(mac)

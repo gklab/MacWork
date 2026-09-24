@@ -143,6 +143,21 @@ def test_profile_reads_the_audit_and_says_how_much_was_the_planner(tmp_path):
     assert profile_audit(audit_files(audit), {"another-task"})["steps"] == 0
 
 
+def test_the_audit_is_read_a_line_at_a_time(tmp_path, monkeypatch):
+    """Each file of the audit grows to 64 MB before it rotates, and `macwork profile` reads four of them — and so
+    does `macwork doctor` whenever the task store has nothing. Each was read whole into memory, then split."""
+    import pathlib
+    from macwork.profile import audit_files, profile_audit
+    audit = tmp_path / "audit.jsonl"
+    audit.write_text(json.dumps({"kind": "step", "task": "t1", "n": 0, "looks": 1, "wall_ms": 1000, "observe_ms": 300}) + "\n"
+                     + json.dumps({"kind": "decide", "task": "t1", "state": {"screen_text": "x" * 1000}}) + "\n", encoding="utf-8")
+
+    def whole(self, *a, **k):
+        raise AssertionError(f"{self.name} was read whole")
+    monkeypatch.setattr(pathlib.Path, "read_text", whole)
+    assert profile_audit(audit_files(audit))["steps"] == 1
+
+
 def test_a_reports_own_rows_are_enough_to_profile_it():
     from macwork.profile import format_timing, profile_report
     rows = [{"id": "a", "timing": {"steps": 3, "looks": 5, "wall_ms": 30000, "observe_ms": 3000, "decide_ms": 6000,

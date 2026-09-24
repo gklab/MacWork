@@ -32,13 +32,15 @@ ADDRESSES = ["北京市朝阳区建国路88号", "上海市浦东新区世纪大
              "Friedrichstraße 43, 10117 Berlin", "東京都千代田区丸の内1-1-1", "Rua Augusta 1500, São Paulo"]
 IPS = ["192.168.1.23", "10.0.0.8"]
 
+# 「1.{v}」 is a list item numbered without a space. Its point reads as a decimal one, and the digits after a
+# decimal point are not taken for a card or ID number (privacy.yaml): what that costs is measured here.
 TEMPLATES = {
     "person": ["发送给 {v}", "{v} 的日程", "Meeting with {v} at 3pm", "回复 {v}：好的，明天见", "{v} shared a document with you",
                "Termin mit {v}", "Встреча с {v}", "{v} 님과의 회의", "Reunião com {v}"],
     "email": ["收件人: {v}", "Reply to {v}", "{v} 邀请你加入"],
-    "phone": ["拨打 {v}", "Call {v}", "联系电话：{v}"],
-    "idnum": ["身份证号 {v}", "ID: {v}"],
-    "card": ["卡号 {v}", "Card ending in {v}"],
+    "phone": ["拨打 {v}", "Call {v}", "联系电话：{v}", "1.{v}"],
+    "idnum": ["身份证号 {v}", "ID: {v}", "1.{v}"],
+    "card": ["卡号 {v}", "Card ending in {v}", "1.{v}"],
     "address": ["寄送地址：{v}", "Ship to {v}"],
     "ip": ["服务器 {v} 无响应", "Connected to {v}"],
 }

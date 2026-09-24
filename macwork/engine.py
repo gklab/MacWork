@@ -180,8 +180,8 @@ class Engine(LoopMixin, EffectsMixin, JudgeMixin, PolicyMixin, InterruptMixin, C
         An About This Mac window left open put the serial number into 1,911 decider requests of 189 tasks, and
         into 445 planner prompts of 8: no tagger calls it a name and no pattern can know its shape. Only an
         answer is kept. A helper that could not be asked (an older one does not know the question) is asked
-        again by the next redactor, so an engine that outlives a helper rebuild does not go on sending the
-        serial number for the rest of its life."""
+        again at the next request of every redactor that has none (`Redactor._know_mine`) — the engine's own,
+        which serves mac_observe and mac_act for the life of the process, too."""
         if "privacy.identity" not in self.cache:
             try:
                 got = self.helper.call("system.identity") or {}

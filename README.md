@@ -58,8 +58,7 @@ and is it done?*
 - **Undo.** `macwork revert` puts back what a task changed, using each app's own undo command.
 - **Measured, not asserted.** An evaluation suite with paired significance tests, a step profiler, and a
   privacy leak check ship with the project.
-- **Pluggable.** Observation providers, action channels and decision models register through Python entry
-  points.
+- **Pluggable.** Observation providers, action channels and decision models register through Python entry points.
 
 ## Architecture
 
@@ -218,7 +217,8 @@ Everything a decider or planner sees passes through `privacy.py` on this Mac fir
 * No screenshots leave the machine and there is no telemetry. The API key lives in the Keychain.
 
 `macwork privacy-check` measures the leak rate on a synthetic corpus and reports it as it is — including
-that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic or Vietnamese.
+that on-device tagging finds no personal names in Russian, Korean, Greek, Arabic or Vietnamese, and that a
+card or ID number after a list number and a point (`1.4111111111111111`) is sent, read as a decimal's digits.
 
 ## Evaluation
 

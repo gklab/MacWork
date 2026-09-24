@@ -130,14 +130,22 @@ def test_a_version_number_glued_to_a_letter_is_not_an_address(tmp_path):
 
 # --- numbers that are not phone, card or ID numbers ----------------------------------------------------
 
-def test_the_digits_after_a_decimal_point_are_not_a_card_or_phone_number(tmp_path):
-    """A ruler mark read 「20.⟦CARD_1⟧」 and a stepper 「0.⟦CARD_1⟧」: 6,401 times in 79 tasks the decider was
-    shown a pseudonym where a number was."""
+def test_the_digits_after_a_decimal_point_are_not_a_card_or_id_number(tmp_path):
+    """A ruler mark read 「20.⟦CARD_1⟧」, a stepper 「0.⟦CARD_1⟧」 and a file reference 「id=6571367.⟦IDNUM_1⟧」:
+    6,401 times in 79 tasks the decider was shown a pseudonym where a number was."""
     r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
-    for number in ("20.31746031746032", "0.27000121772289", "12.13812345678"):
+    for number in ("20.31746031746032", "0.27000121772289", "id=6571367.123456789012345678"):
         assert r.text(f"value {number}") == f"value {number}", number
     assert "4111 1111 1111 1111" not in r.text("Card ending in 4111 1111 1111 1111")
     assert "13812345678" not in r.text("call 13812345678")
+
+
+def test_a_list_item_numbered_without_a_space_still_hides_its_phone_number(tmp_path):
+    """None of the 6,401 was a phone number's shape, and the point that ends a list number looks like a decimal
+    one: 「1.13812345678」 went out whole, and the system's detector does not find it there either."""
+    r = Redactor(cfg(tmp_path), entities=lambda ts: [[] for _ in ts])
+    assert r.text("1.13812345678") == "1.⟦PHONE_1⟧"
+    assert r.text("contacts: 1.13812345678 2.13987654321") == "contacts: 1.⟦PHONE_1⟧ 2.⟦PHONE_2⟧"
 
 
 def test_a_csv_row_after_a_number_still_hides_its_phone_and_card(tmp_path):
@@ -174,18 +182,19 @@ SERIAL, UUID = "C02TESTSERIAL", "4A1B2C3D-1111-2222-3333-4444ABCDEF12"   # its m
 
 
 class Identified(FakeHelper):
-    """A Mac that answers what its serial number and hardware UUID are — after `failures` errors."""
+    """A Mac that answers what its serial number and hardware UUID are — after `failures` errors (`code`)."""
 
-    def __init__(self, failures=0, **kw):
+    def __init__(self, failures=0, code="no_method", **kw):
         super().__init__(**kw)
         self.failures = failures
+        self.code = code
 
     def call(self, method, timeout=30.0, **p):
         if method == "system.identity":
             self.calls.append((method, p))
             if self.failures:
                 self.failures -= 1
-                raise HelperError("no_method", "unknown method system.identity")
+                raise HelperError(self.code, "unknown method system.identity" if self.code == "no_method" else "helper did not answer")
             return {"serial": SERIAL, "uuid": UUID}
         return super().call(method, timeout, **p)
 
@@ -208,19 +217,48 @@ def test_the_serial_number_is_asked_of_the_mac_once(tmp_path):
 
 def test_the_macs_identity_is_asked_again_after_the_helper_failed(tmp_path):
     """An older helper does not know the question. Kept as "nothing to hide", its error outlived the helper: an
-    engine running on across a helper rebuild would have sent the serial number for the rest of its life."""
-    h = Identified(failures=1)
+    engine running on across a helper rebuild would have sent the serial number for the rest of its life. An
+    error is not kept; an answer is, until the helper is a new one."""
+    h = Identified(failures=2)               # asked when the redactor is built, and again when it is used
     eng = Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([]))
     assert SERIAL in eng.redactor("a").text(f"Serial number {SERIAL}")      # an older helper: nothing to hide it by
     assert SERIAL not in eng.redactor("b").text(f"Serial number {SERIAL}")  # asked again, and answered
-    eng.redactor("c")
-    assert len(h.did("system.identity")) == 2                               # an answer is kept
+    eng.redactor("c").text(f"Serial number {SERIAL}")
+    assert len(h.did("system.identity")) == 3                               # an answer is kept
     eng._helper_restarted()                                                 # …until the helper is a new one
     eng.redactor("d")
-    assert len(h.did("system.identity")) == 3
+    assert len(h.did("system.identity")) == 4
+
+
+def test_what_a_caller_is_handed_hides_the_serial_number_once_the_helper_can_say_it(tmp_path):
+    """mac_observe and mac_act hand what they read to a caller outside this process through the engine's own
+    redactor, which lives as long as the process; a task's is built for each task. Built while the helper could
+    not say this Mac's identity, it kept none: after the helper was rebuilt and restarted, and after an error of
+    the moment, the serial number still went out."""
+    shown = {"screen_text": f"Serial number {SERIAL}"}
+    h = Identified(failures=2)                  # the helper running when this engine started is an older one
+    eng = Engine(cfg(tmp_path), helper=h, decider=ScriptedDecider([]))
+    assert SERIAL in eng._outgoing("observe", shown)["screen_text"]         # nothing to hide it by, yet
+    eng._helper_restarted()                                                 # rebuilt, and started again
+    assert eng._outgoing("observe", shown)["screen_text"] == "Serial number ⟦DEVICE_1⟧"
+    assert eng._outgoing("act", {"output": f"{UUID} {SERIAL}"})["output"] == "⟦DEVICE_2⟧ ⟦DEVICE_1⟧"
+
+    eng = Engine(cfg(tmp_path), helper=Identified(failures=2, code="timeout"), decider=ScriptedDecider([]))
+    assert SERIAL in eng._outgoing("observe", shown)["screen_text"]         # the helper, busy for a moment
+    assert eng._outgoing("observe", shown)["screen_text"] == "Serial number ⟦DEVICE_1⟧"
 
 
 # --- privacy-check ------------------------------------------------------------------------------------
+
+def test_privacy_check_measures_a_list_item_numbered_without_a_space(tmp_path):
+    """Its point reads as a decimal one, and a card or ID number after it goes out whole: that is the price of
+    the 6,401 decimals no longer hidden, and privacy-check says so on every run."""
+    from macwork import privacycheck
+    numbered = {kind for kind, value, text in privacycheck.corpus() if text == f"1.{value}"}
+    assert numbered == {"phone", "idnum", "card"}
+    res = privacycheck.run(cfg(tmp_path), lambda ts: [[] for _ in ts], ["Safari"])
+    assert res["by_kind"]["idnum"] == f"{len(privacycheck.IDNUMS)}/{3 * len(privacycheck.IDNUMS)} leaked", res["by_kind"]
+
 
 def test_privacy_check_writes_nothing_to_the_real_audit(tmp_path):
     """Its through-the-gate pass wrote every corpus request into the engine's audit log, as a task called ''."""

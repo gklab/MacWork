@@ -114,21 +114,24 @@ def audit_files(path: Path | None, keep: int = 3) -> list[Path]:
 
 
 def _step_records(paths: list[Path], task_ids: set[str] | None) -> list[dict[str, Any]]:
+    """The audit's `step` records, read a line at a time. Each file grows to 64 MB before it rotates, and
+    `profile` reads the audit and its rotations — `doctor` too, whenever the task store is empty. Read whole and
+    then split, this Mac's 157 MB of audit peaked at 1,345 MB of memory; a line at a time, at 20 MB."""
     out = []
     for path in paths:
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            with path.open(encoding="utf-8", errors="replace") as lines:
+                for line in lines:
+                    if '"kind": "step"' not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get("kind") == "step" and (task_ids is None or rec.get("task") in task_ids):
+                        out.append(rec)
         except OSError:
             continue
-        for line in lines:
-            if '"kind": "step"' not in line:
-                continue
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("kind") == "step" and (task_ids is None or rec.get("task") in task_ids):
-                out.append(rec)
     return out
 
 

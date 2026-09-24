@@ -136,7 +136,8 @@ func processIsRunning(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 || errno == EPER
 /// - any answer from the app, to any call, ends it at once;
 /// - while it stands, a snapshot is skipped for `wait` after the last timeout; after that the question that
 ///   timed out is asked once more — the same attribute of the same element, not the app's role, which a
-///   toolkit serving Accessibility off its main thread answers while its windows still time out;
+///   toolkit serving Accessibility off its main thread answers while its windows still time out. A reply
+///   that the element is gone, from an app still running, answers it too;
 /// - no answer again doubles `wait` (0.5, 1, 2 … up to the old 20 s), so an app that never answers is asked
 ///   less and less often (22ce357's case: 6795 ms a look) — except while it is still launching: that app is
 ///   starting, not stuck, and is asked again every 0.5 s.
@@ -248,12 +249,18 @@ final class Unresponsive {
         let err = ask(m.el, m.attr)                 // outside the lock: this can take the whole messaging timeout
         lock.lock()
         defer { lock.unlock() }
-        if Self.answered(err) {
-            endLocked(pid, by: "reask", m.attr, asked: 1)
-            return false
-        }
         if err == .invalidUIElement && !isRunning(pid) {
             dropLocked(pid)
+            return false
+        }
+        // To the question asked again, .invalidUIElement from an app still running is the app's reply that the
+        // question itself is gone: the element that timed out — a window since closed, a web area since
+        // replaced — is not there to be asked about any more (a silent app replies nothing; that is the
+        // timeout). Taken for no answer, the mark never ended: the gone element was asked every 0.5 s, only
+        // another call the app answered could end it, and a background app gets none. If the app is still
+        // busy, the next snapshot's own timeout marks it again, on an element that exists.
+        if Self.answered(err) || err == .invalidUIElement {
+            endLocked(pid, by: "reask", m.attr, asked: 1)
             return false
         }
         var again = marks[pid] ?? m
