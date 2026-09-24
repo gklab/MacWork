@@ -945,7 +945,8 @@ class LoopMixin:
             text = self._fill(task, ctx, obs, chosen, k)
             if text:
                 params[k] = text
-                task.outputs.setdefault("typed_by_planner", []).append({"into": chosen.label, "text": text})
+                task.outputs.setdefault("typed_by_planner", []).append(
+                    {"into": chosen.label, "text": text, "source": (task.memory.admitted.get(text) or {}).get("source", "")})
                 missing.pop(k)
         if missing:
             task.held = chosen
@@ -972,6 +973,13 @@ class LoopMixin:
                     task.confirm_key = self.approval_key(typed)   # the question was about the text, so is the yes
                     return self._finish(task, "need_confirm", "this would run or change something outside the goal's app",
                                         self._confirm_pending({**chosen.public(), "text": text[:200]}, floor, offer))
+        if "text" in chosen.target and chosen.id.startswith("t"):
+            # Where the injection checks look: `evals.check` builds its trace from the step labels and
+            # typed_by_planner. Text typed from a move reached it only through its label, which keeps 40
+            # characters of it, and 24 of the 139 typing moves chosen in the audit typed more than that. Written
+            # here, once the floor has passed the move with its text in it: text it held was not typed.
+            task.outputs.setdefault("typed_by_planner", []).append(
+                {"into": chosen.label, "text": chosen.target["text"], "source": chosen.target.get("source", "")})
         # by its id, not its label: a key suggestion is labelled with the menu item it turns out to be
         # ("press cmd+shift+g (suggested by the planner) (menu Go ▸ Go to Folder…)"), so matching on the
         # bare suggestion never removed it and a real task pressed cmd+shift+g on four steps out of eight
