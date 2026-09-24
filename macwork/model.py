@@ -250,6 +250,16 @@ class Change:
 NOTHING_CHANGED = "nothing on screen changed"
 
 
+def exact_state(sig: str, screen_text: str) -> str:
+    """The screen's structure *and* what it says: `12×` and `12×2` are one structure and two states.
+
+    A stable digest, not `hash()`: that one is salted per process, tasks survive a restart, and a key made
+    with it would quietly never match again.
+    """
+    import zlib
+    return f"{sig}:{zlib.crc32(screen_text.encode('utf-8')):08x}"
+
+
 @dataclass
 class Step:
     n: int
@@ -327,11 +337,19 @@ class Memory:
     facts it may write from."""
     consulted: set[Any] = field(default_factory=set)           # screens the planner has already been asked about
     interruptions: dict[str, dict[str, Any]] = field(default_factory=dict)   # what each thing in the way turned out to be
-    no_effect: set[str] = field(default_factory=set)           # "screen|action" that changed nothing: never offered again
+    no_effect: set[str] = field(default_factory=set)           # "exact state|action" that changed nothing there
     no_progress: set[str] = field(default_factory=set)         # "screen|action" taken in a stretch that got the task nowhere
-    screens_seen: set[str] = field(default_factory=set)
+    first_seen: dict[str, int] = field(default_factory=dict)   # screen signature -> how many steps had been taken
+                                                               # when it was first seen. "Led back" is a claim about
+                                                               # the screens seen *before* a step; a set of every
+                                                               # screen ever seen could not tell those from the one
+                                                               # the step itself had just led to, and a second look
+                                                               # at that one flagged the step: on 09-22..23, 79 of
+                                                               # the 109 circle entries were added on looks with no
+                                                               # step in between
     screen_notes: dict[str, str] = field(default_factory=dict)  # distinct screens seen (signature -> short text)
-    circles: list[str] = field(default_factory=list)           # actions that only led back to a screen already seen
+    circles: list[str] = field(default_factory=list)           # handles of the steps that only led back to a screen
+                                                               # already seen (`Step.led_back`), once each
     facts: Any = None                                          # facts.Facts: what this task has actually seen
     serves: dict[str, bool] = field(default_factory=dict)      # "does leaving for X serve the goal", asked once per action
     declined: set[str] = field(default_factory=set)            # floor actions the decider judged the goal never asked for
@@ -357,9 +375,13 @@ class Memory:
     def _at(sig: str, handle: str) -> str:
         return f"{sig}|{handle}"
 
-    def note_no_effect(self, sig: str, handle: str) -> None:
-        """This action, from this screen, changed nothing: a fact, never offered from here again."""
-        self.no_effect.add(self._at(sig, handle))
+    def note_no_effect(self, state: str, handle: str) -> None:
+        """This action changed nothing on this exact screen: withheld while the screen is as it was, like a failure.
+
+        Keyed on the structure alone, the fact held for every screen of that structure, whatever it showed, and
+        the structure of a window that holds content does not change with its content: in aff49b2812ff a
+        calculator's 「=」 was withheld on the display 「1」 by a fact recorded on 「12+30×4」."""
+        self.no_effect.add(self._at(state, handle))
 
     def note_no_progress(self, sig: str, handle: str) -> None:
         """Taken in a stretch of steps that got the task nowhere: not offered again from where it was taken."""
@@ -377,16 +399,16 @@ class Memory:
         """Not what the goal is about, or only ever leads back: not offered again in this task."""
         self.declined.add(handle)
 
-    def no_effect_handles(self) -> set[str]:
-        return {k.split("|", 1)[1] for k in self.no_effect}
-
     def withdrawn_from(self, state: str, limit: int) -> set[str]:
         got = self.retracted.get(state) or []
         return {h for h in set(got) if got.count(h) >= limit}
 
     def withheld_reason(self, sig: str, state: str, handle: str, approval: str, limit: int) -> str | None:
-        """Why this action is not offered from this screen, or None: no_effect | failed | withdrawn | declined."""
-        if self._at(sig, handle) in self.no_effect:
+        """Why this action is not offered from this screen, or None: no_effect | no_progress | failed | withdrawn |
+        declined. `no_effect`, `failed` and `withdrawn` hold for the exact state they were learned in (`state`);
+        `no_progress` for the screen's structure (`sig`), since on a screen that changes by itself an exact state
+        is never seen twice; `declined` for the whole task."""
+        if self._at(state, handle) in self.no_effect:
             return "no_effect"
         if self._at(sig, handle) in self.no_progress:
             return "no_progress"

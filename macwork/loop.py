@@ -32,7 +32,7 @@ from .skills import Skills
 log = logging.getLogger(__name__)
 
 
-from .model import NOTHING_CHANGED  # noqa: E402  (kept importable from here: the history and its tests name it)
+from .model import NOTHING_CHANGED, exact_state  # noqa: E402,F401  (kept importable from here: the history and its tests name them)
 
 
 def _visible(line: str) -> str:
@@ -70,15 +70,6 @@ def what_changed(before_text: str, after_text: str, before_window: str | None = 
     """The sentence for the history. The facts are `change_between`; this only renders them."""
     return change_between(before_text, after_text, before_window, after_window, before_app, after_app, picture).describe(limit)
 
-
-def exact_state(sig: str, screen_text: str) -> str:
-    """The screen's structure *and* what it says: `12×` and `12×2` are one structure and two states.
-
-    A stable digest, not `hash()`: that one is salted per process, tasks survive a restart, and a key made
-    with it would quietly never match again.
-    """
-    import zlib
-    return f"{sig}:{zlib.crc32(screen_text.encode('utf-8')):08x}"
 
 Progress = Callable[[str], None]
 
@@ -338,6 +329,7 @@ class LoopMixin:
                         obs.notes["vision_error"] = str(exc)[:200]
         here = exact_state(sig, obs.screen_text)
         self._note_return(task, here, obs.notes.get("glance"))
+        self._judge_led_back(task, sig)
         if obs.notes.get("glance"):        # what this state looked like the first time it was seen
             seen_as = self.scope(task.id).pictures
             if len(seen_as) < int(self.cfg.get("engine.max_pictures", 200)):
@@ -368,12 +360,18 @@ class LoopMixin:
         affs = [a for a in obs.affordances + offered_by_planner if not self._denied(a, ctx.app)]
         affs, aside = self._clear_the_way(task, ctx, obs, affs)   # what is in the way is dealt with before the goal is
         # Keyed on what an action *is* (its identity, else its steady name), not on what it says right now.
-        # Facts about this screen — did nothing here, could not be done here, came back from here — take the
-        # action out quietly; "not what the goal asked for" is said to the decider, so an option that
-        # vanished does not read as never having been there.
+        # Facts about this screen — did nothing here, got nowhere from here, could not be done here, came back
+        # from here — take the action out, and so does "not what the goal asked for"; each is said to the
+        # decider under its own reason, so an option that vanished does not read as never having been there.
         limit = int(self.cfg.get("engine.max_retractions", 2))
         reasons = {a.id: task.memory.withheld_reason(sig, here, a.handle(), self.approval_key(a), limit) for a in affs}
-        dead_here = {a.label for a in affs if reasons[a.id] in ("no_effect", "no_progress", "failed", "withdrawn")}
+        withheld_here: dict[str, set[str]] = {}          # the decider is told why, by name (see `_state`)
+        for a in affs:
+            if reasons[a.id] in ("no_effect", "no_progress", "failed", "withdrawn"):
+                withheld_here.setdefault(reasons[a.id], set()).add(a.label)
+        # The memory is keyed on handles and the decider reads names: what is on offer now by its label, a step
+        # taken before by the label it was taken under.
+        names = {st.handle: st.action for st in task.steps} | {a.handle(): a.label for a in affs}
         withheld = [a for a in affs if reasons[a.id] == "declined"]
         affs = [a for a in affs if reasons[a.id] is None]
         # An action that is complete is not an option. A real run read a file, was handed all of it, and was
@@ -410,13 +408,13 @@ class LoopMixin:
         if len(options) < 2:                      # nothing left to do here that has not been tried
             options["none"] = "none: nothing available here helps"
 
-        state = self._state(task, ctx, obs, sig, flat, dead_here, suggested, locked)
+        state = self._state(task, ctx, obs, sig, flat, withheld_here, suggested, locked)
         if len(stuck) >= int(self.cfg.get("engine.max_no_progress", 3)):
             state["no_progress"] = f"the last {len(stuck)} actions got the task nowhere: what was tried is not the way"
         if withheld:   # an option that vanishes without a word reads as never having been there
             state["not_offered_because_the_goal_never_asked"] = sorted({a.label for a in withheld})[:8]
-        if took_back:
-            state["chosen_from_this_exact_screen_before_then_came_back"] = sorted(took_back)[:8]
+        if took_back:   # by name: the handles went out as they were, 'ax|AXButton|One' among them (aff49b2812ff)
+            state["chosen_from_this_exact_screen_before_then_came_back"] = sorted({names.get(h, h) for h in took_back})[:8]
         if left_out > 0:
             state["not_all_actions_listed"] = look_note
         questions = {"action": choice(self.cfg.question("action"), options),
@@ -429,10 +427,13 @@ class LoopMixin:
                 questions["step_evidence"] = noul(self.cfg.question("step_evidence"), fills={"evidence": expected})
         if task.steps:
             # "Did it have its intended visible effect" was answered yes for every click that changed the
-            # screen — a New that opened a template store nine times running. Where the planner said what this
-            # step should leave on screen, progress is whether the last action brought the screen nearer to
-            # that; the generic question is kept for a task with no plan to measure against.
-            expected = self._expected_evidence(task) if task.plan and task.plan_i < len(task.plan) else ""
+            # screen — a New that opened a template store nine times running. Where the planner said what the
+            # last step was taken to reach, progress is whether it brought the screen nearer to that; the
+            # generic question is kept for a step taken with no plan to measure against. What the step was
+            # taken toward (`toward`, kept with its decision), not where the plan is now: once a sub-goal is
+            # ticked off, the next one's evidence, asked about the step that finished the last one, reads as
+            # no progress.
+            expected = str(task.steps[-1].decision.get("toward") or "")
             questions["progress"] = noul(self.cfg.question("progress_toward"), fills={"evidence": expected}) if expected \
                 else noul(self.cfg.question("progress"))
         if self.cfg.get("engine.verify_done", True):
@@ -454,8 +455,23 @@ class LoopMixin:
         look.aside, look.pinned = aside, pinned
         return look
 
-    def _state(self, task: Task, ctx: Ctx, obs: Observation, sig: str, flat: list[Affordance], dead_here: set[str],
-               suggested: set[str | None], locked: bool) -> dict[str, Any]:
+    def _judge_led_back(self, task: Task, sig: str) -> None:
+        """Did the last step only lead back to a screen the task had seen before the step was taken?
+
+        Judged from when each screen was first seen, so a second look at the screen the step itself led to —
+        after a look into a group, a sub-goal ticked off, a plan — cannot make the step a circle. It was judged
+        against every screen ever seen, on every look, and appended each time: on 09-22..23, 79 of the 109
+        circle entries were added on looks with no step in between, 46 of them the first flag their step ever
+        got, and three steps counted as getting nowhere only through such flags made a task replan as stuck
+        (92971e3348c4). A later look that finds the screen gone back to an earlier one still counts."""
+        last = task.steps[-1] if task.steps else None
+        if last is not None and last.before:
+            last.led_back = sig != last.before.split(":")[0] and task.memory.first_seen.get(sig, last.n + 1) <= last.n
+            task.memory.circles = [st.handle for st in task.steps if st.led_back]
+        task.memory.first_seen.setdefault(sig, len(task.steps))
+
+    def _state(self, task: Task, ctx: Ctx, obs: Observation, sig: str, flat: list[Affordance],
+               withheld_here: dict[str, set[str]], suggested: set[str | None], locked: bool) -> dict[str, Any]:
         """What the decider is shown. goal and inputs come from the user; everything else is what the Mac shows."""
         hist = self._history(task)
         state: dict[str, Any] = {"goal": task.goal, "screen_locked": locked,
@@ -463,20 +479,21 @@ class LoopMixin:
                                  "inputs": {k: v for k, v in task.inputs.items() if k not in (obs.notes.get("inputs_used") or [])},
                                  "app": (ctx.app or {}).get("name"), "window": obs.window, "screen_text": obs.screen_text,
                                  "history": hist, **self._evidence(obs)}
-        if dead_here:
-            state["tried_here_without_effect"] = sorted(dead_here)[:20]
-        if sig in task.memory.screens_seen and task.steps and task.steps[-1].before and task.steps[-1].before.split(":")[0] != sig:
-            task.memory.circles.append(task.steps[-1].handle)   # the last step only led back to a screen already seen
-            task.steps[-1].led_back = True
-        task.memory.screens_seen.add(sig)
+        # Why each action is left out, said as what it is. All four went out as "tried here without effect",
+        # and three of them are not that: one that failed could not be carried out, and one that got nowhere or
+        # was taken back may well have changed the screen.
+        for reason, key in (("no_effect", "tried_here_without_effect"), ("no_progress", "got_nowhere_from_here"),
+                            ("failed", "could_not_be_done_here"), ("withdrawn", "taken_back_from_here")):
+            if withheld_here.get(reason):
+                state[key] = sorted(withheld_here[reason])[:20]
         if sig not in task.memory.screen_notes:          # every distinct screen, briefly: the evidence for a final diagnosis
             task.memory.screen_notes[sig] = f"{state['app']} — {obs.window or '(no window)'}: {obs.screen_text[:200]}"
         left = [f"{x.get('from')}: {str(x.get('says'))[:80]}" for x in (task.outputs.get("left_for_you") or [])]
         if left:     # on screen, and not this task's to answer: the user has been told
             state["left_for_the_user_to_answer"] = left[:4]
-        if task.memory.circles:
-            names = {s.handle: s.action for s in task.steps}      # the decider reads names; the memory is keyed on handles
-            state["went_in_circles"] = [names.get(h, h) for h in task.memory.circles[-6:]]
+        circling = [s.action for s in task.steps if s.led_back]   # `_judge_led_back`, by the names the steps were taken under
+        if circling:
+            state["went_in_circles"] = circling[-6:]
         if task.outputs.get("planner_thinks_blocked"):
             state["planner_thinks"] = f"only the user can continue: {task.outputs['planner_thinks_blocked'][:200]} — an opinion, to weigh against the screen"
         last, run = self._run_length(task)
@@ -523,7 +540,7 @@ class LoopMixin:
     def _run_length(self, task: Task) -> tuple[str, int]:
         """The action just taken, and how many times in a row it has now been taken. Scrolling a list is a
         legitimate repeat; scrolling it eleven times is a task going nowhere, and neither the circle check
-        (every scroll shows a new screen) nor the no-effect check (the decider kept calling it progress)
+        (every scroll shows a new screen) nor the no-effect check (every scroll changes what the screen shows)
         can see it. The count is a plain fact about what was done, so the decider is simply told."""
         if not task.steps:
             return "", 0
@@ -645,7 +662,8 @@ class LoopMixin:
         move = (ans.get("move") or {}).get("choice", "act")
         risky_screen = float(ans.get("risky_screen", {}).get("noul", 0.0))
         d = look.decision = {"choice": key, "confidence": round(float(act.get("confidence", probs.get(key, 0.0))), 3), "move": move,
-                             "risky_screen": round(risky_screen, 3), "ms": round(self.decider.last_ms), "timing": look.timing}
+                             "risky_screen": round(risky_screen, 3), "ms": round(self.decider.last_ms), "timing": look.timing,
+                             "toward": self._expected_evidence(task)}   # what a step taken from this look is taken to reach
         for k in ("progress", "step_done", "step_evidence", "verified"):
             if k in ans:
                 d[k] = round(float(ans[k].get("noul", 0.0)), 3)
@@ -654,9 +672,12 @@ class LoopMixin:
         log.info("step %d %s", len(task.steps), d)
         last = task.steps[-1] if task.steps else None
         if last is not None and "progress" in d:
-            last.decision["progress_after"] = d["progress"]   # how a step turned out is only known on the next look
-        if last and last.before and d.get("progress", 1.0) < float(th.get("progress_bad", 0.2)):
-            task.memory.note_no_effect(last.before.split(":")[0], last.handle)   # the decider saw no effect: a fact for that screen
+            # How a step turned out is only known on the next look. It is a judgement, not a measurement: it
+            # feeds the no-progress rule and what the planner is told went wrong, and nothing is withheld on it
+            # alone. Below `progress_bad` it was also stored as "no effect" under the screen's structure, and
+            # once progress was asked toward the plan's evidence (1245d7f), 6 of the 9 steps judged that low had
+            # visibly changed the screen: each was recorded as having done nothing there.
+            last.decision["progress_after"] = d["progress"]
 
         ranked = lambda: [k for k, _p in sorted(probs.items(), key=lambda kv: -kv[1]) if k in look.by_id]  # noqa: E731
         if key in look.groups:                    # see inside a group first, like opening a menu to read it
@@ -1202,10 +1223,12 @@ class LoopMixin:
             # as it was when it failed (asking again there gets the same failure), and offered again once
             # anything on it has changed.
             task.memory.note_failed(prev["sig"], handle, exact_state(prev["sig"], prev.get("screen") or ""))
-        elif last is not None and last.kept is False:
-            # it promised a change and nothing happened: a fact about this action on this screen, never
-            # offered from here again in this task
-            task.memory.note_no_effect(prev["sig"], handle)
+        elif last is not None and last.kept is False and last.before:
+            # It promised a change and nothing on screen changed: a fact about this action on this exact screen,
+            # withheld while the screen is as it was, the same rule as a failure. Under the screen's structure
+            # alone it was withheld from every display the window would show. Keyed on the step's own handle:
+            # the prev a redo rebuilds names only its label.
+            task.memory.note_no_effect(last.before, last.handle)
 
     # ------------------------------------------------------------------ routines
     def _replay(self, task: Task, skill: dict[str, Any], progress: Progress) -> bool:

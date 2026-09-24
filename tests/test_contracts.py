@@ -10,6 +10,7 @@ the action returns or at the next look, from what changed. The memory of what di
 from macwork.act import Outcome
 from macwork.contract import DEFERRED, IMMEDIATE, kept, kept_by_change, promise
 from macwork.engine import Engine
+from macwork.loop import exact_state
 from macwork.model import Affordance, Step
 from macwork.observe import Ctx
 from tests.english_mac import APP, EnglishMac
@@ -45,7 +46,8 @@ def test_a_press_is_judged_at_the_next_look_and_an_unseen_one_is_not():
 
 
 def test_what_did_nothing_is_the_broken_promise(tmp_path):
-    """A press whose screen stayed the same: kept is False, and that action is not offered from here again."""
+    """A press whose screen stayed the same: kept is False, and that action is not offered again while the screen
+    is exactly as it was."""
     class Still(EnglishMac):
         def call(self, method, timeout=30.0, **p):
             if method == "ax.wait":          # no event, no change: the fake's default answers one every time
@@ -56,7 +58,10 @@ def test_what_did_nothing_is_the_broken_promise(tmp_path):
     res = eng.do("refresh it")
     steps = eng.tasks[res["task_id"]].steps
     assert steps[0].promise == "changed" and steps[0].kept is False and "nothing" in steps[0].kept_why
-    assert eng.tasks[res["task_id"]].memory.no_effect_handles() == {steps[0].handle}
+    memory, sig = eng.tasks[res["task_id"]].memory, steps[0].before.split(":")[0]
+    assert memory.withheld_reason(sig, steps[0].before, steps[0].handle, "", 2) == "no_effect"
+    assert memory.withheld_reason(sig, exact_state(sig, "4 items"), steps[0].handle, "", 2) is None, \
+        "a fact about that exact screen: the same window showing something else is another one"
 
 
 def test_a_press_that_changed_the_screen_kept_its_promise(tmp_path):

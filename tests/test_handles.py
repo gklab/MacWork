@@ -9,6 +9,7 @@ where there is nothing else.
 
 from macwork.config import Config
 from macwork.engine import Engine
+from macwork.loop import exact_state
 from macwork.model import Affordance, Observation, Step
 from macwork.observe import Ctx, _structural_identity, _tree, element_affordances
 from tests.english_mac import EnglishMac
@@ -65,7 +66,7 @@ def test_what_did_nothing_stays_known_when_the_field_shows_something_else(tmp_pa
     task = eng._new_task("search", {}, None)
     look = eng._look(task, eng._step_context(task))
     field = next(a for a in look.affs if a.verb == "type")
-    task.memory.no_effect.add(f"{look.sig}|{field.handle()}")
+    task.memory.note_no_effect(exact_state(look.sig, look.obs.screen_text), field.handle())
     eng.helper.text = "3 items"          # the screen is otherwise the same
     task.steps.append(Step(0, field.label.replace("(now: ", "(now: xyz"), key=field.key, before=f"{look.sig}:0"))
     again = eng._look(task, eng._step_context(task))
@@ -86,16 +87,16 @@ def test_memory_has_one_way_in_and_one_way_out():
     after the rest had moved to handles. Nothing outside these methods spells a key."""
     from macwork.model import Memory
     m = Memory()
-    m.note_no_effect("sigA", "button 「Refresh」")
+    m.note_no_effect("sigA:123", "button 「Refresh」")
     m.note_failed("sigA", "menu File ▸ Open…", "sigA:123")
     m.note_withdrawn("sigA:123", "button 「2」")
     m.note_withdrawn("sigA:123", "button 「2」")
     m.decline("switch to app Finder")
     ask = lambda handle, state="sigA:123", approval="": m.withheld_reason("sigA", state, handle, approval, limit=2)  # noqa: E731
-    assert ask("button 「Refresh」") == "no_effect"
+    assert ask("button 「Refresh」") == "no_effect" and ask("button 「Refresh」", state="sigA:999") is None, "no effect: on that exact screen"
     assert ask("menu File ▸ Open…") == "failed" and ask("menu File ▸ Open…", state="sigA:999") is None, "failed: only while the screen is as it was"
     assert ask("button 「2」") == "withdrawn" and ask("button 「2」", state="sigB:1") is None, "withdrawn: only from that exact state"
     assert ask("switch to app Finder") == "declined" and ask("anything", approval="switch to app Finder") == "declined"
     assert ask("button 「New」") is None
-    assert m.no_effect_handles() == {"button 「Refresh」"}
+    assert not hasattr(m, "no_effect_handles"), "read back only through withheld_reason, for one exact screen"
     assert m.withdrawn_from("sigA:123", limit=3) == set(), "told once, withdrawn at the limit"
